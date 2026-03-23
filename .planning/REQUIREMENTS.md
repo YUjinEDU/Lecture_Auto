@@ -34,10 +34,10 @@
 
 ### TTS Audio
 
-- [ ] **TTS-01**: 시스템은 확정된 스크립트를 Qwen3-TTS로 슬라이드별 음성 파일을 생성해야 한다
-- [ ] **TTS-02**: 시스템은 교수님 목소리 Voice Clone을 지원해야 한다 (3초 오디오 등록)
+- [x] **TTS-01**: 시스템은 확정된 스크립트를 Qwen3-TTS로 슬라이드별 음성 파일을 생성해야 한다
+- [x] **TTS-02**: 시스템은 교수님 목소리 Voice Clone을 지원해야 한다 (3초 오디오 등록)
 - [ ] **TTS-03**: 시스템은 TTS 생성 전 슬라이드별 음성 미리듣기를 제공해야 한다
-- [ ] **TTS-04**: 시스템은 전체 슬라이드 음성을 하나의 강의 음성으로 병합해야 한다
+- [x] **TTS-04**: 시스템은 전체 슬라이드 음성을 하나의 강의 음성으로 병합해야 한다
 
 ### Portal UI
 
@@ -106,10 +106,10 @@
 | UI-02 | Phase 3 | Pending |
 | UI-03 | Phase 3 | Pending |
 | UI-05 | Phase 3 | Pending |
-| TTS-01 | Phase 4 | Pending |
-| TTS-02 | Phase 4 | Pending |
+| TTS-01 | Phase 4 | Complete |
+| TTS-02 | Phase 4 | Complete |
 | TTS-03 | Phase 4 | Pending |
-| TTS-04 | Phase 4 | Pending |
+| TTS-04 | Phase 4 | Complete |
 | UI-04 | Phase 4 | Pending |
 
 **Coverage:**

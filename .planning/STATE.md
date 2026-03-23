@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 01.1-mvp-demo/01.1-01-PLAN.md
-last_updated: "2026-03-23T11:01:18.489Z"
+stopped_at: Completed 01.1-02-PLAN.md
+last_updated: "2026-03-23T11:06:37.981Z"
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 7
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-03-23)
 ## Current Position
 
 Phase: 01.1 (mvp-demo) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 
 ## Performance Metrics
 
@@ -50,6 +50,7 @@ Plan: 2 of 3
 | Phase 01-foundation P02 | 3 | 1 tasks | 4 files |
 | Phase 01-foundation P03 | 20 | 2 tasks | 5 files |
 | Phase 01.1 P01.1-01 | 20 | 2 tasks | 4 files |
+| Phase 01.1-mvp-demo P02 | 15 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,8 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: Font issues are warnings only (D-13): pipeline never stops for tofu detection
 - [Phase 01-foundation]: Per-job LibreOffice UserInstallation dir prevents lock-file races
 - [Phase 01.1]: VLM prompt includes parsed slide text alongside image (text-grounded prompting) to prevent hallucination
+- [Phase 01.1-mvp-demo]: transformers lazy-import pattern keeps tts.py importable without GPU stack
+- [Phase 01.1-mvp-demo]: assemble_video matches PNG/WAV by parsing slide number from filename suffix
 
 ### Roadmap Evolution
 
@@ -85,6 +88,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T11:01:18.486Z
-Stopped at: Completed 01.1-mvp-demo/01.1-01-PLAN.md
+Last session: 2026-03-23T11:06:37.979Z
+Stopped at: Completed 01.1-02-PLAN.md
 Resume file: None
