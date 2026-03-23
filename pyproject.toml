@@ -3,9 +3,30 @@ name = "lecture-auto"
 version = "0.1.0"
 description = "Lecture automation pipeline - PPTX to script and audio"
 requires-python = ">=3.11"
+dependencies = [
+    "pillow>=11.0",
+    "numpy>=1.26",
+    "pdf2image>=1.17",
+    "python-pptx>=1.0.2",
+    "fastapi>=0.135.1",
+    "uvicorn>=0.30",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    "supabase>=2.28.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
