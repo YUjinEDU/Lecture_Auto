@@ -15,9 +15,9 @@
 
 ### Rendering
 
-- [ ] **RENDER-01**: 시스템은 각 슬라이드를 PNG 이미지로 렌더링해야 한다 (LibreOffice CLI)
-- [ ] **RENDER-02**: 시스템은 한국어 폰트가 정상 렌더링되는지 검증해야 한다
-- [ ] **RENDER-03**: 시스템은 슬라이드 번호와 매칭되는 렌더링 파일명을 보장해야 한다
+- [x] **RENDER-01**: 시스템은 각 슬라이드를 PNG 이미지로 렌더링해야 한다 (LibreOffice CLI)
+- [x] **RENDER-02**: 시스템은 한국어 폰트가 정상 렌더링되는지 검증해야 한다
+- [x] **RENDER-03**: 시스템은 슬라이드 번호와 매칭되는 렌더링 파일명을 보장해야 한다
 
 ### VLM Visual Notes
 
@@ -87,9 +87,9 @@
 | PARSE-01 | Phase 1 | Complete |
 | PARSE-02 | Phase 1 | Complete |
 | PARSE-03 | Phase 1 | Complete |
-| RENDER-01 | Phase 1 | Pending |
-| RENDER-02 | Phase 1 | Pending |
-| RENDER-03 | Phase 1 | Pending |
+| RENDER-01 | Phase 1 | Complete |
+| RENDER-02 | Phase 1 | Complete |
+| RENDER-03 | Phase 1 | Complete |
 | INFRA-01 | Phase 1 | Pending |
 | INFRA-03 | Phase 1 | Pending |
 | INFRA-04 | Phase 1 | Complete |
