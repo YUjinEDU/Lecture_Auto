@@ -509,9 +509,9 @@ Store `file_sha256` in the Supabase `jobs` table. On upload, query for existing 
    - Recommendation: Before Phase 1 implementation, verify the hook exists; if not, set it up as a Wave 0 task
 
 2. **맑은고딕 (Malgun Gothic) availability on Ubuntu**
-   - What we know: Malgun Gothic is a Microsoft-owned font; not freely redistributable on Linux
+   - What we know: Malgun Gothic is a Microsoft-owned font; not freely redistributable on Linux. `ttf-mscorefonts-installer` does NOT include Malgun Gothic (it only covers legacy core fonts: Arial, Times New Roman, Courier New, etc.)
    - What's unclear: Whether PPTX files from lab use Malgun Gothic exclusively or also open fonts
-   - Recommendation: Install `fonts-nanum` (Nanum Gothic) as open fallback; test representative PPTX files before declaring Phase 1 complete
+   - Recommendation: Install `fonts-nanum` (Nanum Gothic) as open fallback; test representative PPTX files before declaring Phase 1 complete. See Additional Research section for manual copy approach.
 
 3. **GPU server LibreOffice version**
    - What we know: Stack requires 7.6+
@@ -525,6 +525,131 @@ Store `file_sha256` in the Supabase `jobs` table. On upload, query for existing 
 
 ---
 
+## Additional Research: MS Tools & Ecosystem
+
+**Researched:** 2026-03-23
+**Trigger:** User suspected Microsoft has released open-source PPTX tooling relevant to this pipeline.
+
+### Finding 1: Microsoft MarkItDown — Wrapper, Not a Replacement
+
+**What it is:** MarkItDown is a Microsoft-released MIT-licensed Python library (`pip install markitdown`) that converts Office documents (PPTX, DOCX, XLSX), PDFs, HTML, images, and more into Markdown text for LLM consumption.
+
+**What it does for PPTX:** It uses `python-pptx` internally. It extracts slide text and converts it to Markdown. It does NOT extract: bounding boxes, z-order, font metadata, shape types, per-shape spatial structure, or slide images. Image extraction from PPTX is a known open issue (GitHub issue #56: "PPTX: Extract images").
+
+**Verdict for this project: NOT applicable.** MarkItDown is a text-extraction wrapper optimized for RAG pipelines, not structured metadata extraction. This project requires shape-level metadata (D-04: bounding box, z-order, font), which MarkItDown does not provide. python-pptx directly remains the correct choice.
+
+**Confidence:** HIGH — confirmed via web search + GitHub issue tracker.
+
+| Aspect | MarkItDown | python-pptx (direct) |
+|--------|-----------|----------------------|
+| Text extraction | Yes (Markdown output) | Yes (raw strings) |
+| Bounding boxes | No | Yes (EMU integers) |
+| Shape type detection | No | Yes (MSO_SHAPE_TYPE) |
+| Font metadata | No | Yes (run.font.*) |
+| Slide images | No (open issue) | No (use LibreOffice) |
+| Z-order | No | Yes (shapes index) |
+| Use case fit | RAG/LLM text pipelines | Structured metadata extraction |
+
+**DECISION CONFIRMED:** Continue using python-pptx directly. MarkItDown adds no value for this pipeline's structured extraction requirements.
+
+### Finding 2: LangChain / LlamaIndex PPTX Ecosystem
+
+**LangChain:** Provides `UnstructuredPowerPointLoader` which wraps the `unstructured` library. Supports two modes: "single" (whole document as one Document) and "elements" (splits into Title/NarrativeText elements). No bounding box or shape metadata. Output is flat text for vector indexing.
+
+**LlamaIndex:** Has a PPTX reader that returns one Document per slide with text extraction. No spatial metadata. LlamaParse (cloud service) supports 90+ formats including PPTX with image extraction — but it is a cloud API, not self-hosted.
+
+**Verdict:** Both ecosystems treat PPTX as a text-extraction problem for RAG. Neither provides the structured shape-level data this project needs. Not applicable.
+
+**Confidence:** MEDIUM — from official LangChain docs + LlamaIndex docs summaries.
+
+### Finding 3: Gotenberg — Docker-Based LibreOffice API
+
+**What it is:** Gotenberg is a Docker container exposing a REST API for document conversion. It wraps LibreOffice (and Chromium) for PPTX → PDF conversion.
+
+**How it works:** A single LibreOffice instance runs inside the container in "stateful mode" for faster single conversions. It handles the lock-file concurrency problem internally via a request queue.
+
+**Advantages over direct soffice:**
+- No lock-file management required (queue handles it)
+- No UserInstallation isolation needed
+- REST API is language-agnostic
+- Can scale horizontally by adding Gotenberg instances
+
+**Disadvantages for this project:**
+- Adds Docker dependency on the GPU server
+- Output is still PDF — still needs pdf2image for PNG conversion
+- Font installation inside the container requires custom Dockerfile (same Korean font problem exists)
+- Overkill for Phase 1 synchronous single-user pipeline
+- Documented PPTX conversion issues (GitHub issue #465: "Error converting simple pptx file to pdf")
+
+**Verdict for this project: NOT recommended for Phase 1.** The direct soffice approach with UserInstallation isolation is simpler, has fewer moving parts, and is already well-documented in this research. Gotenberg becomes worth considering only if Phase 2+ introduces true concurrent multi-user load beyond what a single soffice queue can handle.
+
+**Confidence:** HIGH — from official Gotenberg docs + GitHub issues.
+
+### Finding 4: Korean Font Strategy — Definitive Approach
+
+**The Malgun Gothic problem confirmed:** `ttf-mscorefonts-installer` (Ubuntu multiverse) does NOT include Malgun Gothic. It only installs the legacy 1996-era Microsoft core fonts (Arial, Times New Roman, Verdana, etc.). Malgun Gothic is a Windows Vista+ font with no free Linux package.
+
+**Three-tier font strategy for production:**
+
+**Tier 1 — Open fonts (install via apt, no license issues):**
+```bash
+sudo apt install fonts-noto-cjk fonts-nanum fonts-unfonts-core
+fc-cache -f -v
+```
+- `fonts-noto-cjk`: Google Noto CJK family — covers all Korean Unicode blocks
+- `fonts-nanum`: Nanum Gothic, Nanum Myeongjo — designed by Sandoll Communications, freely licensed
+- `fonts-unfonts-core`: UN fonts — additional Korean coverage
+
+**Tier 2 — Malgun Gothic manual copy (for maximum fidelity with Windows-authored PPTX):**
+If the GPU server has a Windows installation accessible, copy `malgun.ttf` and `malgunbd.ttf` from `C:\Windows\Fonts\` to `/usr/share/fonts/truetype/malgun/` and run `fc-cache -f`. This is legally permissible when the font is already licensed to the organization via Windows.
+
+**Tier 3 — Font substitution mapping in LibreOffice:**
+LibreOffice allows explicit font substitution rules. Edit `~/.config/libreoffice/4/user/registrymodifications.xcu` or use the Tools > Options > LibreOffice > Fonts substitution table to map "Malgun Gothic" → "Nanum Gothic". This ensures consistent rendering even when Malgun Gothic is absent, rather than silent tofu fallback.
+
+**Recommended approach for this project:** Install Tier 1 fonts (apt) for CI/demo environments. For production GPU server, attempt Tier 2 Malgun Gothic copy first (lab has Windows machines), then fall back to Tier 3 substitution mapping. Document the chosen tier in the deployment runbook.
+
+**Updated installation command:**
+```bash
+# Wave 0 GPU server setup
+sudo apt install fonts-noto-cjk fonts-nanum fonts-unfonts-core
+# Optional: copy Malgun Gothic from Windows machine
+sudo mkdir -p /usr/share/fonts/truetype/malgun
+sudo cp /path/to/malgun.ttf /path/to/malgunbd.ttf /usr/share/fonts/truetype/malgun/
+sudo fc-cache -f -v
+# Verify Korean fonts are registered
+fc-list | grep -iE "nanum|noto.*cjk|malgun|unfonts"
+```
+
+**Confidence:** MEDIUM-HIGH — Tier 1 approach verified via Ubuntu package docs. Tier 2 is community-documented practice (GitHub gists, Linux Mint forums). Tier 3 is LibreOffice documented feature.
+
+### Finding 5: LibreOffice Korean Rendering — Known Issues
+
+The LibreOffice Korean team has documented rendering issues on non-Windows platforms (confirmed via Medium post from the LibreOffice Korean localization team). Key issues:
+
+1. **Vertical metrics differences:** Korean fonts on Linux can render with incorrect line height when the font metrics differ from Windows GDI. This affects multi-line text boxes — line spacing appears compressed or expanded compared to the Windows original.
+2. **Font hinting differences:** ClearType-optimized fonts (including Malgun Gothic) render differently on Linux freetype vs. Windows DirectWrite. This does not affect semantic content but affects visual fidelity.
+3. **Workaround:** Use `fonts-noto-cjk` as the substitution target rather than `fonts-nanum` for better metrics compatibility, as Noto CJK was designed with cross-platform consistency in mind.
+
+**Impact on this project:** For Phase 1, visual fidelity is acceptable if Korean text is legible. Perfect pixel-perfect reproduction is not required — the output is consumed by a VLM (Phase 2) which handles layout imprecision. Flag this as a known limitation in the deployment runbook.
+
+**Confidence:** MEDIUM — from LibreOffice Korean team documentation (Medium) + community forum posts.
+
+### Summary: What Changes vs. Original Research
+
+| Topic | Original Finding | Updated Finding | Action |
+|-------|-----------------|-----------------|--------|
+| Microsoft PPTX tools | Not researched | MarkItDown exists but uses python-pptx internally; no shape metadata | No change to stack |
+| LangChain/LlamaIndex loaders | Not researched | Text-only extraction; no spatial metadata | No change to stack |
+| Gotenberg | Not researched | Viable but overkill for Phase 1; same font problem exists inside container | No change for Phase 1 |
+| Malgun Gothic on Linux | "install fonts-nanum as fallback" | ttf-mscorefonts does NOT include Malgun Gothic; three-tier font strategy needed | Update Wave 0 font setup tasks |
+| Korean rendering LibreOffice | Generic warning | Known vertical metrics issue; use Noto CJK over Nanum for substitution target | Prefer Noto CJK in substitution rules |
+
+**RECONSIDER (minor):** Original research recommended `fonts-nanum` as the primary Korean font. Updated recommendation: install both, but use `fonts-noto-cjk` as the LibreOffice font substitution target for better cross-platform metrics consistency.
+
+**No locked decisions are changed.** The core stack (python-pptx + LibreOffice + pdf2image) is confirmed as the correct approach. MarkItDown is not a viable replacement. Gotenberg is not needed for Phase 1.
+
+---
+
 ## Sources
 
 ### Primary (HIGH confidence)
@@ -534,26 +659,36 @@ Store `file_sha256` in the Supabase `jobs` table. On upload, query for existing 
 - [pdf2image PyPI / readthedocs](https://pdf2image.readthedocs.io/en/latest/reference.html) — convert_from_path DPI parameter
 - [Supabase JWT Docs](https://supabase.com/docs/guides/auth/jwts) — HS256, audience="authenticated"
 - [Supabase Custom Claims RBAC Docs](https://supabase.com/docs/guides/database/postgres/custom-claims-and-role-based-access-control-rbac) — app_metadata role pattern
+- [microsoft/markitdown GitHub](https://github.com/microsoft/markitdown) — confirmed uses python-pptx internally; no shape metadata output
+- [Gotenberg official docs](https://gotenberg.dev/docs/convert-with-libreoffice/convert-to-pdf) — LibreOffice module, concurrency queue behavior
 
 ### Secondary (MEDIUM confidence)
 - [Validating Supabase JWT with FastAPI (DEV.to)](https://dev.to/zwx00/validating-a-supabase-jwt-locally-with-python-and-fastapi-59jf) — verified against Supabase official docs
 - [LibreOffice concurrent conversion bug #82775](https://bugs.documentfoundation.org/show_bug.cgi?id=82775) — UserInstallation isolation pattern
 - [Integrating FastAPI with Supabase Auth (DEV.to)](https://dev.to/j0/integrating-fastapi-with-supabase-auth-780) — FastAPI dependency pattern
 - [fonts-noto-cjk Ubuntu package](https://launchpad.net/ubuntu/jammy/+package/fonts-noto-cjk) — Korean font installation
+- [LangChain Microsoft PowerPoint loader docs](https://python.langchain.com/docs/integrations/document_loaders/microsoft_powerpoint/) — text-only extraction confirmed
+- [MarkItDown PPTX image extraction issue #56](https://github.com/microsoft/markitdown/issues/56) — images not extracted from PPTX
+- [Gotenberg PPTX conversion issue #465](https://github.com/gotenberg/gotenberg/issues/465) — known PPTX edge cases
+- [LibreOffice Korean rendering (Medium)](https://medium.com/libreoffice-korean-team/check-korean-rendering-issues-in-libreoffice-built-on-raspberry-pi-%EB%9D%BC%EC%A6%88%EB%B2%A0%EB%A6%AC%ED%8C%8C%EC%9D%B45%EC%97%90%EC%84%9C-%EB%A6%AC%EB%B8%8C%EB%A0%88%EC%98%A4%ED%94%BC%EC%8A%A4%EC%97%90%EC%84%9C-%ED%95%9C%EA%B5%AD%EC%96%B4-%EA%B8%80%EA%BC%B4%EC%9D%B4%EC%8A%88%ED%99%95%EC%9D%B8-d00b68fa46ca) — vertical metrics issue documented
+- [How to install Microsoft fonts on Ubuntu (itsfoss.com)](https://itsfoss.com/install-microsoft-fonts-ubuntu/) — ttf-mscorefonts-installer scope confirmed
 
 ### Tertiary (LOW confidence)
 - Pixel-level tofu detection heuristic — derived from general PIL image analysis; not verified against specific Korean PPTX rendering failures; flag for validation
+- Malgun Gothic manual copy approach — community practice from GitHub gists and Linux Mint forums; not officially documented by Microsoft
 
 ---
 
 ## Metadata
 
 **Confidence breakdown:**
-- Standard stack: HIGH — all libraries verified against PyPI and official docs
+- Standard stack: HIGH — all libraries verified against PyPI and official docs; MarkItDown investigation confirms python-pptx is the correct direct dependency
 - Architecture: HIGH — patterns verified against FastAPI and python-pptx official docs
-- Korean font setup: MEDIUM — documented issues with headless rendering; noto-cjk is the correct package but specific PPTX font coverage depends on the files used
+- Korean font setup: MEDIUM — Tier 1 (apt) is HIGH confidence; Tier 2 (Malgun Gothic copy) is MEDIUM; Tier 3 (substitution map) is MEDIUM
 - Tofu detection: LOW — heuristic approach only; stderr font substitution parsing is more reliable
 - Supabase JWT pattern: HIGH — verified against official Supabase docs and community article
+- MarkItDown assessment: HIGH — confirmed via GitHub source code references and issue tracker
+- Gotenberg assessment: HIGH — from official docs; concurrency model well-documented
 
 **Research date:** 2026-03-23
 **Valid until:** 2026-04-23 (stable libraries; LibreOffice behavior unlikely to change)
