@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md — Project skeleton, Pydantic v2 schemas, storage helper
-- [ ] 01-02-PLAN.md — PPTX parsing with python-pptx shape classification
+- [x] 01-02-PLAN.md — PPTX parsing with python-pptx shape classification
 - [ ] 01-03-PLAN.md — LibreOffice slide rendering + Korean tofu detection
 - [ ] 01-04-PLAN.md — FastAPI app, JWT auth, /upload endpoint integration
 
@@ -76,7 +76,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 1/4 | In Progress|  |
+| 1. Foundation | 2/4 | In Progress|  |
 | 2. VLM Pipeline | 0/TBD | Not started | - |
 | 3. Script + UI | 0/TBD | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |
