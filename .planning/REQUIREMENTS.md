@@ -82,41 +82,41 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INPUT-01 | TBD | Pending |
-| INPUT-02 | TBD | Pending |
-| PARSE-01 | TBD | Pending |
-| PARSE-02 | TBD | Pending |
-| PARSE-03 | TBD | Pending |
-| RENDER-01 | TBD | Pending |
-| RENDER-02 | TBD | Pending |
-| RENDER-03 | TBD | Pending |
-| VLM-01 | TBD | Pending |
-| VLM-02 | TBD | Pending |
-| VLM-03 | TBD | Pending |
-| SCRIPT-01 | TBD | Pending |
-| SCRIPT-02 | TBD | Pending |
-| SCRIPT-03 | TBD | Pending |
-| SCRIPT-04 | TBD | Pending |
-| TTS-01 | TBD | Pending |
-| TTS-02 | TBD | Pending |
-| TTS-03 | TBD | Pending |
-| TTS-04 | TBD | Pending |
-| UI-01 | TBD | Pending |
-| UI-02 | TBD | Pending |
-| UI-03 | TBD | Pending |
-| UI-04 | TBD | Pending |
-| UI-05 | TBD | Pending |
-| INFRA-01 | TBD | Pending |
-| INFRA-02 | TBD | Pending |
-| INFRA-03 | TBD | Pending |
-| INFRA-04 | TBD | Pending |
-| INFRA-05 | TBD | Pending |
+| INPUT-01 | Phase 1 | Pending |
+| INPUT-02 | Phase 1 | Pending |
+| PARSE-01 | Phase 1 | Pending |
+| PARSE-02 | Phase 1 | Pending |
+| PARSE-03 | Phase 1 | Pending |
+| RENDER-01 | Phase 1 | Pending |
+| RENDER-02 | Phase 1 | Pending |
+| RENDER-03 | Phase 1 | Pending |
+| INFRA-01 | Phase 1 | Pending |
+| INFRA-03 | Phase 1 | Pending |
+| INFRA-04 | Phase 1 | Pending |
+| INFRA-05 | Phase 1 | Pending |
+| VLM-01 | Phase 2 | Pending |
+| VLM-02 | Phase 2 | Pending |
+| VLM-03 | Phase 2 | Pending |
+| INFRA-02 | Phase 2 | Pending |
+| SCRIPT-01 | Phase 3 | Pending |
+| SCRIPT-02 | Phase 3 | Pending |
+| SCRIPT-03 | Phase 3 | Pending |
+| SCRIPT-04 | Phase 3 | Pending |
+| UI-01 | Phase 3 | Pending |
+| UI-02 | Phase 3 | Pending |
+| UI-03 | Phase 3 | Pending |
+| UI-05 | Phase 3 | Pending |
+| TTS-01 | Phase 4 | Pending |
+| TTS-02 | Phase 4 | Pending |
+| TTS-03 | Phase 4 | Pending |
+| TTS-04 | Phase 4 | Pending |
+| UI-04 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 29 total
-- Mapped to phases: 0
-- Unmapped: 29 ⚠️
+- Mapped to phases: 29
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-03-23*
-*Last updated: 2026-03-23 after initial definition*
+*Last updated: 2026-03-23 after roadmap creation — all 29 requirements mapped*
