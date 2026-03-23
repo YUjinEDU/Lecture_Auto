@@ -54,7 +54,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01.1-01-PLAN.md — VLM visual notes (Qwen3-VL) + Script generation (Claude -p)
+- [x] 01.1-01-PLAN.md — VLM visual notes (Qwen3-VL) + Script generation (Claude -p)
 - [ ] 01.1-02-PLAN.md — TTS audio synthesis (Qwen3-TTS) + Video assembly (ffmpeg)
 - [ ] 01.1-03-PLAN.md — run.py interactive CLI orchestrator + E2E verification
 
@@ -98,7 +98,7 @@ Phases execute in numeric order: 1 → 01.1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/4 | In Progress |  |
-| 01.1 MVP Demo | 0/3 | Not started | - |
+| 01.1 MVP Demo | 1/3 | In Progress|  |
 | 2. VLM Pipeline | 0/TBD | Not started | - |
 | 3. Script + UI | 0/TBD | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |

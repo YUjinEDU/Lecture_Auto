@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 01-foundation/01-03-PLAN.md
-last_updated: "2026-03-23T10:13:08.945Z"
+stopped_at: Completed 01.1-mvp-demo/01.1-01-PLAN.md
+last_updated: "2026-03-23T11:01:18.489Z"
 progress:
-  total_phases: 4
+  total_phases: 5
   completed_phases: 0
-  total_plans: 4
-  completed_plans: 3
+  total_plans: 7
+  completed_plans: 4
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-23)
 
 **Core value:** PPT 한 장을 넣으면 교수님 스타일의 강의 스크립트와 음성이 나온다
-**Current focus:** Phase 01 — foundation
+**Current focus:** Phase 01.1 — mvp-demo
 
 ## Current Position
 
-Phase: 01 (foundation) — EXECUTING
-Plan: 4 of 4
+Phase: 01.1 (mvp-demo) — EXECUTING
+Plan: 2 of 3
 
 ## Performance Metrics
 
@@ -49,6 +49,7 @@ Plan: 4 of 4
 | Phase 01-foundation P01 | 12 | 2 tasks | 9 files |
 | Phase 01-foundation P02 | 3 | 1 tasks | 4 files |
 | Phase 01-foundation P03 | 20 | 2 tasks | 5 files |
+| Phase 01.1 P01.1-01 | 20 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,11 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: EMU font size conversion: font.size / 12700 (not Pt() constructor)
 - [Phase 01-foundation]: Font issues are warnings only (D-13): pipeline never stops for tofu detection
 - [Phase 01-foundation]: Per-job LibreOffice UserInstallation dir prevents lock-file races
+- [Phase 01.1]: VLM prompt includes parsed slide text alongside image (text-grounded prompting) to prevent hallucination
+
+### Roadmap Evolution
+
+- Phase 01.1 inserted after Phase 1: MVP Demo — python run.py E2E demo pipeline on localhost (INSERTED)
 
 ### Pending Todos
 
@@ -79,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T10:13:04.403Z
-Stopped at: Completed 01-foundation/01-03-PLAN.md
+Last session: 2026-03-23T11:01:18.486Z
+Stopped at: Completed 01.1-mvp-demo/01.1-01-PLAN.md
 Resume file: None

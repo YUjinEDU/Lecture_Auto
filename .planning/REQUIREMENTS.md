@@ -21,16 +21,16 @@
 
 ### VLM Visual Notes
 
-- [ ] **VLM-01**: 시스템은 모든 슬라이드 이미지를 Qwen3-VL에 입력해 visual summary, key elements, layout relations, teaching points, possible confusions를 생성해야 한다
-- [ ] **VLM-02**: 시스템은 VLM 입력 시 파싱된 텍스트를 함께 제공해 환각을 방지해야 한다 (text-grounded prompting)
-- [ ] **VLM-03**: 시스템은 VLM 출력을 JSON 스키마로 검증해야 한다
+- [x] **VLM-01**: 시스템은 모든 슬라이드 이미지를 Qwen3-VL에 입력해 visual summary, key elements, layout relations, teaching points, possible confusions를 생성해야 한다
+- [x] **VLM-02**: 시스템은 VLM 입력 시 파싱된 텍스트를 함께 제공해 환각을 방지해야 한다 (text-grounded prompting)
+- [x] **VLM-03**: 시스템은 VLM 출력을 JSON 스키마로 검증해야 한다
 
 ### Script Generation
 
-- [ ] **SCRIPT-01**: 시스템은 슬라이드별 구조 정보와 VLM 노트를 결합해 Claude Code로 강의 스크립트를 생성해야 한다
-- [ ] **SCRIPT-02**: 시스템은 앞뒤 슬라이드 문맥을 반영한 lecture_context를 스크립트 생성에 활용해야 한다
-- [ ] **SCRIPT-03**: 시스템은 목표 강의 시간에 맞춰 슬라이드별 설명 길이를 조절해야 한다
-- [ ] **SCRIPT-04**: 시스템은 스크립트 출력에 slide_id, target_seconds, script, keywords, transition_to_next를 포함해야 한다
+- [x] **SCRIPT-01**: 시스템은 슬라이드별 구조 정보와 VLM 노트를 결합해 Claude Code로 강의 스크립트를 생성해야 한다
+- [x] **SCRIPT-02**: 시스템은 앞뒤 슬라이드 문맥을 반영한 lecture_context를 스크립트 생성에 활용해야 한다
+- [x] **SCRIPT-03**: 시스템은 목표 강의 시간에 맞춰 슬라이드별 설명 길이를 조절해야 한다
+- [x] **SCRIPT-04**: 시스템은 스크립트 출력에 slide_id, target_seconds, script, keywords, transition_to_next를 포함해야 한다
 
 ### TTS Audio
 
@@ -94,14 +94,14 @@
 | INFRA-03 | Phase 1 | Pending |
 | INFRA-04 | Phase 1 | Complete |
 | INFRA-05 | Phase 1 | Pending |
-| VLM-01 | Phase 2 | Pending |
-| VLM-02 | Phase 2 | Pending |
-| VLM-03 | Phase 2 | Pending |
+| VLM-01 | Phase 2 | Complete |
+| VLM-02 | Phase 2 | Complete |
+| VLM-03 | Phase 2 | Complete |
 | INFRA-02 | Phase 2 | Pending |
-| SCRIPT-01 | Phase 3 | Pending |
-| SCRIPT-02 | Phase 3 | Pending |
-| SCRIPT-03 | Phase 3 | Pending |
-| SCRIPT-04 | Phase 3 | Pending |
+| SCRIPT-01 | Phase 3 | Complete |
+| SCRIPT-02 | Phase 3 | Complete |
+| SCRIPT-03 | Phase 3 | Complete |
+| SCRIPT-04 | Phase 3 | Complete |
 | UI-01 | Phase 3 | Pending |
 | UI-02 | Phase 3 | Pending |
 | UI-03 | Phase 3 | Pending |
