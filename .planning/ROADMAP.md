@@ -13,7 +13,7 @@ PPTX 파일을 입력받아 교수님 스타일의 강의 스크립트와 음성
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Foundation** - FastAPI 스켈레톤 + PPTX 파싱 + 슬라이드 렌더링 인프라
-- [ ] **Phase 01.1: MVP Demo** - E2E 데모 파이프라인 (PPTX → MP4) on localhost (INSERTED)
+- [x] **Phase 01.1: MVP Demo** - E2E 데모 파이프라인 (PPTX → MP4) on localhost (INSERTED) (completed 2026-03-23)
 - [ ] **Phase 2: VLM Pipeline** - 비동기 작업 시스템 + Qwen3-VL 시각 노트 생성
 - [ ] **Phase 3: Script + UI** - Claude Code 스크립트 생성 + 교수님 검수 편집 UI
 - [ ] **Phase 4: TTS + Delivery** - Qwen3-TTS 음성 합성 + Voice Clone + 최종 패키지 다운로드
@@ -98,7 +98,7 @@ Phases execute in numeric order: 1 → 01.1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/4 | In Progress |  |
-| 01.1 MVP Demo | 2/3 | In Progress|  |
+| 01.1 MVP Demo | 2/3 | Complete    | 2026-03-23 |
 | 2. VLM Pipeline | 0/TBD | Not started | - |
 | 3. Script + UI | 0/TBD | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |
