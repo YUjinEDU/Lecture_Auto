@@ -29,7 +29,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. SmartArt/차트 등 python-pptx가 누락하는 shape-type이 감지되어 content_source 필드에 플래그된다
   4. Pydantic 스키마 검증을 통과한 JSON만 /data/work/{job_id}/ 디렉토리에 저장된다
   5. FastAPI 서버가 기동되고 professor role 인증이 적용된 헬스체크 엔드포인트에 응답한다
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Project skeleton, Pydantic v2 schemas, storage helper
+- [ ] 01-02-PLAN.md — PPTX parsing with python-pptx shape classification
+- [ ] 01-03-PLAN.md — LibreOffice slide rendering + Korean tofu detection
+- [ ] 01-04-PLAN.md — FastAPI app, JWT auth, /upload endpoint integration
 
 ### Phase 2: VLM Pipeline
 **Goal**: 재시작 가능한 비동기 작업이 슬라이드별 VLM 시각 노트 JSON을 생성한다
@@ -70,7 +76,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/4 | Planning complete | - |
 | 2. VLM Pipeline | 0/TBD | Not started | - |
 | 3. Script + UI | 0/TBD | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |
