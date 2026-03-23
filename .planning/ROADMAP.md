@@ -13,6 +13,7 @@ PPTX 파일을 입력받아 교수님 스타일의 강의 스크립트와 음성
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Foundation** - FastAPI 스켈레톤 + PPTX 파싱 + 슬라이드 렌더링 인프라
+- [ ] **Phase 01.1: MVP Demo** - E2E 데모 파이프라인 (PPTX → MP4) on localhost (INSERTED)
 - [ ] **Phase 2: VLM Pipeline** - 비동기 작업 시스템 + Qwen3-VL 시각 노트 생성
 - [ ] **Phase 3: Script + UI** - Claude Code 스크립트 생성 + 교수님 검수 편집 UI
 - [ ] **Phase 4: TTS + Delivery** - Qwen3-TTS 음성 합성 + Voice Clone + 최종 패키지 다운로드
@@ -36,6 +37,26 @@ Plans:
 - [x] 01-02-PLAN.md — PPTX parsing with python-pptx shape classification
 - [x] 01-03-PLAN.md — LibreOffice slide rendering + Korean tofu detection
 - [ ] 01-04-PLAN.md — FastAPI app, JWT auth, /upload endpoint integration
+
+### Phase 01.1: MVP Demo (INSERTED)
+
+**Goal:** `python run.py --pptx file.pptx` 한 명령으로 PPTX → 최종 강의 영상(MP4) 생성. 교수님께 직접 보여드리기 위한 실제 구현.
+**Requirements**: VLM-01, VLM-02, VLM-03, SCRIPT-01, SCRIPT-02, SCRIPT-03, SCRIPT-04, TTS-01, TTS-02, TTS-04
+**Depends on:** Phase 1 (parser + renderer)
+**Success Criteria** (what must be TRUE):
+  1. `python run.py --pptx file.pptx` 실행 시 6단계 파이프라인이 순차 실행된다
+  2. 매 단계 완료 후 [y/n] 프롬프트로 사용자가 중간 결과를 확인/편집할 수 있다
+  3. Qwen3-VL이 슬라이드별 시각 노트 JSON을 생성한다
+  4. Claude가 강의 스크립트를 한국어로 생성하며 앞뒤 슬라이드 문맥이 반영된다
+  5. Qwen3-TTS가 스크립트를 음성으로 합성하며 voice clone을 지원한다
+  6. ffmpeg가 슬라이드 PNG + 오디오 WAV를 단일 MP4로 조립한다
+  7. output/summary_{job_id}.json에 전체 파이프라인 요약이 저장된다
+**Plans**: 3 plans
+
+Plans:
+- [ ] 01.1-01-PLAN.md — VLM visual notes (Qwen3-VL) + Script generation (Claude -p)
+- [ ] 01.1-02-PLAN.md — TTS audio synthesis (Qwen3-TTS) + Video assembly (ffmpeg)
+- [ ] 01.1-03-PLAN.md — run.py interactive CLI orchestrator + E2E verification
 
 ### Phase 2: VLM Pipeline
 **Goal**: 재시작 가능한 비동기 작업이 슬라이드별 VLM 시각 노트 JSON을 생성한다
@@ -72,11 +93,12 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4
+Phases execute in numeric order: 1 → 01.1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 3/4 | In Progress|  |
+| 1. Foundation | 3/4 | In Progress |  |
+| 01.1 MVP Demo | 0/3 | Not started | - |
 | 2. VLM Pipeline | 0/TBD | Not started | - |
 | 3. Script + UI | 0/TBD | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |
