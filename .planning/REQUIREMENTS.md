@@ -8,10 +8,10 @@
 ### Input & Parsing
 
 - [ ] **INPUT-01**: 사용자는 PPTX 파일 1개를 업로드할 수 있어야 한다
-- [ ] **INPUT-02**: 사용자는 강의 생성 시 강의명, 과목명, 수강 대상, 목표 강의 시간, 설명 스타일을 입력할 수 있어야 한다
+- [x] **INPUT-02**: 사용자는 강의 생성 시 강의명, 과목명, 수강 대상, 목표 강의 시간, 설명 스타일을 입력할 수 있어야 한다
 - [ ] **PARSE-01**: 시스템은 PPTX에서 제목, 본문, 발표자 노트, shape metadata를 추출해야 한다
 - [ ] **PARSE-02**: 시스템은 SmartArt, 차트, OLE 객체 등 python-pptx가 누락하는 shape-type을 감지하고 플래그해야 한다
-- [ ] **PARSE-03**: 시스템은 파싱 결과를 Slide Manifest JSON으로 저장하고 Pydantic 스키마로 검증해야 한다
+- [x] **PARSE-03**: 시스템은 파싱 결과를 Slide Manifest JSON으로 저장하고 Pydantic 스키마로 검증해야 한다
 
 ### Rendering
 
@@ -52,7 +52,7 @@
 - [ ] **INFRA-01**: 시스템은 FastAPI 기반 REST API로 파이프라인을 제공해야 한다
 - [ ] **INFRA-02**: 시스템은 비동기 작업 패턴(제출 → 상태 폴링 → 결과 반환)을 지원해야 한다
 - [ ] **INFRA-03**: 시스템은 Supabase Auth professor role로 접근을 제한해야 한다
-- [ ] **INFRA-04**: 시스템은 모든 중간 산출물을 GPU 서버 로컬 디스크에 저장해야 한다
+- [x] **INFRA-04**: 시스템은 모든 중간 산출물을 GPU 서버 로컬 디스크에 저장해야 한다
 - [ ] **INFRA-05**: 시스템은 각 단계 실행 로그를 저장해야 한다
 
 ## v2 Requirements
@@ -83,16 +83,16 @@
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | INPUT-01 | Phase 1 | Pending |
-| INPUT-02 | Phase 1 | Pending |
+| INPUT-02 | Phase 1 | Complete |
 | PARSE-01 | Phase 1 | Pending |
 | PARSE-02 | Phase 1 | Pending |
-| PARSE-03 | Phase 1 | Pending |
+| PARSE-03 | Phase 1 | Complete |
 | RENDER-01 | Phase 1 | Pending |
 | RENDER-02 | Phase 1 | Pending |
 | RENDER-03 | Phase 1 | Pending |
 | INFRA-01 | Phase 1 | Pending |
 | INFRA-03 | Phase 1 | Pending |
-| INFRA-04 | Phase 1 | Pending |
+| INFRA-04 | Phase 1 | Complete |
 | INFRA-05 | Phase 1 | Pending |
 | VLM-01 | Phase 2 | Pending |
 | VLM-02 | Phase 2 | Pending |
