@@ -67,7 +67,11 @@ Plans:
   2. 파이프라인이 중단 후 재시작되어도 이미 완료된 슬라이드는 건너뛰고 미완료 슬라이드부터 재개된다
   3. 각 슬라이드에 대해 visual summary, key elements, teaching points를 포함한 VLM 노트 JSON이 생성된다
   4. VLM이 파싱 텍스트와 30% 미만 토큰 겹침을 보이는 슬라이드에 needs_review 플래그가 표시된다
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Celery infrastructure + VLM refactoring (needs_review, resumability, progress)
+- [ ] 02-02-PLAN.md — FastAPI job routes + SSE progress streaming
 
 ### Phase 3: Script + UI
 **Goal**: 교수님이 검토하고 편집할 수 있는 강의 스크립트가 생성되며 UI에서 승인 가능하다
@@ -99,6 +103,6 @@ Phases execute in numeric order: 1 → 01.1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/4 | In Progress |  |
 | 01.1 MVP Demo | 2/3 | Complete    | 2026-03-23 |
-| 2. VLM Pipeline | 0/TBD | Not started | - |
+| 2. VLM Pipeline | 0/2 | Not started | - |
 | 3. Script + UI | 0/TBD | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |
