@@ -70,7 +70,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Celery infrastructure + VLM refactoring (needs_review, resumability, progress)
+- [x] 02-01-PLAN.md — Celery infrastructure + VLM refactoring (needs_review, resumability, progress)
 - [ ] 02-02-PLAN.md — FastAPI job routes + SSE progress streaming
 
 ### Phase 3: Script + UI
@@ -103,6 +103,6 @@ Phases execute in numeric order: 1 → 01.1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/4 | In Progress |  |
 | 01.1 MVP Demo | 2/3 | Complete    | 2026-03-23 |
-| 2. VLM Pipeline | 0/2 | Not started | - |
+| 2. VLM Pipeline | 1/2 | In Progress | - |
 | 3. Script + UI | 0/TBD | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |
