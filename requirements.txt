@@ -9,3 +9,6 @@ PyJWT>=2.9.0
 python-dotenv>=1.0.0
 supabase>=2.28.3
 numpy>=1.26.0
+celery[redis]>=5.4,<6.0
+redis>=5.0
+sse-starlette>=2.0
