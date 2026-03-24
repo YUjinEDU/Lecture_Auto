@@ -50,7 +50,7 @@
 ### Infrastructure
 
 - [ ] **INFRA-01**: 시스템은 FastAPI 기반 REST API로 파이프라인을 제공해야 한다
-- [ ] **INFRA-02**: 시스템은 비동기 작업 패턴(제출 → 상태 폴링 → 결과 반환)을 지원해야 한다
+- [x] **INFRA-02**: 시스템은 비동기 작업 패턴(제출 → 상태 폴링 → 결과 반환)을 지원해야 한다
 - [ ] **INFRA-03**: 시스템은 Supabase Auth professor role로 접근을 제한해야 한다
 - [x] **INFRA-04**: 시스템은 모든 중간 산출물을 GPU 서버 로컬 디스크에 저장해야 한다
 - [ ] **INFRA-05**: 시스템은 각 단계 실행 로그를 저장해야 한다
@@ -97,7 +97,7 @@
 | VLM-01 | Phase 2 | Complete |
 | VLM-02 | Phase 2 | Complete |
 | VLM-03 | Phase 2 | Complete |
-| INFRA-02 | Phase 2 | Pending |
+| INFRA-02 | Phase 2 | Complete |
 | SCRIPT-01 | Phase 3 | Complete |
 | SCRIPT-02 | Phase 3 | Complete |
 | SCRIPT-03 | Phase 3 | Complete |

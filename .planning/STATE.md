@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: "Completed 02-01-PLAN.md"
-last_updated: "2026-03-24T00:49:02.058Z"
+status: unknown
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-24T01:11:35.510Z"
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 9
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Project State
@@ -52,6 +52,7 @@ Plan: 2 of 2
 | Phase 01.1 P01.1-01 | 20 | 2 tasks | 4 files |
 | Phase 01.1-mvp-demo P02 | 15 | 2 tasks | 4 files |
 | Phase 02-vlm-pipeline P01 | 15 | 2 tasks | 15 files |
+| Phase 02-vlm-pipeline P02 | 340 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,8 @@ Recent decisions affecting current work:
 - [Phase 01.1]: VLM prompt includes parsed slide text alongside image (text-grounded prompting) to prevent hallucination
 - [Phase 01.1-mvp-demo]: transformers lazy-import pattern keeps tts.py importable without GPU stack
 - [Phase 01.1-mvp-demo]: assemble_video matches PNG/WAV by parsing slide number from filename suffix
+- [Phase 02-vlm-pipeline]: Status derived from last_progress (not Celery AsyncResult) for simplicity
+- [Phase 02-vlm-pipeline]: SSE ping=15s keep-alive to prevent proxy timeouts; auth middleware deferred to INFRA-03
 
 ### Roadmap Evolution
 
@@ -89,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-24
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-03-24T01:11:35.508Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None

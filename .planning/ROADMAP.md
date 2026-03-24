@@ -71,7 +71,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md — Celery infrastructure + VLM refactoring (needs_review, resumability, progress)
-- [ ] 02-02-PLAN.md — FastAPI job routes + SSE progress streaming
+- [x] 02-02-PLAN.md — FastAPI job routes + SSE progress streaming
 
 ### Phase 3: Script + UI
 **Goal**: 교수님이 검토하고 편집할 수 있는 강의 스크립트가 생성되며 UI에서 승인 가능하다
