@@ -85,7 +85,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — PyMuPDF PDF parser with title heuristic + pdfplumber table fallback
+- [x] 03-01-PLAN.md — PyMuPDF PDF parser with title heuristic + pdfplumber table fallback
 - [x] 03-02-PLAN.md — Script Celery task + FastAPI script CRUD/regenerate/approve routes
 - [ ] 03-03-PLAN.md — Next.js 2-panel script review UI (thumbnails + editor + SSE progress)
 
