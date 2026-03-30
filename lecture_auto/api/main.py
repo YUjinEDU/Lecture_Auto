@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Lecture Auto API",
     description="Lecture automation pipeline - PPTX to script and audio",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -34,12 +34,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from lecture_auto.api.routes import jobs  # noqa: E402
+from lecture_auto.api.routes import jobs, scripts  # noqa: E402
 
 app.include_router(jobs.router)
+app.include_router(scripts.router)
 
 
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "version": "0.2.0"}
+    return {"status": "ok", "version": "0.3.0"}
