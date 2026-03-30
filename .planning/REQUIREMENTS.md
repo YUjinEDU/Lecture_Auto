@@ -43,9 +43,9 @@
 
 - [ ] **UI-01**: 시스템은 연구실 포털(Next.js) 내에 강의 자동화 페이지를 제공해야 한다
 - [ ] **UI-02**: 시스템은 슬라이드별 스크립트 검수 및 텍스트 편집 UI를 제공해야 한다
-- [ ] **UI-03**: 시스템은 파이프라인 진행률과 단계별 상태를 실시간 표시해야 한다
+- [x] **UI-03**: 시스템은 파이프라인 진행률과 단계별 상태를 실시간 표시해야 한다
 - [ ] **UI-04**: 시스템은 최종 패키지(스크립트 JSON + 음성 파일)를 다운로드할 수 있어야 한다
-- [ ] **UI-05**: 시스템은 특정 슬라이드만 선택하여 스크립트/음성을 재생성할 수 있어야 한다
+- [x] **UI-05**: 시스템은 특정 슬라이드만 선택하여 스크립트/음성을 재생성할 수 있어야 한다
 
 ### Infrastructure
 
@@ -104,8 +104,8 @@
 | SCRIPT-04 | Phase 3 | Complete |
 | UI-01 | Phase 3 | Pending |
 | UI-02 | Phase 3 | Pending |
-| UI-03 | Phase 3 | Pending |
-| UI-05 | Phase 3 | Pending |
+| UI-03 | Phase 3 | Complete |
+| UI-05 | Phase 3 | Complete |
 | TTS-01 | Phase 4 | Complete |
 | TTS-02 | Phase 4 | Complete |
 | TTS-03 | Phase 4 | Pending |

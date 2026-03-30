@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-03-24T01:16:29.091Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-03-30T08:00:36.542Z"
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 9
-  completed_plans: 8
+  total_plans: 12
+  completed_plans: 9
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-23)
 
 **Core value:** PPT 한 장을 넣으면 교수님 스타일의 강의 스크립트와 음성이 나온다
-**Current focus:** Phase 02 — vlm-pipeline
+**Current focus:** Phase 03 — script-ui
 
 ## Current Position
 
-Phase: 3
-Plan: Not started
+Phase: 03 (script-ui) — EXECUTING
+Plan: 2 of 3
 
 ## Performance Metrics
 
@@ -53,6 +53,7 @@ Plan: Not started
 | Phase 01.1-mvp-demo P02 | 15 | 2 tasks | 4 files |
 | Phase 02-vlm-pipeline P01 | 15 | 2 tasks | 15 files |
 | Phase 02-vlm-pipeline P02 | 340 | 2 tasks | 6 files |
+| Phase 03 P02 | 12 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,8 @@ Recent decisions affecting current work:
 - [Phase 01.1-mvp-demo]: assemble_video matches PNG/WAV by parsing slide number from filename suffix
 - [Phase 02-vlm-pipeline]: Status derived from last_progress (not Celery AsyncResult) for simplicity
 - [Phase 02-vlm-pipeline]: SSE ping=15s keep-alive to prevent proxy timeouts; auth middleware deferred to INFRA-03
+- [Phase 03]: cpu_queue for script tasks separates Claude subprocess from GPU workload
+- [Phase 03]: Per-slide checkpointing in task (not wrapping generate_scripts()) for resumability
 
 ### Roadmap Evolution
 
@@ -92,6 +95,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-24T01:11:35.508Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-03-30T08:00:36.539Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
