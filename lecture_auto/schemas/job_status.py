@@ -9,6 +9,8 @@ class JobStatus(str, Enum):
     queued = "queued"
     started = "started"
     vlm_processing = "vlm_processing"
+    script_generating = "script_generating"
+    script_completed = "script_completed"
     completed = "completed"
     failed = "failed"
 

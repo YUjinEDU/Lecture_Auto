@@ -27,6 +27,10 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_track_started=True,
     result_expires=86400,
+    task_routes={
+        "script.*": {"queue": "cpu_queue"},
+        "vlm.*": {"queue": "gpu_queue"},
+    },
 )
 
 celery_app.autodiscover_tasks(["lecture_auto.tasks"])
