@@ -82,7 +82,12 @@ Plans:
   2. 스크립트 출력에 slide_id, target_seconds, script, keywords, transition_to_next 필드가 포함된다
   3. 교수님이 포털 UI에서 슬라이드 썸네일과 나란히 스크립트를 확인하고 인라인 편집 후 저장할 수 있다
   4. 특정 슬라이드만 선택해 스크립트를 재생성할 수 있으며 교수님이 편집한 내용은 재생성 시 덮어쓰이지 않는다
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — PyMuPDF PDF parser with title heuristic + pdfplumber table fallback
+- [ ] 03-02-PLAN.md — Script Celery task + FastAPI script CRUD/regenerate/approve routes
+- [ ] 03-03-PLAN.md — Next.js 2-panel script review UI (thumbnails + editor + SSE progress)
 
 ### Phase 4: TTS + Delivery
 **Goal**: 교수님이 승인한 스크립트로 교수님 목소리 음성이 생성되고 최종 패키지를 다운로드할 수 있다
@@ -104,5 +109,5 @@ Phases execute in numeric order: 1 → 01.1 → 2 → 3 → 4
 | 1. Foundation | 3/4 | In Progress |  |
 | 01.1 MVP Demo | 2/3 | Complete    | 2026-03-23 |
 | 2. VLM Pipeline | 1/2 | In Progress | - |
-| 3. Script + UI | 0/TBD | Not started | - |
+| 3. Script + UI | 0/3 | Not started | - |
 | 4. TTS + Delivery | 0/TBD | Not started | - |
