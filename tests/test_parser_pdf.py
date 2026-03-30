@@ -63,7 +63,7 @@ def _create_image_pdf(tmp_path: Path) -> Path:
     page.insert_text((50, 60), "Title with image", fontname="helv", fontsize=20)
     # Insert a small colored rectangle as a pixmap/image
     pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 100, 80), 1)
-    pix.set_rect(pix.irect, (255, 0, 0))  # red rectangle
+    pix.set_rect(pix.irect, (255, 0, 0, 255))  # red rectangle (RGBA for alpha pixmap)
     page.insert_image(pymupdf.Rect(200, 200, 400, 400), pixmap=pix)
 
     pdf_path = tmp_path / "test_image.pdf"

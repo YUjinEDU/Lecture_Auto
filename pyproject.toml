@@ -17,6 +17,8 @@ dependencies = [
     "celery[redis]>=5.4,<6.0",
     "redis>=5.0",
     "sse-starlette>=2.0",
+    "pymupdf>=1.27",
+    "pdfplumber>=0.11",
 ]
 
 [project.optional-dependencies]
