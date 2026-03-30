@@ -9,7 +9,7 @@
 
 - [x] **INPUT-01**: 사용자는 PPTX 파일 1개를 업로드할 수 있어야 한다
 - [x] **INPUT-02**: 사용자는 강의 생성 시 강의명, 과목명, 수강 대상, 목표 강의 시간, 설명 스타일을 입력할 수 있어야 한다
-- [x] **PARSE-01**: 시스템은 PPTX에서 제목, 본문, 발표자 노트, shape metadata를 추출해야 한다
+- [x] **PARSE-01**: 시스템은 PPTX/PDF에서 제목, 본문, shape metadata를 추출해야 한다 (발표자 노트 제외 — D-05)
 - [x] **PARSE-02**: 시스템은 SmartArt, 차트, OLE 객체 등 python-pptx가 누락하는 shape-type을 감지하고 플래그해야 한다
 - [x] **PARSE-03**: 시스템은 파싱 결과를 Slide Manifest JSON으로 저장하고 Pydantic 스키마로 검증해야 한다
 

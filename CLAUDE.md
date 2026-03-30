@@ -24,7 +24,7 @@
 ### PPT Parsing Layer
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| python-pptx | 1.0.2 | Parse PPTX structure: slide text, speaker notes, layout, shape metadata | Only mature, maintained Python library for PPTX read/write. v1.0 stable API. |
+| python-pptx | 1.0.2 | Parse PPTX structure: slide text, layout, shape metadata (speaker notes 제외 — D-05) | Only mature, maintained Python library for PPTX read/write. v1.0 stable API. PDF 파서로 전환 예정 — Phase 3에서 교체. |
 ### Slide Rendering Layer
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|

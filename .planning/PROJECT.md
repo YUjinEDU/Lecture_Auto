@@ -12,7 +12,7 @@ PPT 한 장을 넣으면 교수님 스타일의 강의 스크립트와 음성이
 
 ### Validated
 
-- [x] PPTX 파일 업로드 및 구조 파싱 (텍스트, shape, notes 추출) — Validated in Phase 01.1: mvp-demo
+- [x] PPTX/PDF 파일 업로드 및 구조 파싱 (텍스트, shape 추출) — Validated in Phase 01.1: mvp-demo
 - [x] 슬라이드별 PNG 이미지 렌더링 — Validated in Phase 01.1: mvp-demo
 - [x] VLM 기반 시각 해설 노트 생성 (전 슬라이드) — Validated in Phase 01.1: mvp-demo (VLM-01/02/03)
 - [x] Claude Code 기반 강의 스크립트 자동 생성 — Validated in Phase 01.1: mvp-demo (SCRIPT-01/02/03/04)
