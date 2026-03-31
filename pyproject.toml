@@ -19,6 +19,8 @@ dependencies = [
     "sse-starlette>=2.0",
     "pymupdf>=1.27",
     "pdfplumber>=0.11",
+    "zipstream-ng>=1.9.0",
+    "python-multipart>=0.0.22",
 ]
 
 [project.optional-dependencies]
