@@ -27,8 +27,10 @@ from lecture_auto.schemas.script import (
     ScriptUpdateRequest,
 )
 from lecture_auto.storage.jobs import JobPaths
+from lecture_auto.storage.voice_store import get_voice_ref
 from lecture_auto.tasks.progress import get_last_progress
 from lecture_auto.tasks.script_tasks import regenerate_slide_task
+from lecture_auto.tasks.tts_tasks import synthesize_job_task
 
 router = APIRouter(prefix="/jobs", tags=["scripts"])
 
@@ -157,7 +159,7 @@ async def approve_scripts(job_id: str):
     """Approve all scripts for TTS generation.
 
     Validates that all slides have non-empty scripts before approval.
-    TTS trigger is deferred to Phase 4.
+    On approval, triggers TTS Celery task automatically (D-08).
     """
     job_paths = JobPaths(job_id)
 
@@ -185,10 +187,17 @@ async def approve_scripts(job_id: str):
             detail=f"Slides {empty_slides} have empty scripts. All slides must have non-empty scripts before approval.",
         )
 
+    # D-08: Trigger TTS Celery task on approval
+    voice_ref = get_voice_ref("default")  # MVP: single professor
+    task = synthesize_job_task.apply_async(
+        args=[job_id, str(voice_ref) if voice_ref else None],
+        queue="gpu_queue",
+    )
+
     return ScriptApproveResponse(
         job_id=job_id,
         total_slides=manifest.slide_count,
-        tts_task_id=None,  # Deferred to Phase 4
+        tts_task_id=task.id,
         status="approved",
     )
 
