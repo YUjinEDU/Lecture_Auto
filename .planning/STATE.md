@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-03-31T11:14:34.464Z"
+stopped_at: Completed 04-03-PLAN.md
+last_updated: "2026-03-31T11:44:50.581Z"
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 15
-  completed_plans: 13
+  completed_plans: 14
 ---
 
 # Project State
@@ -57,6 +57,7 @@ Plan: 3 of 3
 | Phase 03 P03 | 25 | 3 tasks | 12 files |
 | Phase 04-tts-delivery P01 | 3 | 2 tasks | 5 files |
 | Phase 04-tts-delivery P02 | 3 | 2 tasks | 6 files |
+| Phase 04 P03 | 8 | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -86,6 +87,7 @@ Recent decisions affecting current work:
 - [Phase 04-tts-delivery]: Per-professor voice storage under VOICE_REF_ROOT env var, default professor_id for MVP
 - [Phase 04-tts-delivery]: ZIP_STORED compression for WAV/MP4 (already compressed, no CPU overhead)
 - [Phase 04-tts-delivery]: Combined scripts.json array in ZIP instead of per-slide JSON files
+- [Phase 04]: MediaRecorder audio/webm;codecs=opus for browser voice recording, HTML5 audio for playback, window.open for ZIP download
 
 ### Roadmap Evolution
 
@@ -104,6 +106,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-31T11:14:34.461Z
-Stopped at: Completed 04-02-PLAN.md
+Last session: 2026-03-31T11:44:50.578Z
+Stopped at: Completed 04-03-PLAN.md
 Resume file: None
