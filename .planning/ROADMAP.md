@@ -101,7 +101,7 @@ Plans:
 
 Plans:
 - [x] 04-01-PLAN.md — TTS pipeline refactor (qwen-tts Base model) + Celery task + voice storage + schemas
-- [ ] 04-02-PLAN.md — FastAPI TTS routes + download endpoint + approve-to-TTS wiring
+- [x] 04-02-PLAN.md — FastAPI TTS routes + download endpoint + approve-to-TTS wiring
 - [ ] 04-03-PLAN.md — Next.js TTS review page (voice recorder + audio preview + download)
 
 ## Progress

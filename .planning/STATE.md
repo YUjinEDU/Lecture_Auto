@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-03-31T11:10:05.621Z"
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-03-31T11:14:34.464Z"
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 15
-  completed_plans: 12
+  completed_plans: 13
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-03-23)
 ## Current Position
 
 Phase: 04 (tts-delivery) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Plan: 2 of 3
 | Phase 03 P02 | 12 | 2 tasks | 8 files |
 | Phase 03 P03 | 25 | 3 tasks | 12 files |
 | Phase 04-tts-delivery P01 | 3 | 2 tasks | 5 files |
+| Phase 04-tts-delivery P02 | 3 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -83,6 +84,8 @@ Recent decisions affecting current work:
 - [Phase 04-tts-delivery]: qwen-tts package (Qwen3TTSModel) replaces raw transformers for cleaner voice-clone API
 - [Phase 04-tts-delivery]: Base model (not CustomVoice) used for voice cloning via generate_voice_clone()
 - [Phase 04-tts-delivery]: Per-professor voice storage under VOICE_REF_ROOT env var, default professor_id for MVP
+- [Phase 04-tts-delivery]: ZIP_STORED compression for WAV/MP4 (already compressed, no CPU overhead)
+- [Phase 04-tts-delivery]: Combined scripts.json array in ZIP instead of per-slide JSON files
 
 ### Roadmap Evolution
 
@@ -101,6 +104,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-31T11:10:05.618Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-03-31T11:14:34.461Z
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None
