@@ -1,7 +1,10 @@
-"""TTS audio synthesis module using Qwen3-TTS with optional voice cloning.
+"""TTS audio synthesis module using qwen-tts (Qwen3-TTS Base) with voice cloning.
 
 Converts per-slide script text to WAV audio files. Supports voice cloning
 from a reference WAV file (3-second clip per TTS-02 requirement).
+
+Uses the ``qwen-tts`` package with ``Qwen3TTSModel`` for inference instead of
+raw transformers, providing voice-clone and custom-voice generation APIs.
 
 Sample rate: 24000 Hz (Qwen3-TTS native rate).
 """
@@ -15,47 +18,48 @@ import soundfile as sf
 
 logger = logging.getLogger(__name__)
 
-# Lazy imports for GPU-heavy dependencies — avoids import errors at test time.
+# Lazy imports for GPU-heavy dependencies -- avoids import errors at test time.
 try:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from qwen_tts import Qwen3TTSModel
 except ImportError:  # pragma: no cover
-    AutoModelForCausalLM = None  # type: ignore[assignment,misc]
-    AutoTokenizer = None  # type: ignore[assignment,misc]
+    Qwen3TTSModel = None  # type: ignore[assignment,misc]
 
 _SAMPLE_RATE = 24000
-_DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+_DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 
-def load_tts(model_path: str = _DEFAULT_MODEL) -> dict:
-    """Load Qwen3-TTS model and tokenizer.
+def load_tts(model_path: str = _DEFAULT_MODEL) -> "Qwen3TTSModel":
+    """Load Qwen3-TTS Base model via qwen-tts package.
 
     Parameters
     ----------
     model_path:
         HuggingFace model identifier or local path.
-        Defaults to ``Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice``.
+        Defaults to ``Qwen/Qwen3-TTS-12Hz-1.7B-Base``.
 
     Returns
     -------
-    dict
-        ``{"model": model, "tokenizer": tokenizer}``
+    Qwen3TTSModel
+        Ready-to-use TTS model instance.
     """
-    if AutoTokenizer is None or AutoModelForCausalLM is None:  # pragma: no cover
+    if Qwen3TTSModel is None:  # pragma: no cover
         raise RuntimeError(
-            "transformers is not installed. "
-            "Run: pip install transformers>=4.57.0"
+            "qwen-tts is not installed. "
+            "Run: pip install qwen-tts"
         )
 
-    logger.info("Loading TTS tokenizer from %s", model_path)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    try:
+        import torch  # type: ignore[import]
+    except ImportError:  # pragma: no cover
+        torch = None  # type: ignore[assignment]
 
     logger.info("Loading TTS model from %s", model_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path, trust_remote_code=True, device_map="auto"
-    )
-
+    kwargs: dict = {"device_map": "cuda:0"}
+    if torch is not None:
+        kwargs["dtype"] = torch.bfloat16
+    model = Qwen3TTSModel.from_pretrained(model_path, **kwargs)
     logger.info("TTS model loaded successfully")
-    return {"model": model, "tokenizer": tokenizer}
+    return model
 
 
 def generate_silence(duration_seconds: float, sample_rate: int = _SAMPLE_RATE) -> np.ndarray:
@@ -78,24 +82,28 @@ def generate_silence(duration_seconds: float, sample_rate: int = _SAMPLE_RATE) -
 
 
 def synthesize_slide(
-    tts_model: dict,
+    model: "Qwen3TTSModel",
     text: str,
     output_path: Path,
     voice_ref_path: Path | None = None,
+    voice_ref_text: str | None = None,
     sample_rate: int = _SAMPLE_RATE,
 ) -> Path:
     """Synthesize audio for a single slide.
 
     Parameters
     ----------
-    tts_model:
-        Dict with ``"model"`` and ``"tokenizer"`` keys from :func:`load_tts`.
+    model:
+        ``Qwen3TTSModel`` instance from :func:`load_tts`.
     text:
         Script text to synthesize. Empty/whitespace-only text produces 1 s silence.
     output_path:
         Destination WAV file path.
     voice_ref_path:
         Optional path to a reference WAV file for voice cloning (3-second clip).
+    voice_ref_text:
+        Optional transcript of the reference audio. When ``None`` and
+        ``voice_ref_path`` is provided, x-vector-only mode is used.
     sample_rate:
         Target sample rate in Hz (default 24000).
 
@@ -108,53 +116,38 @@ def synthesize_slide(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not text or not text.strip():
-        logger.debug("Empty text for slide — generating 1 s silence at %s", output_path)
+        logger.debug("Empty text for slide -- generating 1 s silence at %s", output_path)
         samples = generate_silence(1.0, sample_rate)
         sf.write(str(output_path), samples, sample_rate)
         return output_path
 
-    model = tts_model["model"]
-    tokenizer = tts_model["tokenizer"]
-
-    # Load reference audio for voice cloning if provided.
-    ref_samples: np.ndarray | None = None
-    ref_sr: int | None = None
+    # Voice-cloned generation when a reference is available.
     if voice_ref_path is not None:
-        ref_samples, ref_sr = sf.read(str(voice_ref_path))
-        logger.debug("Loaded voice reference from %s (sr=%d)", voice_ref_path, ref_sr)
-
-    # Qwen3-TTS inference via transformers.
-    # The model accepts raw text tokens and optionally a voice reference embedding.
-    # Exact API depends on model card; using the standard generate() pattern here.
-    inputs = tokenizer(text, return_tensors="pt")
-
-    generate_kwargs: dict = {}
-    if ref_samples is not None:
-        generate_kwargs["voice_ref"] = ref_samples
-        generate_kwargs["voice_ref_sr"] = ref_sr
-
-    with_grad = False  # no gradient computation needed
-    try:
-        import torch  # type: ignore[import]
-        with torch.no_grad():
-            output_ids = model.generate(**inputs, **generate_kwargs)
-    except ImportError:  # pragma: no cover — torch not available in unit tests
-        output_ids = model.generate(**inputs, **generate_kwargs)
-
-    # Decode output tokens to audio samples.
-    # Qwen3-TTS outputs raw float32 waveform samples.
-    if hasattr(output_ids, "cpu"):
-        samples = output_ids.cpu().numpy().flatten().astype(np.float32)
+        logger.debug("Voice-clone synthesis with ref=%s", voice_ref_path)
+        wavs, sr = model.generate_voice_clone(
+            text=text,
+            ref_audio=str(voice_ref_path),
+            ref_text=voice_ref_text or "",
+            x_vector_only_mode=(voice_ref_text is None),
+        )
     else:
-        samples = np.array(output_ids, dtype=np.float32).flatten()
+        # Fallback: default speaker without voice cloning.
+        logger.debug("Default-speaker synthesis (no voice ref)")
+        wavs, sr = model.generate_custom_voice(
+            text=text,
+            speaker="Chelsie",
+            language="ko",
+        )
 
-    sf.write(str(output_path), samples, sample_rate)
+    # wavs is a list of waveform arrays; take the first.
+    samples = np.array(wavs[0], dtype=np.float32).flatten()
+    sf.write(str(output_path), samples, sr or sample_rate)
     logger.debug("Wrote audio to %s (%d samples)", output_path, len(samples))
     return output_path
 
 
 def synthesize_audio(
-    tts_model: dict,
+    model: "Qwen3TTSModel",
     scripts: list[dict],
     audio_dir: Path,
     voice_ref_path: Path | None = None,
@@ -163,8 +156,8 @@ def synthesize_audio(
 
     Parameters
     ----------
-    tts_model:
-        Dict with ``"model"`` and ``"tokenizer"`` keys from :func:`load_tts`.
+    model:
+        ``Qwen3TTSModel`` instance from :func:`load_tts`.
     scripts:
         List of dicts, each with ``"slide_number"`` (int) and ``"script"`` (str) keys.
     audio_dir:
@@ -188,9 +181,57 @@ def synthesize_audio(
 
         logger.info("Synthesizing audio for slide %d -> %s", slide_number, output_path.name)
         wav_path = synthesize_slide(
-            tts_model, text, output_path, voice_ref_path=voice_ref_path
+            model, text, output_path, voice_ref_path=voice_ref_path
         )
         results.append(wav_path)
 
     logger.info("TTS synthesis complete: %d slides -> %s", len(results), audio_dir)
     return results
+
+
+def merge_audio(
+    audio_dir: Path,
+    output_path: Path,
+    sample_rate: int = _SAMPLE_RATE,
+) -> Path:
+    """Merge all per-slide WAV files into a single concatenated WAV.
+
+    Reads all ``audio_*.wav`` files from *audio_dir* in sorted order,
+    concatenates them, and writes the result to *output_path*.
+
+    Parameters
+    ----------
+    audio_dir:
+        Directory containing ``audio_NNN.wav`` files.
+    output_path:
+        Destination path for the merged WAV file.
+    sample_rate:
+        Sample rate for the output file (default 24000).
+
+    Returns
+    -------
+    Path
+        The ``output_path`` that was written.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no ``audio_*.wav`` files are found in *audio_dir*.
+    """
+    audio_dir = Path(audio_dir)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    sorted_files = sorted(audio_dir.glob("audio_*.wav"))
+    # Exclude the merged file itself if it already exists in the directory.
+    sorted_files = [f for f in sorted_files if f.name != output_path.name]
+
+    if not sorted_files:
+        raise FileNotFoundError(f"No audio_*.wav files found in {audio_dir}")
+
+    segments = [sf.read(str(f))[0] for f in sorted_files]
+    merged = np.concatenate(segments)
+    sf.write(str(output_path), merged, sample_rate)
+
+    logger.info("Merged %d audio files -> %s", len(sorted_files), output_path)
+    return output_path
