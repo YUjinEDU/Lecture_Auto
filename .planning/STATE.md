@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-03-31T10:16:38.199Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-31T11:10:05.621Z"
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 12
-  completed_plans: 11
+  total_plans: 15
+  completed_plans: 12
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-23)
 
 **Core value:** PPT 한 장을 넣으면 교수님 스타일의 강의 스크립트와 음성이 나온다
-**Current focus:** Phase 03 — script-ui
+**Current focus:** Phase 04 — tts-delivery
 
 ## Current Position
 
-Phase: 4
-Plan: Not started
+Phase: 04 (tts-delivery) — EXECUTING
+Plan: 2 of 3
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Plan: Not started
 | Phase 02-vlm-pipeline P02 | 340 | 2 tasks | 6 files |
 | Phase 03 P02 | 12 | 2 tasks | 8 files |
 | Phase 03 P03 | 25 | 3 tasks | 12 files |
+| Phase 04-tts-delivery P01 | 3 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,9 @@ Recent decisions affecting current work:
 - [Phase 03]: cpu_queue for script tasks separates Claude subprocess from GPU workload
 - [Phase 03]: Per-slide checkpointing in task (not wrapping generate_scripts()) for resumability
 - [Phase 03]: Direct GPU API calls from Next.js client (NEXT_PUBLIC_GPU_API_URL) for SSE and lower latency
+- [Phase 04-tts-delivery]: qwen-tts package (Qwen3TTSModel) replaces raw transformers for cleaner voice-clone API
+- [Phase 04-tts-delivery]: Base model (not CustomVoice) used for voice cloning via generate_voice_clone()
+- [Phase 04-tts-delivery]: Per-professor voice storage under VOICE_REF_ROOT env var, default professor_id for MVP
 
 ### Roadmap Evolution
 
@@ -97,6 +101,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-31T10:12:28.681Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-03-31T11:10:05.618Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None
