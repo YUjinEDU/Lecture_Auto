@@ -22,10 +22,10 @@ PPT 한 장을 넣으면 교수님 스타일의 강의 스크립트와 음성이
 ### Active
 
 - [ ] 강의 메타데이터 입력 (강의명, 대상, 시간, 스타일)
-- [ ] 슬라이드별 스크립트 검수/편집 UI
+- [x] 슬라이드별 스크립트 검수/편집 UI — Validated in Phase 3: script-ui (UI-02)
 - [x] 비동기 작업 관리 (제출 → 상태 폴링 → 결과 반환) — Validated in Phase 2: vlm-pipeline (INFRA-02)
-- [ ] 연구실 포털 통합 (교수님 내부 포털 페이지)
-- [ ] 슬라이드 단위 부분 재생성
+- [x] 연구실 포털 통합 (교수님 내부 포털 페이지) — Validated in Phase 3: script-ui (UI-01)
+- [x] 슬라이드 단위 부분 재생성 — Validated in Phase 3: script-ui (UI-05)
 - [ ] 최종 패키지 다운로드 (스크립트 + 음성)
 
 ### Out of Scope
@@ -182,4 +182,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-24 after Phase 2 (vlm-pipeline) complete — 비동기 Celery+Redis VLM 파이프라인, FastAPI 작업 라우트, SSE 진행률 스트리밍 구축*
+*Last updated: 2026-03-31 after Phase 3 (script-ui) complete — PyMuPDF PDF 파서, 스크립트 Celery 태스크, FastAPI 스크립트 라우트, Next.js 2-패널 검수 UI 구축*
