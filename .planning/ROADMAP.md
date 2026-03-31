@@ -87,7 +87,7 @@ Plans:
 Plans:
 - [x] 03-01-PLAN.md — PyMuPDF PDF parser with title heuristic + pdfplumber table fallback
 - [x] 03-02-PLAN.md — Script Celery task + FastAPI script CRUD/regenerate/approve routes
-- [ ] 03-03-PLAN.md — Next.js 2-panel script review UI (thumbnails + editor + SSE progress)
+- [x] 03-03-PLAN.md — Next.js 2-panel script review UI (thumbnails + editor + SSE progress)
 
 ### Phase 4: TTS + Delivery
 **Goal**: 교수님이 승인한 스크립트로 교수님 목소리 음성이 생성되고 최종 패키지를 다운로드할 수 있다

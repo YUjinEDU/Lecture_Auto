@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-03-30T08:00:36.542Z"
+stopped_at: Completed 03-03-PLAN.md
+last_updated: "2026-03-31T10:12:28.683Z"
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 12
-  completed_plans: 9
+  completed_plans: 11
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-03-23)
 ## Current Position
 
 Phase: 03 (script-ui) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ Plan: 2 of 3
 | Phase 02-vlm-pipeline P01 | 15 | 2 tasks | 15 files |
 | Phase 02-vlm-pipeline P02 | 340 | 2 tasks | 6 files |
 | Phase 03 P02 | 12 | 2 tasks | 8 files |
+| Phase 03 P03 | 25 | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -77,6 +78,7 @@ Recent decisions affecting current work:
 - [Phase 02-vlm-pipeline]: SSE ping=15s keep-alive to prevent proxy timeouts; auth middleware deferred to INFRA-03
 - [Phase 03]: cpu_queue for script tasks separates Claude subprocess from GPU workload
 - [Phase 03]: Per-slide checkpointing in task (not wrapping generate_scripts()) for resumability
+- [Phase 03]: Direct GPU API calls from Next.js client (NEXT_PUBLIC_GPU_API_URL) for SSE and lower latency
 
 ### Roadmap Evolution
 
@@ -95,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-30T08:00:36.539Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-03-31T10:12:28.681Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None
