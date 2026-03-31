@@ -96,8 +96,13 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. 교수님 3초 오디오 샘플로 Voice Clone을 등록하면 이후 TTS가 교수님 목소리로 생성된다
   2. 각 슬라이드 음성 파일을 개별 미리듣기로 확인한 후 전체 병합 음성을 생성할 수 있다
-  3. 최종 패키지(스크립트 JSON + 슬라이드별 WAV + 병합 WAV)를 포털에서 다운로드할 수 있다
-**Plans**: TBD
+  3. 최종 패키지(스크립트 JSON + 슬라이드별 WAV + 병합 WAV + 강의 MP4)를 포털에서 다운로드할 수 있다
+**Plans**: 3 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — TTS pipeline refactor (qwen-tts Base model) + Celery task + voice storage + schemas
+- [ ] 04-02-PLAN.md — FastAPI TTS routes + download endpoint + approve-to-TTS wiring
+- [ ] 04-03-PLAN.md — Next.js TTS review page (voice recorder + audio preview + download)
 
 ## Progress
 
@@ -110,4 +115,4 @@ Phases execute in numeric order: 1 → 01.1 → 2 → 3 → 4
 | 01.1 MVP Demo | 2/3 | Complete    | 2026-03-23 |
 | 2. VLM Pipeline | 1/2 | In Progress | - |
 | 3. Script + UI | 0/3 | Not started | - |
-| 4. TTS + Delivery | 0/TBD | Not started | - |
+| 4. TTS + Delivery | 0/3 | Not started | - |
