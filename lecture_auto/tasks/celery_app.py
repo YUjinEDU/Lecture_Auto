@@ -30,6 +30,7 @@ celery_app.conf.update(
     task_routes={
         "script.*": {"queue": "cpu_queue"},
         "vlm.*": {"queue": "gpu_queue"},
+        "tts.*": {"queue": "gpu_queue"},
     },
 )
 
