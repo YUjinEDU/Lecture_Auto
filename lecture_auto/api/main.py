@@ -4,6 +4,7 @@ Provides CORS-enabled API with lifespan management (Redis cleanup on shutdown).
 Auth middleware (Supabase JWT) is deferred to Phase 1 Plan 04 scope (INFRA-03).
 """
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -28,7 +29,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tighten in production
+    allow_origins=os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -254,8 +254,12 @@ def _resolve_voice_reference(job_id: str) -> tuple[Path | None, str | None]:
 
 
 def restore_job_from_disk(job_id: str) -> dict | None:
+    import logging
+
     from lecture_auto.demo.state import upsert_slide, update_stage, set_artifact
     from lecture_auto.schemas.manifest import SlideManifest
+
+    logger = logging.getLogger(__name__)
 
     existing = get_job(job_id)
     if existing is not None:
@@ -265,85 +269,96 @@ def restore_job_from_disk(job_id: str) -> dict | None:
     if not job_paths.job_dir.exists():
         return None
 
-    snapshot = _load_job_snapshot(job_id)
+    try:
+        snapshot = _load_job_snapshot(job_id)
 
-    input_files = sorted(job_paths.input_dir.glob("*.pdf"))
-    filename = input_files[0].name if input_files else f"{job_id}.pdf"
-    lecture_name = Path(filename).stem
-    target_minutes = 8
-    manifest: SlideManifest | None = None
-    if job_paths.manifest_path.exists():
-        manifest = SlideManifest.model_validate_json(job_paths.manifest_path.read_text(encoding="utf-8"))
-        lecture_name = manifest.lecture_name
-        target_minutes = manifest.target_minutes
+        input_files = sorted(job_paths.input_dir.glob("*.pdf"))
+        filename = input_files[0].name if input_files else f"{job_id}.pdf"
+        lecture_name = Path(filename).stem
+        target_minutes = 8
+        manifest: SlideManifest | None = None
+        if job_paths.manifest_path.exists():
+            manifest = SlideManifest.model_validate_json(job_paths.manifest_path.read_text(encoding="utf-8"))
+            lecture_name = manifest.lecture_name
+            target_minutes = manifest.target_minutes
 
-    job = create_job(
-        job_id,
-        filename,
-        lecture_name,
-        target_minutes,
-        settings=(snapshot or {}).get("settings"),
-        glossary=(snapshot or {}).get("glossary"),
-        version_history=(snapshot or {}).get("version_history"),
-        pipeline_meta=(snapshot or {}).get("pipeline_meta"),
-        library=(snapshot or {}).get("library"),
-        recovery=(snapshot or {}).get("recovery"),
-    )
-    append_event(job_id, "package", "디스크에서 기존 작업 메타데이터 복구")
+        job = create_job(
+            job_id,
+            filename,
+            lecture_name,
+            target_minutes,
+            settings=(snapshot or {}).get("settings"),
+            glossary=(snapshot or {}).get("glossary"),
+            version_history=(snapshot or {}).get("version_history"),
+            pipeline_meta=(snapshot or {}).get("pipeline_meta"),
+            library=(snapshot or {}).get("library"),
+            recovery=(snapshot or {}).get("recovery"),
+        )
+        append_event(job_id, "package", "디스크에서 기존 작업 메타데이터 복구")
 
-    if job_paths.manifest_path.exists():
-        update_stage(job_id, "parse", status="done", progress=100, detail="파싱 결과 복구 완료")
-    if list(job_paths.rendered_dir.glob("slide_*.png")):
-        update_stage(job_id, "render", status="done", progress=100, detail="슬라이드 미리보기 복구 완료")
+        if job_paths.manifest_path.exists():
+            update_stage(job_id, "parse", status="done", progress=100, detail="파싱 결과 복구 완료")
+        if list(job_paths.rendered_dir.glob("slide_*.png")):
+            update_stage(job_id, "render", status="done", progress=100, detail="슬라이드 미리보기 복구 완료")
 
-    slide_count = manifest.slide_count if manifest else 0
-    if slide_count and manifest:
-        from lecture_auto.demo.ai import _extract_title, _evidence_payload
-        from lecture_auto.demo.synthesis import _load_saved_notes
+        slide_count = manifest.slide_count if manifest else 0
+        if slide_count and manifest:
+            from lecture_auto.demo.ai import _extract_title, _evidence_payload
+            from lecture_auto.demo.synthesis import _load_saved_notes
 
-        notes = _load_saved_notes(job_paths, manifest)
-        scripts = []
-        for idx, slide in enumerate(manifest.slides, start=1):
-            slide_payload: dict = {
-                "title": _extract_title(slide),
-                "png_url": f"/demo/api/jobs/{job_id}/slides/{slide.slide_number}/png",
-            }
-            note = notes[idx - 1]
-            if note:
-                slide_payload["vlm_note"] = note
-            script_path = job_paths.scripts_dir / f"script_{slide.slide_number:03d}.json"
-            if script_path.exists():
-                script = json.loads(script_path.read_text(encoding="utf-8"))
-                scripts.append(script)
-                slide_payload["script"] = script
-                slide_payload["evidence"] = _evidence_payload(slide, note, script)
-            else:
-                slide_payload["evidence"] = _evidence_payload(slide, note, None)
-            wav_path = job_paths.audio_dir / f"audio_{slide.slide_number:03d}.wav"
-            if wav_path.exists():
-                slide_payload["audio_url"] = f"/demo/api/jobs/{job_id}/audio/{slide.slide_number}/wav"
-            upsert_slide(job_id, slide.slide_number, slide_payload)
+            notes = _load_saved_notes(job_paths, manifest)
+            scripts = []
+            for idx, slide in enumerate(manifest.slides, start=1):
+                slide_payload: dict = {
+                    "title": _extract_title(slide),
+                    "png_url": f"/demo/api/jobs/{job_id}/slides/{slide.slide_number}/png",
+                }
+                note = notes[idx - 1]
+                if note:
+                    slide_payload["vlm_note"] = note
+                script_path = job_paths.scripts_dir / f"script_{slide.slide_number:03d}.json"
+                if script_path.exists():
+                    try:
+                        script = json.loads(script_path.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError, KeyError) as e:
+                        logger.warning("Failed to restore job %s from disk: %s", job_id, e)
+                        script = None
+                    if script is not None:
+                        scripts.append(script)
+                        slide_payload["script"] = script
+                        slide_payload["evidence"] = _evidence_payload(slide, note, script)
+                    else:
+                        slide_payload["evidence"] = _evidence_payload(slide, note, None)
+                else:
+                    slide_payload["evidence"] = _evidence_payload(slide, note, None)
+                wav_path = job_paths.audio_dir / f"audio_{slide.slide_number:03d}.wav"
+                if wav_path.exists():
+                    slide_payload["audio_url"] = f"/demo/api/jobs/{job_id}/audio/{slide.slide_number}/wav"
+                upsert_slide(job_id, slide.slide_number, slide_payload)
 
-        if any(notes):
-            update_stage(job_id, "vlm", status="done", progress=100, detail="VLM 분석 결과 복구 완료")
-        if scripts:
-            update_stage(job_id, "script", status="done", progress=100, detail="스크립트 복구 완료")
-        if list(job_paths.audio_dir.glob("audio_*.wav")):
-            update_stage(job_id, "tts", status="done", progress=100, detail="생성된 음성 복구 완료")
-            set_artifact(job_id, "merged_audio_url", f"/demo/api/jobs/{job_id}/audio/merged")
-        if list(job_paths.artifacts_dir.glob("lecture_*.mp4")):
-            update_stage(job_id, "video", status="done", progress=100, detail="강의 영상 복구 완료")
-            update_stage(job_id, "package", status="done", progress=100, detail="다운로드 산출물 복구 완료")
-            set_artifact(job_id, "video_url", f"/demo/api/jobs/{job_id}/video")
-            set_artifact(job_id, "package_url", f"/demo/api/jobs/{job_id}/package/download")
+            if any(notes):
+                update_stage(job_id, "vlm", status="done", progress=100, detail="VLM 분석 결과 복구 완료")
+            if scripts:
+                update_stage(job_id, "script", status="done", progress=100, detail="스크립트 복구 완료")
+            if list(job_paths.audio_dir.glob("audio_*.wav")):
+                update_stage(job_id, "tts", status="done", progress=100, detail="생성된 음성 복구 완료")
+                set_artifact(job_id, "merged_audio_url", f"/demo/api/jobs/{job_id}/audio/merged")
+            if list(job_paths.artifacts_dir.glob("lecture_*.mp4")):
+                update_stage(job_id, "video", status="done", progress=100, detail="강의 영상 복구 완료")
+                update_stage(job_id, "package", status="done", progress=100, detail="다운로드 산출물 복구 완료")
+                set_artifact(job_id, "video_url", f"/demo/api/jobs/{job_id}/video")
+                set_artifact(job_id, "package_url", f"/demo/api/jobs/{job_id}/package/download")
 
-    _, voice_label = _resolve_voice_reference(job_id)
-    if voice_label:
-        update_metadata(job_id, voice_reference_name=voice_label)
+        _, voice_label = _resolve_voice_reference(job_id)
+        if voice_label:
+            update_metadata(job_id, voice_reference_name=voice_label)
 
-    _refresh_library_artifacts(job_id)
-    _save_job_snapshot(job_id)
-    return get_job(job_id)
+        _refresh_library_artifacts(job_id)
+        _save_job_snapshot(job_id)
+        return get_job(job_id)
+    except (json.JSONDecodeError, OSError, KeyError) as e:
+        logger.warning("Failed to restore job %s from disk: %s", job_id, e)
+        return None
 
 
 def restore_all_jobs_from_disk() -> list[dict]:
