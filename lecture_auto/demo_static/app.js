@@ -1,3 +1,4 @@
+// ─── State ───────────────────────────────────────────────────────
 const state = {
   jobs: [],
   job: null,
@@ -7,92 +8,87 @@ const state = {
   mediaStream: null,
   audioChunks: [],
   voiceBlob: null,
-  activeTab: 'create',
+  activeTab: 'pipeline',
+  currentView: 'home',
 };
 
 // ─── DOM refs ────────────────────────────────────────────────────
-const uploadForm = document.querySelector("#uploadForm");
-const uploadMessage = document.querySelector("#uploadMessage");
-const submitButton = document.querySelector("#submitButton");
-const jobList = document.querySelector("#jobList");
-const stageGrid = document.querySelector("#stageGrid");
-const eventList = document.querySelector("#eventList");
-const jobControls = document.querySelector("#jobControls");
-const slideThumbStrip = document.querySelector("#slideThumbStrip");
-const slideDetail = document.querySelector("#slideDetail");
-const outputsArea = document.querySelector("#outputsArea");
-const lastUpdated = document.querySelector("#lastUpdated");
-const evidenceModal = document.querySelector("#evidenceModal");
-const evidenceModalBody = document.querySelector("#evidenceModalBody");
-const closeEvidenceModal = document.querySelector("#closeEvidenceModal");
+const uploadForm        = document.querySelector('#uploadForm');
+const submitButton      = document.querySelector('#submitButton');
+const createMessage     = document.querySelector('#createMessage');
+const uploadMessage     = document.querySelector('#uploadMessage');
+const lectureGrid       = document.querySelector('#lectureGrid');
+const emptyState        = document.querySelector('#emptyState');
+const jobCountBadge     = document.querySelector('#jobCountBadge');
+const detailLectureName = document.querySelector('#detailLectureName');
+const stageGrid         = document.querySelector('#stageGrid');
+const eventList         = document.querySelector('#eventList');
+const jobControls       = document.querySelector('#jobControls');
+const slideThumbStrip   = document.querySelector('#slideThumbStrip');
+const slideDetail       = document.querySelector('#slideDetail');
+const outputsArea       = document.querySelector('#outputsArea');
+const lastUpdated       = document.querySelector('#lastUpdated');
+const evidenceModal     = document.querySelector('#evidenceModal');
+const evidenceModalBody = document.querySelector('#evidenceModalBody');
+const closeEvidenceModal = document.querySelector('#closeEvidenceModal');
+const modalCreate       = document.querySelector('#modalCreate');
+
+// ─── View routing ─────────────────────────────────────────────────
+function showView(name) {
+  state.currentView = name;
+  document.querySelector('#view-home')?.classList.toggle('view--hidden', name !== 'home');
+  document.querySelector('#view-detail')?.classList.toggle('view--hidden', name !== 'detail');
+}
+
+function navigateToDetail(jobId) {
+  window.location.hash = jobId;
+  showView('detail');
+  switchTab('pipeline');
+  startPolling(jobId);
+}
+
+function navigateHome() {
+  window.location.hash = '';
+  showView('home');
+  stopPolling();
+  state.job = null;
+  state.selectedSlide = null;
+  renderHome();
+}
 
 // ─── Tab navigation ──────────────────────────────────────────────
-const TABS = ['create', 'pipeline', 'review', 'export'];
+const TABS = ['pipeline', 'review', 'settings', 'export'];
 
 function switchTab(name) {
   if (!TABS.includes(name)) return;
   state.activeTab = name;
   TABS.forEach(tab => {
     const active = tab === name;
-    // desktop tabs
     document.querySelector(`.tab-bar [data-tab="${tab}"]`)?.classList.toggle('active', active);
-    // bottom tabs
-    document.querySelector(`.bottom-nav [data-tab="${tab}"]`)?.classList.toggle('active', active);
-    // panels
     document.querySelector(`#panel-${tab}`)?.classList.toggle('hidden', !active);
   });
-  // Sync mobile status pill
-  const pill = document.querySelector('#mobileStatus');
-  const src = document.querySelector('#metricStatus');
-  if (pill && src) {
-    pill.textContent = src.textContent;
-    pill.dataset.status = src.dataset.status;
-  }
-  closeDrawer();
 }
 
 document.querySelectorAll('[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
-document.querySelector('#showCreateBtn')?.addEventListener('click', () => switchTab('create'));
-
-// ─── Drawer ───────────────────────────────────────────────────────
-const appSidebar   = document.querySelector('#appSidebar');
-const drawerToggle = document.querySelector('#drawerToggle');
-const drawerOverlay = document.querySelector('#drawerOverlay');
-
-function openDrawer() {
-  appSidebar?.classList.add('drawer-open');
-  drawerOverlay?.classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-}
-
-function closeDrawer() {
-  appSidebar?.classList.remove('drawer-open');
-  drawerOverlay?.classList.add('hidden');
-  document.body.style.overflow = '';
-}
-
-drawerToggle?.addEventListener('click', openDrawer);
-drawerOverlay?.addEventListener('click', closeDrawer);
-
 // ─── Helpers ─────────────────────────────────────────────────────
 function statusLabel(status) {
   return {
-    queued:   '대기',
-    running:  '진행 중',
-    stopping: '중지 중',
-    stopped:  '중지됨',
-    completed:'완료',
-    failed:   '실패',
-    done:     '완료',
-    pending:  '대기',
+    queued:    '대기',
+    running:   '진행 중',
+    stopping:  '중지 중',
+    stopped:   '중지됨',
+    completed: '완료',
+    failed:    '실패',
+    done:      '완료',
+    pending:   '대기',
   }[status] ?? status;
 }
 
 function prettyTime(value) {
-  if (!value) return '아직 시작되지 않음';
+  if (!value) return '';
   return `${new Date(value).toLocaleTimeString()} 업데이트`;
 }
 
@@ -122,7 +118,7 @@ function buildDiffHtml(previous = '', current = '') {
   if (!previous && !current) return { before: '<p>이전 버전이 없습니다.</p>', after: '<p>현재 버전이 없습니다.</p>' };
   if (previous === current) return {
     before: `<p>${escapeHtml(previous || '이전 버전 없음')}</p>`,
-    after: `<p>${escapeHtml(current || '현재 버전 없음')}</p>`,
+    after:  `<p>${escapeHtml(current  || '현재 버전 없음')}</p>`,
   };
   const oldS = previous.split(/(?<=[.!?])\s+/).filter(Boolean);
   const newS = current.split(/(?<=[.!?])\s+/).filter(Boolean);
@@ -159,8 +155,7 @@ async function api(path, options = {}) {
 // ─── Data fetching ────────────────────────────────────────────────
 async function fetchJobs() {
   state.jobs = await api('/demo/api/jobs');
-  renderJobs();
-  setMetrics();
+  renderHome();
 }
 
 async function fetchJob(jobId) {
@@ -178,11 +173,9 @@ function stopPolling() {
 
 function startPolling(jobId) {
   stopPolling();
-  // Always go to pipeline tab when a job is selected or started
-  switchTab('pipeline');
 
   const POLL_ACTIVE_MS = 4000;
-  const POLL_IDLE_MS = 15000;
+  const POLL_IDLE_MS   = 15000;
 
   const tick = async () => {
     try {
@@ -192,19 +185,17 @@ function startPolling(jobId) {
       if (['completed', 'failed', 'stopped', 'error'].includes(status)) {
         stopPolling();
         submitButton.disabled = false;
-        // Auto-navigate to review when completed
         if (status === 'completed' && state.job?.slides?.length) {
           switchTab('review');
         }
         return;
       }
-      // Adjust interval: active job polls fast, idle polls slow
       const targetMs = jobId ? POLL_ACTIVE_MS : POLL_IDLE_MS;
       if (!state.pollTimer) {
         state.pollTimer = window.setInterval(tick, targetMs);
       }
     } catch (error) {
-      uploadMessage.textContent = error.message;
+      if (uploadMessage) uploadMessage.textContent = error.message;
       stopPolling();
       submitButton.disabled = false;
     }
@@ -213,46 +204,63 @@ function startPolling(jobId) {
   state.pollTimer = window.setInterval(tick, POLL_ACTIVE_MS);
 }
 
-// ─── Metrics ──────────────────────────────────────────────────────
-function setMetrics() {
-  const jobName = state.job ? state.job.lecture_name : '선택된 작업 없음';
-  const jobStatus = state.job?.status ?? '';
-  const label = state.job ? statusLabel(jobStatus) : '대기';
+// ─── Home view ────────────────────────────────────────────────────
+function renderHome() {
+  if (!jobCountBadge || !lectureGrid || !emptyState) return;
 
-  document.querySelector('#metricJob').textContent = jobName;
-  document.querySelector('#metricJobs').textContent = state.jobs.length;
+  jobCountBadge.textContent = state.jobs.length;
 
-  [document.querySelector('#metricStatus'), document.querySelector('#mobileStatus')].forEach(pill => {
-    if (!pill) return;
-    pill.textContent = label;
-    pill.dataset.status = jobStatus;
-  });
-}
-
-// ─── Job List ─────────────────────────────────────────────────────
-function renderJobs() {
   if (!state.jobs.length) {
-    jobList.innerHTML = `<p class="empty-hint-sm">강의가 아직 없습니다</p>`;
+    lectureGrid.innerHTML = '';
+    emptyState.classList.remove('hidden');
     return;
   }
 
-  jobList.innerHTML = state.jobs.map(job => `
-    <button class="job-item ${state.job?.job_id === job.job_id ? 'active' : ''}" data-job="${job.job_id}">
-      <span class="job-item-name">${escapeHtml(job.library?.display_name ?? job.lecture_name)}</span>
-      <span class="job-item-file">${escapeHtml(job.filename)}</span>
-      <div class="job-item-meta">
-        <span class="job-status-dot" data-status="${job.status}"></span>
-        <span class="job-item-status">${statusLabel(job.status)} · ${job.target_minutes}분</span>
-      </div>
-    </button>
-  `).join('');
+  emptyState.classList.add('hidden');
+  lectureGrid.innerHTML = state.jobs.map(job => {
+    const name = escapeHtml(job.lecture_name ?? job.filename);
+    const file = escapeHtml(job.filename);
+    const st   = job.status ?? 'queued';
+    const mins = job.target_minutes ?? 8;
+    const updatedAt = job.updated_at ? new Date(job.updated_at).toLocaleString() : '';
+    return `
+      <button class="lecture-card" data-status="${st}" data-job="${job.job_id}">
+        <div class="card-status-row">
+          <span class="card-status-dot"></span>
+          <span class="card-status-label">${statusLabel(st)}</span>
+        </div>
+        <span class="card-title">${name}</span>
+        <span class="card-filename">${file}</span>
+        <div class="card-meta">
+          <div class="card-meta-left">
+            <span class="card-meta-item">${mins}분 목표</span>
+            ${updatedAt ? `<span class="card-meta-item">${updatedAt}</span>` : ''}
+          </div>
+          <svg class="card-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </button>
+    `;
+  }).join('');
 
-  jobList.querySelectorAll('.job-item').forEach(btn => {
-    btn.addEventListener('click', () => {
-      window.location.hash = btn.dataset.job;
-      startPolling(btn.dataset.job);
-    });
+  lectureGrid.querySelectorAll('.lecture-card').forEach(card => {
+    card.addEventListener('click', () => navigateToDetail(card.dataset.job));
   });
+}
+
+// ─── Metrics (detail topbar) ──────────────────────────────────────
+function setDetailTopbar() {
+  if (!state.job) return;
+  if (detailLectureName) detailLectureName.textContent = state.job.lecture_name ?? state.job.filename ?? '';
+
+  const statusPill = document.querySelector('#metricStatus');
+  if (statusPill) {
+    statusPill.textContent = statusLabel(state.job.status ?? '');
+    statusPill.dataset.status = state.job.status ?? '';
+  }
+
+  if (lastUpdated) lastUpdated.textContent = prettyTime(state.job.updated_at);
 }
 
 // ─── Stage stepper ────────────────────────────────────────────────
@@ -298,19 +306,16 @@ function renderEvents() {
       <div>${escapeHtml(ev.message)}</div>
     </article>
   `).join('');
-  lastUpdated.textContent = prettyTime(state.job.updated_at);
 }
 
-// ─── Job Controls ─────────────────────────────────────────────────
+// ─── Job Controls (Settings tab) ──────────────────────────────────
 function renderJobControls() {
   if (!state.job) {
-    jobControls.className = 'empty-state-card';
-    jobControls.textContent = '작업을 선택하면 설정 패널이 열립니다.';
+    jobControls.innerHTML = `<p class="empty-hint-sm">강의를 선택하면 설정 패널이 열립니다.</p>`;
     return;
   }
 
   const s = state.job?.settings ?? {};
-  jobControls.className = '';
   jobControls.innerHTML = `
     <div class="control-card">
       <div class="control-top">
@@ -406,56 +411,54 @@ function renderJobControls() {
     </div>
   `;
 
-  // Bind stop button
   document.querySelector('#stopJobButton')?.addEventListener('click', async () => {
     if (!confirm('파이프라인을 중지할까요? 현재 단계가 완료된 후 멈춥니다.')) return;
     await api(`/demo/api/jobs/${state.job.job_id}/stop`, { method: 'POST' });
-    uploadMessage.textContent = '중지 요청이 전송되었습니다.';
+    if (uploadMessage) uploadMessage.textContent = '중지 요청이 전송되었습니다.';
   });
 
-  // Bind rerun buttons
   document.querySelector('#rerunAllButton').addEventListener('click', async () => {
-    uploadMessage.textContent = '전체 파이프라인을 다시 생성하고 있습니다.';
+    if (uploadMessage) uploadMessage.textContent = '전체 파이프라인을 다시 생성하고 있습니다.';
     await api(`/demo/api/jobs/${state.job.job_id}/rerun`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        target_minutes: Number(document.querySelector('#targetMinutesInput').value || 8),
-        audience: document.querySelector('#audienceInput').value,
+        target_minutes:    Number(document.querySelector('#targetMinutesInput').value || 8),
+        audience:          document.querySelector('#audienceInput').value,
         explanation_style: document.querySelector('#styleInput').value,
-        lecture_density: document.querySelector('#densityInput').value,
-        learner_profile: document.querySelector('#learnerProfileInput').value.trim(),
-        delivery_notes: document.querySelector('#deliveryNotesInput').value.trim(),
+        lecture_density:   document.querySelector('#densityInput').value,
+        learner_profile:   document.querySelector('#learnerProfileInput').value.trim(),
+        delivery_notes:    document.querySelector('#deliveryNotesInput').value.trim(),
       }),
     });
     startPolling(state.job.job_id);
   });
 
   document.querySelector('#rerunTtsButton').addEventListener('click', async () => {
-    uploadMessage.textContent = '전체 TTS를 다시 생성하고 있습니다.';
+    if (uploadMessage) uploadMessage.textContent = '전체 TTS를 다시 생성하고 있습니다.';
     await api(`/demo/api/jobs/${state.job.job_id}/actions/rerun-tts`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
     });
     await fetchJob(state.job.job_id);
-    uploadMessage.textContent = 'TTS 재실행이 완료되었습니다.';
+    if (uploadMessage) uploadMessage.textContent = 'TTS 재실행이 완료되었습니다.';
   });
 
   document.querySelector('#rerunVideoButton').addEventListener('click', async () => {
-    uploadMessage.textContent = '영상을 다시 조립하고 있습니다.';
+    if (uploadMessage) uploadMessage.textContent = '영상을 다시 조립하고 있습니다.';
     await api(`/demo/api/jobs/${state.job.job_id}/actions/rerun-video`, { method: 'POST' });
     await fetchJob(state.job.job_id);
-    uploadMessage.textContent = '영상 재조립이 완료되었습니다.';
+    if (uploadMessage) uploadMessage.textContent = '영상 재조립이 완료되었습니다.';
   });
 
   bindVoiceAndGlossary();
 }
 
 function bindVoiceAndGlossary() {
-  const recordButton = document.querySelector('#recordButton');
-  const stopButton = document.querySelector('#stopButton');
+  const recordButton      = document.querySelector('#recordButton');
+  const stopButton        = document.querySelector('#stopButton');
   const uploadVoiceButton = document.querySelector('#uploadVoiceButton');
-  const voiceStatus = document.querySelector('#voiceStatus');
-  const voicePreview = document.querySelector('#voicePreview');
+  const voiceStatus       = document.querySelector('#voiceStatus');
+  const voicePreview      = document.querySelector('#voicePreview');
 
   if (!navigator.mediaDevices?.getUserMedia) {
     voiceStatus.textContent = '현재 브라우저는 마이크 녹음을 지원하지 않습니다.';
@@ -513,13 +516,13 @@ function bindVoiceAndGlossary() {
 
   document.querySelector('#saveGlossaryButton').addEventListener('click', async () => {
     const glossary = parseGlossaryInput(document.querySelector('#glossaryEditor').value);
-    uploadMessage.textContent = '발음 사전을 저장하고 있습니다.';
+    if (uploadMessage) uploadMessage.textContent = '발음 사전을 저장하고 있습니다.';
     await api(`/demo/api/jobs/${state.job.job_id}/glossary`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ glossary }),
     });
     await fetchJob(state.job.job_id);
-    uploadMessage.textContent = '발음 사전이 저장되었습니다.';
+    if (uploadMessage) uploadMessage.textContent = '발음 사전이 저장되었습니다.';
   });
 }
 
@@ -547,7 +550,7 @@ function renderSlideStrip() {
 
 // ─── Evidence modal ───────────────────────────────────────────────
 function buildMetaMarkup() {
-  const meta = state.job?.pipeline_meta ?? {};
+  const meta     = state.job?.pipeline_meta ?? {};
   const recovery = state.job?.recovery ?? {};
   return `
     <div class="meta-list">
@@ -565,8 +568,8 @@ function buildMetaMarkup() {
 
 function openEvidenceModal(slide) {
   if (!slide || !state.job) return;
-  const note = slide.vlm_note ?? {};
-  const script = slide.script ?? {};
+  const note     = slide.vlm_note ?? {};
+  const script   = slide.script ?? {};
   const evidence = slide.evidence ?? {};
   evidenceModalBody.innerHTML = `
     <div class="modal-section">
@@ -610,23 +613,21 @@ function renderSlideDetail() {
     return;
   }
 
-  const note = slide.vlm_note ?? {};
-  const script = slide.script ?? {};
-  const history = (state.job.version_history ?? []).filter(e => e.slide_number === slide.slide_number);
+  const note     = slide.vlm_note ?? {};
+  const script   = slide.script ?? {};
+  const history  = (state.job.version_history ?? []).filter(e => e.slide_number === slide.slide_number);
   const lastEdit = [...history].reverse().find(e => e.kind === 'script_edit');
   const prevScript = lastEdit?.payload?.previous_script ?? '';
-  const diffHtml = buildDiffHtml(prevScript, script.script ?? '');
+  const diffHtml   = buildDiffHtml(prevScript, script.script ?? '');
 
   slideDetail.className = 'slide-detail';
   slideDetail.innerHTML = `
-    <!-- Row 1: 슬라이드 이미지 -->
     <div class="slide-image-row">
       <div class="slide-preview">
         <img src="${slide.png_url}" alt="Slide ${slide.slide_number}" />
       </div>
     </div>
 
-    <!-- Row 2: 스크립트 에디터 -->
     <article class="detail-card">
       <div class="card-header-row">
         <h3>슬라이드 ${slide.slide_number} 스크립트</h3>
@@ -640,7 +641,6 @@ function renderSlideDetail() {
       </div>
     </article>
 
-    <!-- Row 3: 슬라이드 음성 -->
     <article class="detail-card">
       <h3>슬라이드 음성</h3>
       ${slide.audio_url
@@ -650,7 +650,6 @@ function renderSlideDetail() {
       }
     </article>
 
-    <!-- Row 4: 핵심 포인트 + diff + 이력 -->
     <div class="slide-bottom-grid">
       <article class="detail-card">
         <h3>핵심 포인트</h3>
@@ -677,23 +676,23 @@ function renderSlideDetail() {
 
   document.querySelector('#saveScriptButton').addEventListener('click', async () => {
     const newScript = document.querySelector('#scriptEditor').value.trim();
-    if (!newScript) { uploadMessage.textContent = '스크립트를 비울 수는 없습니다.'; return; }
-    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 스크립트를 저장하고 미디어를 재생성하고 있습니다.`;
+    if (!newScript) { if (uploadMessage) uploadMessage.textContent = '스크립트를 비울 수는 없습니다.'; return; }
+    if (uploadMessage) uploadMessage.textContent = `슬라이드 ${slide.slide_number} 스크립트를 저장하고 미디어를 재생성하고 있습니다.`;
     await api(`/demo/api/jobs/${state.job.job_id}/slides/${slide.slide_number}/script`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ script: newScript }),
     });
     await fetchJob(state.job.job_id);
-    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 반영이 완료되었습니다.`;
+    if (uploadMessage) uploadMessage.textContent = `슬라이드 ${slide.slide_number} 반영이 완료되었습니다.`;
   });
 
   document.querySelector('#slideTtsButton').addEventListener('click', async () => {
-    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 음성을 다시 생성하고 있습니다.`;
+    if (uploadMessage) uploadMessage.textContent = `슬라이드 ${slide.slide_number} 음성을 다시 생성하고 있습니다.`;
     await api(`/demo/api/jobs/${state.job.job_id}/actions/rerun-tts`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ slide_number: slide.slide_number }),
     });
     await fetchJob(state.job.job_id);
-    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 음성 갱신이 완료되었습니다.`;
+    if (uploadMessage) uploadMessage.textContent = `슬라이드 ${slide.slide_number} 음성 갱신이 완료되었습니다.`;
   });
 }
 
@@ -728,9 +727,9 @@ function renderOutputs() {
   `;
 }
 
-// ─── Render ───────────────────────────────────────────────────────
+// ─── Render (detail view) ─────────────────────────────────────────
 function render() {
-  setMetrics();
+  setDetailTopbar();
   renderStages();
   renderEvents();
   renderJobControls();
@@ -739,27 +738,50 @@ function render() {
   renderOutputs();
 }
 
+// ─── Create modal ─────────────────────────────────────────────────
+function openCreateModal() {
+  modalCreate.classList.remove('hidden');
+  modalCreate.setAttribute('aria-hidden', 'false');
+  if (createMessage) createMessage.textContent = '';
+}
+
+function closeCreateModal() {
+  modalCreate.classList.add('hidden');
+  modalCreate.setAttribute('aria-hidden', 'true');
+}
+
+document.querySelector('#btnNewLecture')?.addEventListener('click', openCreateModal);
+document.querySelector('#btnNewLectureEmpty')?.addEventListener('click', openCreateModal);
+document.querySelector('#btnCloseCreate')?.addEventListener('click', closeCreateModal);
+
+modalCreate?.addEventListener('click', event => {
+  if (event.target === modalCreate) closeCreateModal();
+});
+
 // ─── Form submit ──────────────────────────────────────────────────
 uploadForm.addEventListener('submit', async event => {
   event.preventDefault();
   submitButton.disabled = true;
-  uploadMessage.textContent = '강의 생성 파이프라인을 시작하고 있습니다.';
+  if (createMessage) createMessage.textContent = '강의 생성 파이프라인을 시작하고 있습니다.';
   try {
     const formData = new FormData(uploadForm);
     formData.set('use_vlm', formData.get('use_vlm') ? 'true' : 'false');
     const job = await api('/demo/api/jobs', { method: 'POST', body: formData });
-    window.location.hash = job.job_id;
+    closeCreateModal();
     state.job = job;
     state.selectedSlide = null;
     await fetchJobs();
-    startPolling(job.job_id);
+    navigateToDetail(job.job_id);
   } catch (error) {
-    uploadMessage.textContent = error.message;
+    if (createMessage) createMessage.textContent = error.message;
     submitButton.disabled = false;
   }
 });
 
-// ─── Modal ────────────────────────────────────────────────────────
+// ─── Back button ──────────────────────────────────────────────────
+document.querySelector('#btnBack')?.addEventListener('click', navigateHome);
+
+// ─── Evidence modal close ─────────────────────────────────────────
 closeEvidenceModal?.addEventListener('click', () => {
   evidenceModal.classList.add('hidden');
   evidenceModal.setAttribute('aria-hidden', 'true');
@@ -772,27 +794,27 @@ evidenceModal?.addEventListener('click', event => {
   }
 });
 
-// ─── Dropzone: 파일명 표시 + 드래그 앤 드롭 ─────────────────────────
+// ─── Dropzone ─────────────────────────────────────────────────────
 (function setupDropzone() {
-  const dropzone = document.querySelector('.dropzone');
-  const pdfInput = document.querySelector('#pdfInput');
-  const hintEl = document.querySelector('.dropzone-hint');
+  const dropzone    = document.querySelector('#dropzone');
+  const pdfInput    = document.querySelector('#pdfInput');
+  const hintEl      = document.querySelector('#dropzoneHint');
   const originalHint = hintEl?.textContent ?? '';
 
   function applyFile(file) {
     if (!file) return;
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      hintEl.textContent = 'PDF 파일만 업로드 가능합니다';
-      dropzone.classList.remove('has-file');
+      if (hintEl) hintEl.textContent = 'PDF 파일만 업로드 가능합니다';
+      dropzone?.classList.remove('has-file');
       return;
     }
-    hintEl.textContent = `${file.name}  (${(file.size / 1024).toFixed(0)} KB)`;
-    dropzone.classList.add('has-file');
+    if (hintEl) hintEl.textContent = `${file.name}  (${(file.size / 1024).toFixed(0)} KB)`;
+    dropzone?.classList.add('has-file');
   }
 
   pdfInput?.addEventListener('change', () => {
     applyFile(pdfInput.files[0] ?? null);
-    if (!pdfInput.files[0]) hintEl.textContent = originalHint;
+    if (!pdfInput.files[0] && hintEl) hintEl.textContent = originalHint;
   });
 
   dropzone?.addEventListener('dragover', e => {
@@ -816,15 +838,27 @@ evidenceModal?.addEventListener('click', event => {
   });
 })();
 
+// ─── Hash routing ─────────────────────────────────────────────────
+window.addEventListener('hashchange', () => {
+  const jobId = window.location.hash.replace('#', '').trim();
+  if (jobId) {
+    if (state.currentView !== 'detail') showView('detail');
+    if (!state.pollTimer) startPolling(jobId);
+  } else {
+    navigateHome();
+  }
+});
+
 // ─── Boot ─────────────────────────────────────────────────────────
 async function boot() {
   await fetchJobs();
   const jobId = window.location.hash.replace('#', '').trim();
   if (jobId) {
+    showView('detail');
     switchTab('pipeline');
     startPolling(jobId);
   } else {
-    render();
+    showView('home');
   }
 }
 
