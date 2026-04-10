@@ -59,34 +59,40 @@ from lecture_auto.demo.state import (
 )
 
 
-def run_demo_pipeline(job_id: str, pdf_path: Path, lecture_name: str, target_minutes: int) -> None:
+def _run_parse_render_stage(
+    job_id: str, pdf_path: Path, lecture_name: str, target_minutes: int
+) -> tuple["SlideManifest", list[Path]]:
     job_paths = get_demo_job_paths(job_id)
+
+    update_stage(job_id, "parse", status="running", progress=15, detail="PDF 구조 분석 중")
+    slides = parse_pdf(pdf_path)
+    manifest = _write_manifest(job_id, pdf_path, slides, lecture_name, target_minutes)
+    append_event(job_id, "parse", f"Parsed {len(slides)} slides from PDF")
+    update_stage(job_id, "parse", status="done", progress=100, detail=f"총 {len(slides)}개 슬라이드 파싱 완료")
+    _check_stop(job_id, "parse")
+
+    update_stage(job_id, "render", status="running", progress=25, detail="슬라이드 미리보기 생성 중")
+    png_paths = pdf_to_pngs(pdf_path, job_paths.rendered_dir)
+    append_event(job_id, "render", f"Rendered {len(png_paths)} slide previews")
+    update_stage(job_id, "render", status="done", progress=100, detail=f"총 {len(png_paths)}개 슬라이드 이미지 생성 완료")
+    _check_stop(job_id, "render")
+
+    return manifest, png_paths
+
+
+def run_demo_pipeline(job_id: str, pdf_path: Path, lecture_name: str, target_minutes: int) -> None:
     current_stage = "parse"
     _clear_stop_flag(job_id)
     update_metadata(job_id, status="running")
     try:
         job = get_job(job_id) or {}
-        settings = job.get("settings") or {}
         pipeline_meta = job.get("pipeline_meta") or _base_pipeline_meta()
         pipeline_meta["input_sha256"] = sha256_file(pdf_path)
         pipeline_meta["started_at"] = datetime.now(UTC).isoformat()
         update_metadata(job_id, pipeline_meta=pipeline_meta)
         _save_job_snapshot(job_id)
 
-        current_stage = "parse"
-        update_stage(job_id, "parse", status="running", progress=15, detail="PDF 구조 분석 중")
-        slides = parse_pdf(pdf_path)
-        manifest = _write_manifest(job_id, pdf_path, slides, lecture_name, target_minutes)
-        append_event(job_id, "parse", f"Parsed {len(slides)} slides from PDF")
-        update_stage(job_id, "parse", status="done", progress=100, detail=f"총 {len(slides)}개 슬라이드 파싱 완료")
-        _check_stop(job_id, current_stage)
-
-        current_stage = "render"
-        update_stage(job_id, "render", status="running", progress=25, detail="슬라이드 미리보기 생성 중")
-        png_paths = pdf_to_pngs(pdf_path, job_paths.rendered_dir)
-        append_event(job_id, "render", f"Rendered {len(png_paths)} slide previews")
-        update_stage(job_id, "render", status="done", progress=100, detail=f"총 {len(png_paths)}개 슬라이드 이미지 생성 완료")
-        _check_stop(job_id, current_stage)
+        manifest, png_paths = _run_parse_render_stage(job_id, pdf_path, lecture_name, target_minutes)
 
         current_stage = "vlm"
         vlm_model = __import__("os").environ.get("DEMO_VLM_MODEL", "gpt-5.4-mini")

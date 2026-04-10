@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from lecture_auto.pipeline.tts import (
     load_tts as load_qwen_tts,
@@ -115,7 +118,11 @@ def _synthesize_with_flite_fallback(text: str, output_path: Path) -> None:
         "24000",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+    except subprocess.TimeoutExpired:
+        logger.warning("subprocess timed out: ffmpeg flite synthesis")
+        raise RuntimeError("ffmpeg flite synthesis timed out")
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg flite synthesis failed")
 
@@ -245,26 +252,15 @@ def _render_script_stage(job_id: str, manifest: SlideManifest, notes: list[dict]
     return scripts
 
 
-def _render_media_stage(job_id: str, manifest: SlideManifest, scripts: list[dict]) -> None:
-    job_paths = get_demo_job_paths(job_id)
-    voice_reference, voice_label = _resolve_voice_reference(job_id)
-    fast_tts = _should_use_fast_tts(manifest)
-    pipeline_meta = (get_job(job_id) or {}).get("pipeline_meta") or _base_pipeline_meta()
-    pipeline_meta["tts_mode"] = "fast_local" if fast_tts else "qwen_clone"
-    if voice_label:
-        update_metadata(job_id, voice_reference_name=voice_label)
-        append_event(job_id, "tts", f"음성 레퍼런스 등록: {voice_label}")
-    if fast_tts:
-        append_event(
-            job_id,
-            "tts",
-            f"슬라이드 수가 많아 속도 우선 음성 모드 사용: {manifest.slide_count}장 문서는 로컬 한국어 TTS로 생성",
-        )
-
-    tts_detail = "빠른 데모 음성 생성 시작" if fast_tts else "보이스 클론 음성 생성 시작"
-    update_stage(job_id, "tts", status="running", progress=10, detail=tts_detail)
+def _run_tts_loop(
+    job_id: str,
+    scripts: list[dict],
+    job_paths,
+    voice_reference,
+    fast_tts: bool,
+    glossary: dict,
+) -> list[Path]:
     wav_paths: list[Path] = []
-    glossary = (get_job(job_id) or {}).get("glossary") or {}
     for idx, script in enumerate(scripts, start=1):
         _check_stop(job_id, "tts")
         wav_path = job_paths.audio_dir / f"audio_{script['slide_number']:03d}.wav"
@@ -284,12 +280,10 @@ def _render_media_stage(job_id: str, manifest: SlideManifest, scripts: list[dict
         )
         progress = int(idx / max(1, len(scripts)) * 100)
         update_stage(job_id, "tts", status="running", progress=progress, detail=f"슬라이드 {idx}/{len(scripts)} 음성 생성 완료")
-    merged_path = job_paths.audio_dir / "lecture_merged.wav"
-    merge_audio(job_paths.audio_dir, merged_path)
-    set_artifact(job_id, "merged_audio_url", f"/demo/api/jobs/{job_id}/audio/merged")
-    append_event(job_id, "tts", "슬라이드별 음성과 병합 오디오 생성 완료")
-    update_stage(job_id, "tts", status="done", progress=100, detail="음성 합성 완료")
+    return wav_paths
 
+
+def _assemble_final_video(job_id: str, job_paths, wav_paths: list[Path]) -> None:
     _check_stop(job_id, "video")
     png_paths = sorted(job_paths.rendered_dir.glob("slide_*.png"))
     update_stage(job_id, "video", status="running", progress=90, detail="단일 MP4로 최종 강의 영상 조립 중")
@@ -304,6 +298,38 @@ def _render_media_stage(job_id: str, manifest: SlideManifest, scripts: list[dict
     set_artifact(job_id, "video_url", f"/demo/api/jobs/{job_id}/video")
     append_event(job_id, "video", f"Lecture video assembled: {output_video.name}")
     update_stage(job_id, "video", status="done", progress=100, detail="Lecture MP4 generated")
+
+
+def _render_media_stage(job_id: str, manifest: SlideManifest, scripts: list[dict]) -> None:
+    job_paths = get_demo_job_paths(job_id)
+    voice_reference, voice_label = _resolve_voice_reference(job_id)
+    fast_tts = _should_use_fast_tts(manifest)
+    pipeline_meta = (get_job(job_id) or {}).get("pipeline_meta") or _base_pipeline_meta()
+    pipeline_meta["tts_mode"] = "fast_local" if fast_tts else "qwen_clone"
+    if voice_label:
+        update_metadata(job_id, voice_reference_name=voice_label)
+        append_event(job_id, "tts", f"음성 레퍼런스 등록: {voice_label}")
+    if fast_tts:
+        append_event(
+            job_id,
+            "tts",
+            f"슬라이드 수가 많아 속도 우선 음성 모드 사용: {manifest.slide_count}장 문서는 로컬 한국어 TTS로 생성",
+        )
+
+    tts_detail = "빠른 데모 음성 생성 시작" if fast_tts else "보이스 클론 음성 생성 시작"
+    update_stage(job_id, "tts", status="running", progress=10, detail=tts_detail)
+    glossary = (get_job(job_id) or {}).get("glossary") or {}
+
+    wav_paths = _run_tts_loop(job_id, scripts, job_paths, voice_reference, fast_tts, glossary)
+
+    merged_path = job_paths.audio_dir / "lecture_merged.wav"
+    merge_audio(job_paths.audio_dir, merged_path)
+    set_artifact(job_id, "merged_audio_url", f"/demo/api/jobs/{job_id}/audio/merged")
+    append_event(job_id, "tts", "슬라이드별 음성과 병합 오디오 생성 완료")
+    update_stage(job_id, "tts", status="done", progress=100, detail="음성 합성 완료")
+
+    _assemble_final_video(job_id, job_paths, wav_paths)
+
     pipeline_meta["last_media_generated_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
     update_metadata(job_id, pipeline_meta=pipeline_meta)
     _refresh_library_artifacts(job_id)
