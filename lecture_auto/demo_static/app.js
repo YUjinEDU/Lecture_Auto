@@ -1,0 +1,831 @@
+const state = {
+  jobs: [],
+  job: null,
+  selectedSlide: null,
+  pollTimer: null,
+  mediaRecorder: null,
+  mediaStream: null,
+  audioChunks: [],
+  voiceBlob: null,
+  activeTab: 'create',
+};
+
+// ─── DOM refs ────────────────────────────────────────────────────
+const uploadForm = document.querySelector("#uploadForm");
+const uploadMessage = document.querySelector("#uploadMessage");
+const submitButton = document.querySelector("#submitButton");
+const jobList = document.querySelector("#jobList");
+const stageGrid = document.querySelector("#stageGrid");
+const eventList = document.querySelector("#eventList");
+const jobControls = document.querySelector("#jobControls");
+const slideThumbStrip = document.querySelector("#slideThumbStrip");
+const slideDetail = document.querySelector("#slideDetail");
+const outputsArea = document.querySelector("#outputsArea");
+const lastUpdated = document.querySelector("#lastUpdated");
+const evidenceModal = document.querySelector("#evidenceModal");
+const evidenceModalBody = document.querySelector("#evidenceModalBody");
+const closeEvidenceModal = document.querySelector("#closeEvidenceModal");
+
+// ─── Tab navigation ──────────────────────────────────────────────
+const TABS = ['create', 'pipeline', 'review', 'export'];
+
+function switchTab(name) {
+  if (!TABS.includes(name)) return;
+  state.activeTab = name;
+  TABS.forEach(tab => {
+    const active = tab === name;
+    // desktop tabs
+    document.querySelector(`.tab-bar [data-tab="${tab}"]`)?.classList.toggle('active', active);
+    // bottom tabs
+    document.querySelector(`.bottom-nav [data-tab="${tab}"]`)?.classList.toggle('active', active);
+    // panels
+    document.querySelector(`#panel-${tab}`)?.classList.toggle('hidden', !active);
+  });
+  // Sync mobile status pill
+  const pill = document.querySelector('#mobileStatus');
+  const src = document.querySelector('#metricStatus');
+  if (pill && src) {
+    pill.textContent = src.textContent;
+    pill.dataset.status = src.dataset.status;
+  }
+  closeDrawer();
+}
+
+document.querySelectorAll('[data-tab]').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
+
+document.querySelector('#showCreateBtn')?.addEventListener('click', () => switchTab('create'));
+
+// ─── Drawer ───────────────────────────────────────────────────────
+const appSidebar   = document.querySelector('#appSidebar');
+const drawerToggle = document.querySelector('#drawerToggle');
+const drawerOverlay = document.querySelector('#drawerOverlay');
+
+function openDrawer() {
+  appSidebar?.classList.add('drawer-open');
+  drawerOverlay?.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeDrawer() {
+  appSidebar?.classList.remove('drawer-open');
+  drawerOverlay?.classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+drawerToggle?.addEventListener('click', openDrawer);
+drawerOverlay?.addEventListener('click', closeDrawer);
+
+// ─── Helpers ─────────────────────────────────────────────────────
+function statusLabel(status) {
+  return {
+    queued:   '대기',
+    running:  '진행 중',
+    stopping: '중지 중',
+    stopped:  '중지됨',
+    completed:'완료',
+    failed:   '실패',
+    done:     '완료',
+    pending:  '대기',
+  }[status] ?? status;
+}
+
+function prettyTime(value) {
+  if (!value) return '아직 시작되지 않음';
+  return `${new Date(value).toLocaleTimeString()} 업데이트`;
+}
+
+function escapeHtml(value = '') {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function parseGlossaryInput(value) {
+  const glossary = {};
+  value.split('\n').map(l => l.trim()).filter(Boolean).forEach(line => {
+    const [source, target] = line.includes('=>') ? line.split('=>') : line.split('=');
+    if (source?.trim() && target?.trim()) glossary[source.trim()] = target.trim();
+  });
+  return glossary;
+}
+
+function formatGlossary(glossary = {}) {
+  return Object.entries(glossary).map(([k, v]) => `${k} => ${v}`).join('\n');
+}
+
+function buildDiffHtml(previous = '', current = '') {
+  if (!previous && !current) return { before: '<p>이전 버전이 없습니다.</p>', after: '<p>현재 버전이 없습니다.</p>' };
+  if (previous === current) return {
+    before: `<p>${escapeHtml(previous || '이전 버전 없음')}</p>`,
+    after: `<p>${escapeHtml(current || '현재 버전 없음')}</p>`,
+  };
+  const oldS = previous.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const newS = current.split(/(?<=[.!?])\s+/).filter(Boolean);
+  return {
+    before: oldS.map(s => `<p class="diff-removed">${escapeHtml(s)}</p>`).join(''),
+    after:  newS.map(s => `<p class="diff-added">${escapeHtml(s)}</p>`).join(''),
+  };
+}
+
+// ─── API ──────────────────────────────────────────────────────────
+async function api(path, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  let response;
+  try {
+    response = await fetch(path, { ...options, signal: controller.signal });
+    clearTimeout(timeoutId);
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      console.warn('Request timed out:', path);
+      return null;
+    }
+    throw err;
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail ?? response.statusText);
+  }
+  const ct = response.headers.get('content-type') || '';
+  return ct.includes('application/json') ? response.json() : response.text();
+}
+
+// ─── Data fetching ────────────────────────────────────────────────
+async function fetchJobs() {
+  state.jobs = await api('/demo/api/jobs');
+  renderJobs();
+  setMetrics();
+}
+
+async function fetchJob(jobId) {
+  state.job = await api(`/demo/api/jobs/${jobId}`);
+  const slides = state.job.slides ?? [];
+  if (!slides.find(s => s.slide_number === state.selectedSlide)) {
+    state.selectedSlide = slides[0]?.slide_number ?? null;
+  }
+  render();
+}
+
+function stopPolling() {
+  if (state.pollTimer) { window.clearInterval(state.pollTimer); state.pollTimer = null; }
+}
+
+function startPolling(jobId) {
+  stopPolling();
+  // Always go to pipeline tab when a job is selected or started
+  switchTab('pipeline');
+
+  const POLL_ACTIVE_MS = 4000;
+  const POLL_IDLE_MS = 15000;
+
+  const tick = async () => {
+    try {
+      await fetchJob(jobId);
+      await fetchJobs();
+      const status = state.job?.status;
+      if (['completed', 'failed', 'stopped', 'error'].includes(status)) {
+        stopPolling();
+        submitButton.disabled = false;
+        // Auto-navigate to review when completed
+        if (status === 'completed' && state.job?.slides?.length) {
+          switchTab('review');
+        }
+        return;
+      }
+      // Adjust interval: active job polls fast, idle polls slow
+      const targetMs = jobId ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+      if (!state.pollTimer) {
+        state.pollTimer = window.setInterval(tick, targetMs);
+      }
+    } catch (error) {
+      uploadMessage.textContent = error.message;
+      stopPolling();
+      submitButton.disabled = false;
+    }
+  };
+  tick();
+  state.pollTimer = window.setInterval(tick, POLL_ACTIVE_MS);
+}
+
+// ─── Metrics ──────────────────────────────────────────────────────
+function setMetrics() {
+  const jobName = state.job ? state.job.lecture_name : '선택된 작업 없음';
+  const jobStatus = state.job?.status ?? '';
+  const label = state.job ? statusLabel(jobStatus) : '대기';
+
+  document.querySelector('#metricJob').textContent = jobName;
+  document.querySelector('#metricJobs').textContent = state.jobs.length;
+
+  [document.querySelector('#metricStatus'), document.querySelector('#mobileStatus')].forEach(pill => {
+    if (!pill) return;
+    pill.textContent = label;
+    pill.dataset.status = jobStatus;
+  });
+}
+
+// ─── Job List ─────────────────────────────────────────────────────
+function renderJobs() {
+  if (!state.jobs.length) {
+    jobList.innerHTML = `<p class="empty-hint-sm">강의가 아직 없습니다</p>`;
+    return;
+  }
+
+  jobList.innerHTML = state.jobs.map(job => `
+    <button class="job-item ${state.job?.job_id === job.job_id ? 'active' : ''}" data-job="${job.job_id}">
+      <span class="job-item-name">${escapeHtml(job.library?.display_name ?? job.lecture_name)}</span>
+      <span class="job-item-file">${escapeHtml(job.filename)}</span>
+      <div class="job-item-meta">
+        <span class="job-status-dot" data-status="${job.status}"></span>
+        <span class="job-item-status">${statusLabel(job.status)} · ${job.target_minutes}분</span>
+      </div>
+    </button>
+  `).join('');
+
+  jobList.querySelectorAll('.job-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      window.location.hash = btn.dataset.job;
+      startPolling(btn.dataset.job);
+    });
+  });
+}
+
+// ─── Stage stepper ────────────────────────────────────────────────
+function renderStages() {
+  if (!state.job?.stages?.length) {
+    stageGrid.innerHTML = `<p class="empty-hint-sm" style="padding:20px 0">작업을 선택하면 진행 상태가 표시됩니다.</p>`;
+    return;
+  }
+
+  stageGrid.innerHTML = state.job.stages.map((stage, i) => {
+    const isLast = i === state.job.stages.length - 1;
+    const dotContent = stage.status === 'completed'
+      ? `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7l3.5 3.5 5.5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+      : stage.status === 'running'
+        ? `<div class="step-spinner"></div>`
+        : stage.status === 'failed'
+          ? `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2 2 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`
+          : String(i + 1);
+
+    const progress = stage.status === 'running' && stage.progress != null
+      ? `<span class="step-progress">${stage.progress}%</span>`
+      : '';
+
+    return `
+      <div class="step ${isLast ? 'last' : ''} ${stage.status}">
+        <div class="step-dot">${dotContent}</div>
+        <span class="step-label">${escapeHtml(stage.label)}</span>
+        ${progress}
+      </div>
+    `;
+  }).join('');
+}
+
+// ─── Events ───────────────────────────────────────────────────────
+function renderEvents() {
+  if (!state.job?.events?.length) {
+    eventList.innerHTML = `<p class="empty-hint-sm">로그가 아직 없습니다.</p>`;
+    return;
+  }
+  eventList.innerHTML = [...state.job.events].slice(-20).reverse().map(ev => `
+    <article class="event-item">
+      <span class="event-time">${new Date(ev.time).toLocaleTimeString()} · ${escapeHtml(ev.stage)}</span>
+      <div>${escapeHtml(ev.message)}</div>
+    </article>
+  `).join('');
+  lastUpdated.textContent = prettyTime(state.job.updated_at);
+}
+
+// ─── Job Controls ─────────────────────────────────────────────────
+function renderJobControls() {
+  if (!state.job) {
+    jobControls.className = 'empty-state-card';
+    jobControls.textContent = '작업을 선택하면 설정 패널이 열립니다.';
+    return;
+  }
+
+  const s = state.job?.settings ?? {};
+  jobControls.className = '';
+  jobControls.innerHTML = `
+    <div class="control-card">
+      <div class="control-top">
+        <div>
+          <p class="control-name">${escapeHtml(state.job.lecture_name)}</p>
+          <p class="control-file">${escapeHtml(state.job.filename)}</p>
+        </div>
+        <span class="status-pill" data-status="${state.job.status}">${statusLabel(state.job.status)}</span>
+      </div>
+
+      <div class="compact-grid">
+        <label class="inline-field">
+          <span>목표 시간 (분)</span>
+          <input id="targetMinutesInput" type="number" min="1" value="${Number(state.job.target_minutes || 8)}" />
+        </label>
+        <label class="inline-field">
+          <span>수강 대상</span>
+          <select id="audienceInput">
+            ${['학부 전공','학부 1학년','비전공자','대학원','실무자']
+              .map(o => `<option ${s.audience === o ? 'selected' : ''}>${o}</option>`)
+              .join('')}
+          </select>
+        </label>
+      </div>
+
+      <div class="control-actions">
+        <button class="btn-primary" id="rerunAllButton" type="button">변경사항 반영</button>
+        ${['running', 'queued'].includes(state.job.status)
+          ? `<button class="btn-danger" id="stopJobButton" type="button">■ 중지</button>`
+          : state.job.status === 'stopping'
+          ? `<button class="btn-danger" id="stopJobButton" type="button" disabled>중지 중…</button>`
+          : ''}
+      </div>
+
+      <details class="ctrl-details">
+        <summary>고급 생성 옵션</summary>
+        <div class="ctrl-split">
+          <label class="inline-field">
+            <span>설명 스타일</span>
+            <select id="styleInput">
+              ${['개념 중심','입문 친화','시험 대비','실무 예시']
+                .map(o => `<option ${s.explanation_style === o ? 'selected' : ''}>${o}</option>`)
+                .join('')}
+            </select>
+          </label>
+          <label class="inline-field">
+            <span>강의 밀도</span>
+            <select id="densityInput">
+              ${['표준형','요약형','자세형']
+                .map(o => `<option ${s.lecture_density === o ? 'selected' : ''}>${o}</option>`)
+                .join('')}
+            </select>
+          </label>
+        </div>
+        <div class="ctrl-split">
+          <label class="field">
+            <span>학생 특성</span>
+            <textarea id="learnerProfileInput" rows="3">${escapeHtml(s.learner_profile ?? '')}</textarea>
+          </label>
+          <label class="field">
+            <span>전달 메모</span>
+            <textarea id="deliveryNotesInput" rows="3">${escapeHtml(s.delivery_notes ?? '')}</textarea>
+          </label>
+        </div>
+        <div class="control-actions">
+          <button class="btn-ghost" id="rerunTtsButton" type="button">음성만 다시 생성</button>
+          <button class="btn-ghost" id="rerunVideoButton" type="button">영상만 다시 만들기</button>
+        </div>
+      </details>
+
+      <details class="ctrl-details">
+        <summary>음성 및 발음 사전</summary>
+        <div class="ctrl-split">
+          <div>
+            <p class="detail-copy">짧은 문서는 보이스 클론, 장수가 많으면 속도 우선 모드가 적용됩니다.</p>
+            <div class="voice-actions">
+              <button class="btn-ghost" id="recordButton" type="button">녹음 시작</button>
+              <button class="btn-ghost" id="stopButton" type="button" disabled>녹음 종료</button>
+              <button class="btn-ghost" id="uploadVoiceButton" type="button" disabled>음성 업로드</button>
+            </div>
+            <p class="inline-msg" id="voiceStatus">${state.job.voice_reference_name ? `저장된 음성: ${state.job.voice_reference_name}` : '저장된 음성 레퍼런스가 없습니다.'}</p>
+            <audio id="voicePreview" controls ${state.voiceBlob || state.job.voice_reference_name ? '' : 'hidden'} style="width:100%;margin-top:8px;"></audio>
+          </div>
+          <div>
+            <p class="detail-copy">형식: 원문 =&gt; 읽기 방식</p>
+            <textarea id="glossaryEditor" class="glossary-editor" rows="7" placeholder="SQL => 에스큐엘&#10;DBMS => 디비엠에스">${escapeHtml(formatGlossary(state.job.glossary ?? {}))}</textarea>
+            <div class="control-actions" style="margin-top:8px;">
+              <button class="btn-ghost" id="saveGlossaryButton" type="button">발음 사전 저장</button>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+  `;
+
+  // Bind stop button
+  document.querySelector('#stopJobButton')?.addEventListener('click', async () => {
+    if (!confirm('파이프라인을 중지할까요? 현재 단계가 완료된 후 멈춥니다.')) return;
+    await api(`/demo/api/jobs/${state.job.job_id}/stop`, { method: 'POST' });
+    uploadMessage.textContent = '중지 요청이 전송되었습니다.';
+  });
+
+  // Bind rerun buttons
+  document.querySelector('#rerunAllButton').addEventListener('click', async () => {
+    uploadMessage.textContent = '전체 파이프라인을 다시 생성하고 있습니다.';
+    await api(`/demo/api/jobs/${state.job.job_id}/rerun`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target_minutes: Number(document.querySelector('#targetMinutesInput').value || 8),
+        audience: document.querySelector('#audienceInput').value,
+        explanation_style: document.querySelector('#styleInput').value,
+        lecture_density: document.querySelector('#densityInput').value,
+        learner_profile: document.querySelector('#learnerProfileInput').value.trim(),
+        delivery_notes: document.querySelector('#deliveryNotesInput').value.trim(),
+      }),
+    });
+    startPolling(state.job.job_id);
+  });
+
+  document.querySelector('#rerunTtsButton').addEventListener('click', async () => {
+    uploadMessage.textContent = '전체 TTS를 다시 생성하고 있습니다.';
+    await api(`/demo/api/jobs/${state.job.job_id}/actions/rerun-tts`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    await fetchJob(state.job.job_id);
+    uploadMessage.textContent = 'TTS 재실행이 완료되었습니다.';
+  });
+
+  document.querySelector('#rerunVideoButton').addEventListener('click', async () => {
+    uploadMessage.textContent = '영상을 다시 조립하고 있습니다.';
+    await api(`/demo/api/jobs/${state.job.job_id}/actions/rerun-video`, { method: 'POST' });
+    await fetchJob(state.job.job_id);
+    uploadMessage.textContent = '영상 재조립이 완료되었습니다.';
+  });
+
+  bindVoiceAndGlossary();
+}
+
+function bindVoiceAndGlossary() {
+  const recordButton = document.querySelector('#recordButton');
+  const stopButton = document.querySelector('#stopButton');
+  const uploadVoiceButton = document.querySelector('#uploadVoiceButton');
+  const voiceStatus = document.querySelector('#voiceStatus');
+  const voicePreview = document.querySelector('#voicePreview');
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    voiceStatus.textContent = '현재 브라우저는 마이크 녹음을 지원하지 않습니다.';
+    recordButton.disabled = true;
+  } else {
+    if (state.voiceBlob) {
+      voicePreview.hidden = false;
+      voicePreview.src = URL.createObjectURL(state.voiceBlob);
+      uploadVoiceButton.disabled = false;
+    } else if (state.job?.voice_reference_name) {
+      voicePreview.hidden = false;
+      voicePreview.src = `/demo/api/jobs/${state.job.job_id}/voice-reference`;
+    }
+
+    recordButton.addEventListener('click', async () => {
+      try {
+        state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        state.audioChunks = [];
+        state.mediaRecorder = new MediaRecorder(state.mediaStream);
+        state.mediaRecorder.ondataavailable = e => { if (e.data.size) state.audioChunks.push(e.data); };
+        state.mediaRecorder.onstop = () => {
+          state.voiceBlob = new Blob(state.audioChunks, { type: 'audio/webm' });
+          voicePreview.hidden = false;
+          voicePreview.src = URL.createObjectURL(state.voiceBlob);
+          uploadVoiceButton.disabled = false;
+          voiceStatus.textContent = '녹음이 완료되었습니다. 업로드하면 현재 작업에 연결됩니다.';
+          state.mediaStream?.getTracks().forEach(t => t.stop());
+        };
+        state.mediaRecorder.start();
+        voiceStatus.textContent = '녹음 중입니다.';
+        recordButton.disabled = true;
+        stopButton.disabled = false;
+      } catch (err) {
+        voiceStatus.textContent = err.message || '마이크 접근에 실패했습니다.';
+      }
+    });
+
+    stopButton.addEventListener('click', () => {
+      state.mediaRecorder?.stop();
+      recordButton.disabled = false;
+      stopButton.disabled = true;
+    });
+
+    uploadVoiceButton.addEventListener('click', async () => {
+      if (!state.voiceBlob) return;
+      const formData = new FormData();
+      formData.append('audio_file', state.voiceBlob, 'voice_reference.webm');
+      uploadVoiceButton.disabled = true;
+      voiceStatus.textContent = '음성 레퍼런스를 업로드 중입니다.';
+      await fetch(`/demo/api/jobs/${state.job.job_id}/voice-reference`, { method: 'POST', body: formData });
+      await fetchJob(state.job.job_id);
+      voiceStatus.textContent = '음성 레퍼런스가 저장되었습니다.';
+    });
+  }
+
+  document.querySelector('#saveGlossaryButton').addEventListener('click', async () => {
+    const glossary = parseGlossaryInput(document.querySelector('#glossaryEditor').value);
+    uploadMessage.textContent = '발음 사전을 저장하고 있습니다.';
+    await api(`/demo/api/jobs/${state.job.job_id}/glossary`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ glossary }),
+    });
+    await fetchJob(state.job.job_id);
+    uploadMessage.textContent = '발음 사전이 저장되었습니다.';
+  });
+}
+
+// ─── Slide strip ──────────────────────────────────────────────────
+function renderSlideStrip() {
+  if (!state.job?.slides?.length) {
+    slideThumbStrip.innerHTML = '';
+    return;
+  }
+  slideThumbStrip.innerHTML = state.job.slides.map(slide => `
+    <button class="thumb-card ${slide.slide_number === state.selectedSlide ? 'active' : ''}" data-slide="${slide.slide_number}">
+      <img src="${slide.png_url}" alt="Slide ${slide.slide_number}" loading="lazy" />
+      <span class="thumb-num">${slide.slide_number}</span>
+    </button>
+  `).join('');
+
+  slideThumbStrip.querySelectorAll('.thumb-card').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.selectedSlide = Number(btn.dataset.slide);
+      renderSlideStrip();
+      renderSlideDetail();
+    });
+  });
+}
+
+// ─── Evidence modal ───────────────────────────────────────────────
+function buildMetaMarkup() {
+  const meta = state.job?.pipeline_meta ?? {};
+  const recovery = state.job?.recovery ?? {};
+  return `
+    <div class="meta-list">
+      <dl>
+        <div><dt>LLM 모델</dt><dd>${escapeHtml(meta.llm_model ?? '-')}</dd></div>
+        <div><dt>VLM 모델</dt><dd>${escapeHtml(meta.vlm_model ?? '-')}</dd></div>
+        <div><dt>TTS 모드</dt><dd>${escapeHtml(meta.tts_mode ?? '-')}</dd></div>
+        <div><dt>프롬프트 버전</dt><dd>${escapeHtml(meta.prompt_version ?? '-')}</dd></div>
+        <div><dt>재현성 모드</dt><dd>${escapeHtml(meta.seed_mode ?? '-')}</dd></div>
+        <div><dt>복구 지점</dt><dd>${escapeHtml(recovery.can_resume_from ?? '-')}</dd></div>
+      </dl>
+    </div>
+  `;
+}
+
+function openEvidenceModal(slide) {
+  if (!slide || !state.job) return;
+  const note = slide.vlm_note ?? {};
+  const script = slide.script ?? {};
+  const evidence = slide.evidence ?? {};
+  evidenceModalBody.innerHTML = `
+    <div class="modal-section">
+      <h4>슬라이드 ${slide.slide_number} 근거</h4>
+      <div class="evidence-grid">
+        <div class="evidence-box">
+          <h5>PDF 추출 텍스트</h5>
+          <p>${(evidence.pdf_text ?? []).length ? evidence.pdf_text.map(t => escapeHtml(t)).join('<br />') : '추출 텍스트가 없습니다.'}</p>
+        </div>
+        <div class="evidence-box">
+          <h5>VLM 요약</h5>
+          <p>${escapeHtml(evidence.vlm_summary ?? note.visual_summary ?? 'VLM 요약이 없습니다.')}</p>
+        </div>
+        <div class="evidence-box">
+          <h5>최종 스크립트</h5>
+          <p>${escapeHtml(evidence.final_script ?? script.script ?? '스크립트가 없습니다.')}</p>
+        </div>
+      </div>
+    </div>
+    <div class="modal-section">
+      <h4>파이프라인 메타데이터</h4>
+      ${buildMetaMarkup()}
+    </div>
+  `;
+  evidenceModal.classList.remove('hidden');
+  evidenceModal.setAttribute('aria-hidden', 'false');
+}
+
+// ─── Slide detail ─────────────────────────────────────────────────
+function renderSlideDetail() {
+  const slide = state.job?.slides?.find(s => s.slide_number === state.selectedSlide);
+  if (!slide) {
+    slideDetail.className = 'empty-state-center';
+    slideDetail.innerHTML = `
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="opacity:.3;margin-bottom:12px;">
+        <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 21h8M12 17v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <p>왼쪽에서 슬라이드를 선택하세요</p>
+    `;
+    return;
+  }
+
+  const note = slide.vlm_note ?? {};
+  const script = slide.script ?? {};
+  const history = (state.job.version_history ?? []).filter(e => e.slide_number === slide.slide_number);
+  const lastEdit = [...history].reverse().find(e => e.kind === 'script_edit');
+  const prevScript = lastEdit?.payload?.previous_script ?? '';
+  const diffHtml = buildDiffHtml(prevScript, script.script ?? '');
+
+  slideDetail.className = 'slide-detail';
+  slideDetail.innerHTML = `
+    <!-- Row 1: 슬라이드 이미지 -->
+    <div class="slide-image-row">
+      <div class="slide-preview">
+        <img src="${slide.png_url}" alt="Slide ${slide.slide_number}" />
+      </div>
+    </div>
+
+    <!-- Row 2: 스크립트 에디터 -->
+    <article class="detail-card">
+      <div class="card-header-row">
+        <h3>슬라이드 ${slide.slide_number} 스크립트</h3>
+        <button class="btn-icon" id="openEvidenceButton" type="button">근거 보기</button>
+      </div>
+      <textarea id="scriptEditor" class="script-editor">${escapeHtml(script.script ?? '')}</textarea>
+      <div class="slide-actions">
+        <button class="btn-primary" id="saveScriptButton" type="button">저장 및 반영</button>
+        <button class="btn-ghost" id="slideTtsButton" type="button">이 슬라이드 음성 재생성</button>
+        ${script.target_seconds ? `<span class="slide-target">목표 ${script.target_seconds}초</span>` : ''}
+      </div>
+    </article>
+
+    <!-- Row 3: 슬라이드 음성 -->
+    <article class="detail-card">
+      <h3>슬라이드 음성</h3>
+      ${slide.audio_url
+        ? `<audio controls preload="metadata" src="${slide.audio_url}" style="width:100%;margin-top:8px;"></audio>
+           <p style="margin-top:8px;font-size:.82rem;color:var(--muted);">${escapeHtml(slide.tts_preview ?? '현재 슬라이드 음성 결과입니다.')}</p>`
+        : `<p style="color:var(--faint);font-size:.84rem;">음성 생성 전입니다.</p>`
+      }
+    </article>
+
+    <!-- Row 4: 핵심 포인트 + diff + 이력 -->
+    <div class="slide-bottom-grid">
+      <article class="detail-card">
+        <h3>핵심 포인트</h3>
+        <ul>${(note.teaching_points ?? []).map(p => `<li>${escapeHtml(p)}</li>`).join('') || '<li style="color:var(--faint)">VLM 포인트가 아직 없습니다.</li>'}</ul>
+      </article>
+      <details class="detail-card detail-disclosure">
+        <summary>변경 diff 보기</summary>
+        <div class="diff-grid">
+          <div class="diff-box"><h4>이전 버전</h4>${diffHtml.before}</div>
+          <div class="diff-box"><h4>현재 버전</h4>${diffHtml.after}</div>
+        </div>
+      </details>
+      <details class="detail-card detail-disclosure">
+        <summary>수정 이력 보기</summary>
+        ${history.length
+          ? history.slice(-6).reverse().map(e => `<p style="font-size:.82rem;color:var(--muted);">${new Date(e.time).toLocaleString()} · ${escapeHtml(e.summary ?? e.kind)}</p>`).join('')
+          : '<p style="font-size:.82rem;color:var(--faint);">아직 수정 이력이 없습니다.</p>'
+        }
+      </details>
+    </div>
+  `;
+
+  document.querySelector('#openEvidenceButton').addEventListener('click', () => openEvidenceModal(slide));
+
+  document.querySelector('#saveScriptButton').addEventListener('click', async () => {
+    const newScript = document.querySelector('#scriptEditor').value.trim();
+    if (!newScript) { uploadMessage.textContent = '스크립트를 비울 수는 없습니다.'; return; }
+    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 스크립트를 저장하고 미디어를 재생성하고 있습니다.`;
+    await api(`/demo/api/jobs/${state.job.job_id}/slides/${slide.slide_number}/script`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ script: newScript }),
+    });
+    await fetchJob(state.job.job_id);
+    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 반영이 완료되었습니다.`;
+  });
+
+  document.querySelector('#slideTtsButton').addEventListener('click', async () => {
+    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 음성을 다시 생성하고 있습니다.`;
+    await api(`/demo/api/jobs/${state.job.job_id}/actions/rerun-tts`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slide_number: slide.slide_number }),
+    });
+    await fetchJob(state.job.job_id);
+    uploadMessage.textContent = `슬라이드 ${slide.slide_number} 음성 갱신이 완료되었습니다.`;
+  });
+}
+
+// ─── Outputs ──────────────────────────────────────────────────────
+function renderOutputs() {
+  if (!state.job?.artifacts?.video_url) {
+    outputsArea.innerHTML = `
+      <div class="empty-state-center" style="min-height:200px;">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="opacity:.3;margin-bottom:12px;">
+          <path d="M12 16V3m0 13-4-4m4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M3 18v1a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <p>작업이 완료되면 여기에 산출물이 표시됩니다.</p>
+      </div>
+    `;
+    return;
+  }
+
+  outputsArea.innerHTML = `
+    <article class="video-card">
+      <h3>최종 강의 영상</h3>
+      <video controls preload="metadata" src="${state.job.artifacts.video_url}"></video>
+    </article>
+    <article class="downloads-card">
+      <h3>다운로드</h3>
+      <div class="downloads-row">
+        <a class="btn-ghost" href="${state.job.artifacts.video_url}" target="_blank" rel="noreferrer">MP4 열기</a>
+        <a class="btn-ghost" href="${state.job.artifacts.merged_audio_url ?? '#'}" target="_blank" rel="noreferrer">병합 오디오</a>
+        <a class="btn-ghost" href="${state.job.artifacts.package_url ?? '#'}">ZIP 다운로드</a>
+      </div>
+    </article>
+  `;
+}
+
+// ─── Render ───────────────────────────────────────────────────────
+function render() {
+  setMetrics();
+  renderStages();
+  renderEvents();
+  renderJobControls();
+  renderSlideStrip();
+  renderSlideDetail();
+  renderOutputs();
+}
+
+// ─── Form submit ──────────────────────────────────────────────────
+uploadForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  submitButton.disabled = true;
+  uploadMessage.textContent = '강의 생성 파이프라인을 시작하고 있습니다.';
+  try {
+    const formData = new FormData(uploadForm);
+    formData.set('use_vlm', formData.get('use_vlm') ? 'true' : 'false');
+    const job = await api('/demo/api/jobs', { method: 'POST', body: formData });
+    window.location.hash = job.job_id;
+    state.job = job;
+    state.selectedSlide = null;
+    await fetchJobs();
+    startPolling(job.job_id);
+  } catch (error) {
+    uploadMessage.textContent = error.message;
+    submitButton.disabled = false;
+  }
+});
+
+// ─── Modal ────────────────────────────────────────────────────────
+closeEvidenceModal?.addEventListener('click', () => {
+  evidenceModal.classList.add('hidden');
+  evidenceModal.setAttribute('aria-hidden', 'true');
+});
+
+evidenceModal?.addEventListener('click', event => {
+  if (event.target === evidenceModal) {
+    evidenceModal.classList.add('hidden');
+    evidenceModal.setAttribute('aria-hidden', 'true');
+  }
+});
+
+// ─── Dropzone: 파일명 표시 + 드래그 앤 드롭 ─────────────────────────
+(function setupDropzone() {
+  const dropzone = document.querySelector('.dropzone');
+  const pdfInput = document.querySelector('#pdfInput');
+  const hintEl = document.querySelector('.dropzone-hint');
+  const originalHint = hintEl?.textContent ?? '';
+
+  function applyFile(file) {
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      hintEl.textContent = 'PDF 파일만 업로드 가능합니다';
+      dropzone.classList.remove('has-file');
+      return;
+    }
+    hintEl.textContent = `${file.name}  (${(file.size / 1024).toFixed(0)} KB)`;
+    dropzone.classList.add('has-file');
+  }
+
+  pdfInput?.addEventListener('change', () => {
+    applyFile(pdfInput.files[0] ?? null);
+    if (!pdfInput.files[0]) hintEl.textContent = originalHint;
+  });
+
+  dropzone?.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropzone.classList.add('drag-over');
+  });
+
+  dropzone?.addEventListener('dragleave', e => {
+    if (!dropzone.contains(e.relatedTarget)) dropzone.classList.remove('drag-over');
+  });
+
+  dropzone?.addEventListener('drop', e => {
+    e.preventDefault();
+    dropzone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    pdfInput.files = dt.files;
+    applyFile(file);
+  });
+})();
+
+// ─── Boot ─────────────────────────────────────────────────────────
+async function boot() {
+  await fetchJobs();
+  const jobId = window.location.hash.replace('#', '').trim();
+  if (jobId) {
+    switchTab('pipeline');
+    startPolling(jobId);
+  } else {
+    render();
+  }
+}
+
+boot();

@@ -113,7 +113,10 @@ async def update_slide_script(
     payload: dict = Body(...),
 ):
     _require_job(job_id)
-    script_text = (payload.get("script") or "").strip()
+    script_raw = payload.get("script")
+    if script_raw is not None and not isinstance(script_raw, str):
+        raise HTTPException(status_code=422, detail="'script' must be a string.")
+    script_text = (script_raw or "").strip()
     if not script_text:
         raise HTTPException(status_code=400, detail="Script text is required.")
     updated = update_script_and_rebuild(job_id, slide_number, script_text)
