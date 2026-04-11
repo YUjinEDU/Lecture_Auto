@@ -5,35 +5,45 @@
 ════════════════════════════════════════════════════════════════ */
 
 /* ── Tokens ──────────────────────────────────────────────────── */
+/* ── Tokens ──────────────────────────────────────── */
 :root {
-  --bg:         #f3f4f6;
-  --surface:    #ffffff;
-  --surface-2:  #f9fafb;
-  --surface-3:  #f3f4f6;
-  --border:     #e5e7eb;
-  --border-2:   #d1d5db;
+  /* ── Background & Surface ── */
+  --bg:         #f9fafb;   /* gray-50  */
+  --surface:    #ffffff;   /* white    */
+  --surface-2:  #f9fafb;   /* gray-50  */
+  --surface-3:  #f3f4f6;   /* gray-100 */
 
-  --accent:     #059669;
-  --accent-dim: rgba(5, 150, 105, 0.08);
-  --accent-glow:rgba(5, 150, 105, 0.15);
+  /* ── Border ── */
+  --border:     #e5e7eb;   /* gray-200 */
+  --border-2:   #d1d5db;   /* gray-300 */
 
-  --text:       #111827;
-  --muted:      #6b7280;
-  --faint:      #d1d5db;
+  /* ── Emerald accent (emerald-700/800) ── */
+  --accent:       #047857;
+  --accent-hover: #065f46;
+  --accent-dim:   rgba(4, 120, 87, 0.08);
+  --accent-glow:  rgba(4, 120, 87, 0.15);
 
-  --green:  #10b981;
-  --red:    #ef4444;
-  --yellow: #f59e0b;
-  --blue:   #3b82f6;
+  /* ── Text ── */
+  --text:       #111827;   /* gray-900 */
+  --muted:      #6b7280;   /* gray-500 */
+  --faint:      #9ca3af;   /* gray-400 */
 
+  /* ── Status colors ── */
+  --green:  #10b981;   /* emerald-500 */
+  --red:    #ef4444;   /* red-500     */
+  --yellow: #f59e0b;   /* amber-500   */
+  --blue:   #3b82f6;   /* blue-500    */
+
+  /* ── Typography ── */
   --font-sans:  'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono:  'JetBrains Mono', 'Menlo', monospace;
 
-  --radius:   10px;
+  /* ── Shape & Shadow ── */
+  --radius:    8px;
   --radius-sm: 6px;
-  --radius-lg: 14px;
-  --shadow:   0 4px 24px rgba(0,0,0,.08);
-  --shadow-sm:0 2px 8px rgba(0,0,0,.05);
+  --radius-lg: 12px;
+  --shadow:    0 1px 3px rgba(0,0,0,.08), 0 4px 16px rgba(0,0,0,.06);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.05);
 
   --topbar-h: 58px;
   --tabbar-h: 50px;
@@ -358,7 +368,7 @@ ul { list-style: none; padding: 0; }
   white-space: nowrap;
   letter-spacing: -0.01em;
 }
-.btn-cta:hover { opacity: 0.88; transform: translateY(-1px); }
+.btn-cta:hover { background: var(--accent-hover); opacity: 1; transform: translateY(-1px); }
 .btn-cta:active { transform: none; }
 .btn-cta:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 .btn-cta--full { width: 100%; justify-content: center; padding: 15px 22px; font-size: 1rem; }
@@ -377,7 +387,7 @@ ul { list-style: none; padding: 0; }
   cursor: pointer;
   transition: opacity 0.15s;
 }
-.btn-primary:hover { opacity: 0.85; }
+.btn-primary:hover { background: var(--accent-hover); opacity: 1; }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .btn-ghost {
