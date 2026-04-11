@@ -1054,23 +1054,23 @@ select:focus,
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.68);
-  backdrop-filter: blur(5px);
-  z-index: 100;
+  background: rgba(0,0,0,.3);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 24px;
+  z-index: 100;
 }
 
 .modal-box {
   background: var(--surface);
-  border: 1px solid var(--border-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0,0,0,.12);
   width: 100%;
   max-width: 520px;
-  box-shadow: var(--shadow);
-  overflow: hidden;
+  max-height: 90dvh;
+  overflow-y: auto;
   animation: slideUp 0.22s ease;
 }
 
@@ -1085,14 +1085,14 @@ select:focus,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 22px 18px;
+  padding: 20px 24px 16px;
   border-bottom: 1px solid var(--border);
 }
 
 .modal-title {
-  font-family: var(--font-sans);
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   font-weight: 600;
+  color: var(--text);
 }
 
 .modal-close {
