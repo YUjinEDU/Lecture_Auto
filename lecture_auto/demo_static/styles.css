@@ -26,8 +26,7 @@
   --yellow: #f59e0b;
   --blue:   #3b82f6;
 
-  --font-sans:  'Noto Sans KR', -apple-system, sans-serif;
-  --font-serif: 'Noto Serif KR', Georgia, serif;
+  --font-sans:  'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono:  'JetBrains Mono', 'Menlo', monospace;
 
   --radius:   10px;
@@ -43,8 +42,8 @@
 /* ── Reset ───────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* Base font 17px for readability */
-html { font-size: 17px; -webkit-font-smoothing: antialiased; }
+/* Base font 18px for readability */
+html { font-size: 18px; -webkit-font-smoothing: antialiased; }
 
 body {
   font-family: var(--font-sans);
@@ -111,7 +110,7 @@ ul { list-style: none; padding: 0; }
   height: 46px;
   background: var(--accent);
   color: #fff;
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 0.92rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -123,7 +122,7 @@ ul { list-style: none; padding: 0; }
 }
 
 .brand-name {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1.45rem;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -154,7 +153,7 @@ ul { list-style: none; padding: 0; }
 }
 
 .toolbar-label {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1.2rem;
   font-weight: 600;
   color: var(--text);
@@ -263,7 +262,7 @@ ul { list-style: none; padding: 0; }
 }
 
 .card-title {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1.08rem;
   font-weight: 600;
   line-height: 1.45;
@@ -327,7 +326,7 @@ ul { list-style: none; padding: 0; }
 .empty-icon { color: var(--faint); margin-bottom: 8px; }
 
 .empty-title {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1.4rem;
   font-weight: 600;
   color: var(--text);
@@ -468,7 +467,7 @@ ul { list-style: none; padding: 0; }
 .topbar-center { flex: 1; min-width: 0; text-align: center; }
 
 .detail-lecture-name {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1rem;
   font-weight: 600;
   color: var(--text);
@@ -771,7 +770,7 @@ ul { list-style: none; padding: 0; }
 }
 
 .detail-card h3 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1rem;
   font-weight: 600;
   margin-bottom: 12px;
@@ -862,7 +861,7 @@ ul { list-style: none; padding: 0; }
 }
 
 .control-name {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 1.1rem;
   line-height: 1.4;
@@ -996,7 +995,7 @@ ul { list-style: none; padding: 0; }
 }
 
 .video-card h3, .downloads-card h3 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1rem;
   font-weight: 600;
   margin-bottom: 14px;
@@ -1052,7 +1051,7 @@ ul { list-style: none; padding: 0; }
 }
 
 .modal-title {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1.1rem;
   font-weight: 600;
 }
@@ -1154,7 +1153,7 @@ ul { list-style: none; padding: 0; }
 /* Evidence */
 .modal-section { margin-bottom: 22px; }
 .modal-section h4 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 0.95rem;
   font-weight: 600;
   margin-bottom: 14px;
