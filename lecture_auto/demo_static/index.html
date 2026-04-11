@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lecture Auto</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600;700&family=Noto+Sans+KR:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/demo/assets/styles.css" />
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     HOME VIEW
+══════════════════════════════════════════════════════════ -->
+<div id="view-home" class="view">
+  <header class="home-header">
+    <div class="brand">
+      <div class="brand-mark">LA</div>
+      <div class="brand-text">
+        <h1 class="brand-name">Lecture Auto</h1>
+        <p class="brand-sub">강의 자동화 스튜디오</p>
+      </div>
+    </div>
+    <button class="btn-cta" id="btnNewLecture">
+      <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      새 강의 만들기
+    </button>
+  </header>
+
+  <div class="home-body">
+    <div class="home-toolbar">
+      <span class="toolbar-label">강의 목록</span>
+      <span class="count-badge" id="jobCountBadge">0</span>
+    </div>
+
+    <div id="lectureGrid" class="lecture-grid"></div>
+
+    <div id="emptyState" class="empty-home hidden">
+      <div class="empty-icon">
+        <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+          <rect x="2" y="3" width="20" height="14" rx="2"/>
+          <path d="M8 21h8M12 17v4"/>
+        </svg>
+      </div>
+      <h2 class="empty-title">강의가 아직 없습니다</h2>
+      <p class="empty-desc">첫 강의 자료를 업로드하여 파이프라인을 시작하세요.</p>
+      <button class="btn-cta" id="btnNewLectureEmpty">
+        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+        새 강의 만들기
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     DETAIL VIEW
+══════════════════════════════════════════════════════════ -->
+<div id="view-detail" class="view view--hidden">
+  <div class="detail-topbar">
+    <button class="back-btn" id="btnBack">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      목록
+    </button>
+    <div class="topbar-center">
+      <span id="detailLectureName" class="detail-lecture-name"></span>
+    </div>
+    <div class="topbar-right">
+      <span id="metricStatus" class="status-pill" data-status=""></span>
+      <span id="lastUpdated" class="last-updated-text"></span>
+    </div>
+  </div>
+
+  <nav class="tab-bar">
+    <div class="tab-list">
+      <button class="tab active" data-tab="pipeline">파이프라인</button>
+      <button class="tab" data-tab="review">슬라이드 검수</button>
+      <button class="tab" data-tab="settings">설정</button>
+      <button class="tab" data-tab="export">내보내기</button>
+    </div>
+    <span id="uploadMessage" class="status-msg" role="status" aria-live="polite"></span>
+  </nav>
+
+  <div class="detail-body">
+    <!-- Pipeline -->
+    <div id="panel-pipeline" class="panel">
+      <div id="stageGrid" class="stage-grid"></div>
+      <section class="log-section">
+        <div class="log-label-row">
+          <span class="log-label">실행 로그</span>
+        </div>
+        <div id="eventList" class="event-list"></div>
+      </section>
+    </div>
+
+    <!-- Review -->
+    <div id="panel-review" class="panel hidden">
+      <div class="review-layout">
+        <div id="slideThumbStrip" class="thumb-strip"></div>
+        <div id="slideDetail" class="slide-detail"></div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div id="panel-settings" class="panel hidden">
+      <div id="jobControls"></div>
+    </div>
+
+    <!-- Export -->
+    <div id="panel-export" class="panel hidden">
+      <div id="outputsArea"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     CREATE MODAL
+══════════════════════════════════════════════════════════ -->
+<div id="modalCreate" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modalCreateTitle">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2 id="modalCreateTitle" class="modal-title">새 강의 만들기</h2>
+      <button class="modal-close" id="btnCloseCreate" aria-label="닫기">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <form id="uploadForm" class="create-form">
+      <label class="dropzone" id="dropzone" for="pdfInput">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+        </svg>
+        <span class="dropzone-main">PDF 파일을 끌어다 놓거나 클릭하여 선택</span>
+        <span class="dropzone-hint" id="dropzoneHint">최대 100MB · PDF 형식</span>
+        <input type="file" id="pdfInput" name="pdf_file" accept=".pdf" class="sr-only" required />
+      </label>
+
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">강의 제목 <span class="optional">(선택)</span></span>
+          <input type="text" name="lecture_name" placeholder="예: 디자인씽킹 기반의 문제해결" class="field-input" />
+        </label>
+        <label class="field">
+          <span class="field-label">목표 시간 (분)</span>
+          <input type="number" name="target_minutes" value="8" min="1" max="120" class="field-input" />
+        </label>
+      </div>
+
+      <label class="checkbox-row">
+        <input type="checkbox" name="use_vlm" checked />
+        <span class="checkbox-label">슬라이드 시각 분석 (GPT Vision)</span>
+      </label>
+
+      <div class="modal-footer">
+        <p id="createMessage" class="create-msg" role="status" aria-live="polite"></p>
+        <button type="submit" class="btn-cta btn-cta--full" id="submitButton">
+          파이프라인 시작
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     EVIDENCE MODAL
+══════════════════════════════════════════════════════════ -->
+<div id="evidenceModal" class="modal-backdrop hidden" aria-hidden="true" role="dialog">
+  <div class="modal-box modal-box--wide">
+    <div class="modal-header">
+      <h2 class="modal-title">슬라이드 근거</h2>
+      <button class="modal-close" id="closeEvidenceModal" aria-label="닫기">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div id="evidenceModalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<script src="/demo/assets/app.js"></script>
+</body>
+</html>
