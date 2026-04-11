@@ -197,12 +197,12 @@ ul { list-style: none; padding: 0; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 24px 24px 20px;
+  padding: 20px 20px 16px;
   cursor: pointer;
-  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   position: relative;
   overflow: hidden;
 }
@@ -227,7 +227,6 @@ ul { list-style: none; padding: 0; }
 
 .lecture-card:hover {
   border-color: var(--border-2);
-  transform: translateY(-2px);
   box-shadow: var(--shadow);
 }
 
@@ -768,8 +767,8 @@ ul { list-style: none; padding: 0; }
 .detail-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px;
+  border-radius: var(--radius-lg);
+  padding: 24px;
 }
 
 .card-header-row {
@@ -855,8 +854,8 @@ ul { list-style: none; padding: 0; }
 .control-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 22px;
+  border-radius: var(--radius-lg);
+  padding: 24px;
   max-width: 700px;
   display: flex;
   flex-direction: column;
