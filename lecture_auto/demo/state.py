@@ -74,7 +74,11 @@ class DemoJob:
 
     def to_dict(self) -> dict:
         payload = copy.deepcopy(self.__dict__)
-        payload["slides"] = [self.slides[key] for key in sorted(self.slides)]
+        slides_list = [self.slides[key] for key in sorted(self.slides)]
+        payload["slides"] = slides_list
+        payload["tts_done_slides"] = [
+            s["slide_number"] for s in slides_list if s.get("tts_status") == "done"
+        ]
         return payload
 
     def to_summary(self) -> dict:

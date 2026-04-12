@@ -49,3 +49,12 @@ def test_approve_sets_slide_tts_status_to_queued(monkeypatch):
     slide = next(s for s in job["slides"] if s["slide_number"] == 1)
     assert slide["tts_status"] == "queued"
     assert slide.get("approved") is True
+
+
+def test_job_dict_includes_tts_done_slides():
+    create_job("job-tts-list", "test.pdf", "Test", 8)
+    upsert_slide("job-tts-list", 1, {"script": "a", "tts_status": "done"})
+    upsert_slide("job-tts-list", 2, {"script": "b", "tts_status": "pending"})
+    upsert_slide("job-tts-list", 3, {"script": "c", "tts_status": "done"})
+    job = get_job("job-tts-list")
+    assert job["tts_done_slides"] == [1, 3]

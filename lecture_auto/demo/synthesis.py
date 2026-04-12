@@ -276,6 +276,7 @@ def _run_tts_loop(
             {
                 "audio_url": f"/demo/api/jobs/{job_id}/audio/{script['slide_number']}/wav",
                 "tts_preview": tts_text,
+                "tts_status": "done",
             },
         )
         progress = int(idx / max(1, len(scripts)) * 100)
