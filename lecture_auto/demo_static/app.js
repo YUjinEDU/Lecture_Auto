@@ -890,7 +890,102 @@ async function retryJob(jobId) {
   // (partial resume from failed step is future work — recovery.can_resume_from carries that info)
   await fetch(`/demo/api/jobs/${jobId}/rerun`, { method: 'POST' });
 }
-function renderReviewSection(job) { /* Task 8 */ }
+let _currentSlide = 1;
+let _scriptDirty = false;
+
+function renderReviewSection(job) {
+  const list = document.getElementById('slide-list');
+  if (!list) return;
+  list.innerHTML = (job.slides || []).map(s => `
+    <div class="slide-list-item ${s.slide_number === _currentSlide ? 'active' : ''}"
+         data-slide="${s.slide_number}" style="cursor:pointer">
+      <img src="/demo/api/jobs/${job.job_id}/slides/${s.slide_number}/png"
+           alt="Slide ${s.slide_number}" loading="lazy"
+           onerror="this.style.display='none'">
+      <span>S${s.slide_number}${s.approved ? ' ✅' : ''}</span>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.slide-list-item').forEach(item => {
+    item.addEventListener('click', () => {
+      if (_scriptDirty && !confirm('편집 내용이 저장되지 않았습니다. 다른 슬라이드로 이동할까요?')) return;
+      _scriptDirty = false;
+      _currentSlide = parseInt(item.dataset.slide, 10);
+      renderReviewSection(job);
+    });
+  });
+
+  renderSlideView(job, _currentSlide);
+}
+
+function renderSlideView(job, slideNum) {
+  const slide = (job.slides || []).find(s => s.slide_number === slideNum);
+  if (!slide) return;
+
+  const imgWrap = document.getElementById('slide-image-wrap');
+  if (imgWrap) {
+    imgWrap.innerHTML = `<img src="/demo/api/jobs/${job.job_id}/slides/${slideNum}/png"
+      alt="Slide ${slideNum}" style="width:100%;border-radius:8px;border:1px solid #e5e7eb"
+      onerror="this.alt='이미지 없음'">`;
+  }
+
+  const editor = document.getElementById('script-editor');
+  if (editor) {
+    editor.value = slide.script || '';
+    editor.oninput = () => {
+      _scriptDirty = true;
+      document.getElementById('save-indicator')?.classList.remove('hidden');
+    };
+    editor.onblur = () => autoSaveScript(job.job_id, slideNum, editor.value);
+  }
+
+  const btnApprove = document.getElementById('btn-approve');
+  if (btnApprove) {
+    const ttsStatus = slide.tts_status || 'pending';
+    btnApprove.disabled = ttsStatus === 'queued' || ttsStatus === 'done';
+    btnApprove.textContent = ttsStatus === 'queued' ? 'TTS 생성 중…'
+      : ttsStatus === 'done' ? '승인 완료 ✅' : '승인 → TTS 시작';
+    btnApprove.onclick = () => approveSlide(job.job_id, slideNum);
+  }
+
+  const btnRegen = document.getElementById('btn-regenerate');
+  if (btnRegen) {
+    btnRegen.onclick = () => {
+      if (_scriptDirty && !confirm('편집 내용이 사라집니다. 계속할까요?')) return;
+      _scriptDirty = false;
+      rerunTtsForSlide(job.job_id, slideNum);
+    };
+  }
+}
+
+async function autoSaveScript(jobId, slideNum, text) {
+  const indicator = document.getElementById('save-indicator');
+  try {
+    // Backend uses PUT (not PATCH) — matches existing demo.py route
+    await fetch(`/demo/api/jobs/${jobId}/slides/${slideNum}/script`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script: text }),
+    });
+    _scriptDirty = false;
+    if (indicator) indicator.classList.add('hidden');
+  } catch {
+    if (indicator) { indicator.textContent = '저장 실패'; indicator.classList.remove('hidden'); }
+  }
+}
+
+async function approveSlide(jobId, slideNum) {
+  await fetch(`/demo/api/jobs/${jobId}/slides/${slideNum}/approve`, { method: 'POST' });
+  // Polling will pick up tts_status change on next tick
+}
+
+async function rerunTtsForSlide(jobId, slideNum) {
+  await fetch(`/demo/api/jobs/${jobId}/actions/rerun-tts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slide_number: slideNum }),
+  });
+}
 function renderDownloadSection(job) { /* Task 9 */ }
 
 // ─── Render (detail view) ─────────────────────────────────────────
