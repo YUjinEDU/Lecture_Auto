@@ -1065,6 +1065,7 @@ function render() {
   renderSlideStrip();
   renderSlideDetail();
   renderOutputs();
+  if (state.job) renderJobView(state.job);
 }
 
 // ─── Create modal ─────────────────────────────────────────────────
