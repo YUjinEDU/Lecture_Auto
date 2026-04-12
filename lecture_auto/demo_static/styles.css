@@ -485,7 +485,7 @@ select:focus,
 #view-detail {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  min-height: 100dvh;
 }
 
 .detail-topbar {
@@ -599,7 +599,7 @@ select:focus,
 }
 
 /* Detail body */
-.detail-body { flex: 1; overflow: hidden; }
+.detail-body { flex: 1; overflow-y: auto; }
 
 .panel { height: 100%; overflow-y: auto; padding: 28px; }
 
