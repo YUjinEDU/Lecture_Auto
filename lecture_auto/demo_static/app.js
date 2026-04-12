@@ -8,7 +8,6 @@ const state = {
   mediaStream: null,
   audioChunks: [],
   voiceBlob: null,
-  activeTab: 'pipeline',
   currentView: 'home',
   pendingVoiceBlob: null,   // voice file from modal, uploaded after job creation
 };
@@ -44,7 +43,6 @@ function showView(name) {
 function navigateToDetail(jobId) {
   window.location.hash = jobId;
   showView('detail');
-  switchTab('pipeline');
   startPolling(jobId);
 }
 
@@ -56,23 +54,6 @@ function navigateHome() {
   state.selectedSlide = null;
   renderHome();
 }
-
-// ─── Tab navigation ──────────────────────────────────────────────
-const TABS = ['pipeline', 'review', 'export'];
-
-function switchTab(name) {
-  if (!TABS.includes(name)) return;
-  state.activeTab = name;
-  TABS.forEach(tab => {
-    const active = tab === name;
-    document.querySelector(`.tab-bar [data-tab="${tab}"]`)?.classList.toggle('active', active);
-    document.querySelector(`#panel-${tab}`)?.classList.toggle('hidden', !active);
-  });
-}
-
-document.querySelectorAll('[data-tab]').forEach(btn => {
-  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-});
 
 // ─── Log toggle ──────────────────────────────────────────────────
 const logToggleBtn = document.querySelector('#logToggleBtn');
@@ -280,7 +261,7 @@ function startPolling(jobId) {
         stopPolling();
         submitButton.disabled = false;
         if (status === 'completed' && state.job?.slides?.length) {
-          switchTab('review');
+          renderJobView(state.job);
           showToast('파이프라인 완료! 슬라이드 검수로 이동합니다.');
         }
         return;
@@ -823,6 +804,37 @@ function renderOutputs() {
   `;
 }
 
+// ─── Status-driven layout ─────────────────────────────────────────
+const SECTIONS = ['progress', 'summary', 'review', 'download', 'failed'];
+
+function showSections(...names) {
+  SECTIONS.forEach(s => {
+    document.getElementById(`section-${s}`)?.classList.toggle('hidden', !names.includes(s));
+  });
+}
+
+function renderJobView(job) {
+  const { status } = job;
+  if (status === 'running' || status === 'queued') {
+    showSections('progress');
+    renderProgressSection(job);
+  } else if (status === 'completed') {
+    showSections('summary', 'review', 'download');
+    renderSummarySection(job);
+    renderReviewSection(job);
+    renderDownloadSection(job);
+  } else if (status === 'failed' || status === 'stopped') {
+    showSections('failed');
+    renderFailedSection(job);
+  }
+}
+
+function renderProgressSection(job) { /* Task 7 */ }
+function renderSummarySection(job) { /* Task 7 */ }
+function renderFailedSection(job) { /* Task 7 */ }
+function renderReviewSection(job) { /* Task 8 */ }
+function renderDownloadSection(job) { /* Task 9 */ }
+
 // ─── Render (detail view) ─────────────────────────────────────────
 function render() {
   setDetailTopbar();
@@ -969,7 +981,6 @@ async function boot() {
   const jobId = window.location.hash.replace('#', '').trim();
   if (jobId) {
     showView('detail');
-    switchTab('pipeline');
     startPolling(jobId);
   } else {
     showView('home');
