@@ -986,7 +986,75 @@ async function rerunTtsForSlide(jobId, slideNum) {
     body: JSON.stringify({ slide_number: slideNum }),
   });
 }
-function renderDownloadSection(job) { /* Task 9 */ }
+function renderDownloadSection(job) {
+  const el = document.getElementById('download-content');
+  if (!el) return;
+
+  const slides = job.slides || [];
+  const totalSlides = slides.length;
+  const doneSlides = (job.tts_done_slides || []);
+  const doneCount = doneSlides.length;
+  const allDone = totalSlides > 0 && doneCount === totalSlides;
+  const noneDone = doneCount === 0;
+
+  const wholeRowClass = (!allDone) ? 'download-row-disabled' : '';
+  const statusLabel = noneDone ? 'TTS 생성 대기 중'
+    : allDone ? '' : `${doneCount}/${totalSlides} 슬라이드 완료`;
+
+  el.innerHTML = `
+    <h3 style="margin-bottom:0.75rem;font-size:1rem;font-weight:600">다운로드</h3>
+    <table class="download-table">
+      <thead><tr>
+        <th>파일</th><th>범위</th><th>상태</th><th></th>
+      </tr></thead>
+      <tbody>
+        <tr class="${wholeRowClass}">
+          <td>음성 (WAV)</td><td>전체</td>
+          <td>${statusLabel}</td>
+          <td>${allDone ? `<a href="/demo/api/jobs/${job.job_id}/audio/merged" download>↓</a>` : ''}</td>
+        </tr>
+        <tr class="${wholeRowClass}">
+          <td>음성 (MP3)</td><td>전체</td>
+          <td>${allDone ? '' : statusLabel}</td>
+          <td>${allDone ? `<a href="/demo/api/jobs/${job.job_id}/audio/merged" download="lecture_merged.mp3">↓</a>` : ''}</td>
+        </tr>
+        <tr class="${wholeRowClass}">
+          <td>스크립트</td><td>전체</td>
+          <td>${statusLabel}</td>
+          <td>${allDone ? `<a href="/demo/api/jobs/${job.job_id}/package/download" download>↓ ZIP</a>` : ''}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4 style="margin-top:1rem;margin-bottom:0.5rem;font-size:0.875rem;font-weight:600">슬라이드별</h4>
+    <table class="download-table">
+      <tbody>
+        ${slides.map(s => {
+          const done = doneSlides.includes(s.slide_number);
+          return `<tr class="${done ? '' : 'download-row-disabled'}">
+            <td>슬라이드 ${s.slide_number}</td>
+            <td>${done
+              ? `<a href="/demo/api/jobs/${job.job_id}/audio/${s.slide_number}/wav" download>음성↓</a>`
+              : '생성 대기'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+
+    ${allDone ? `
+    <button class="btn-primary" style="margin-top:1rem" id="btn-zip-download">
+      선택 항목 ZIP 다운로드
+    </button>` : ''}
+  `;
+
+  if (allDone) {
+    document.getElementById('btn-zip-download')?.addEventListener('click', () => {
+      const hasUnapproved = slides.some(s => !s.approved);
+      if (hasUnapproved && !confirm('일부 슬라이드가 미승인 상태입니다. 그래도 다운로드할까요?')) return;
+      window.location.href = `/demo/api/jobs/${job.job_id}/package/download`;
+    }, { once: true });
+  }
+}
 
 // ─── Render (detail view) ─────────────────────────────────────────
 function render() {
