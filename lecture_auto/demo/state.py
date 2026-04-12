@@ -164,6 +164,24 @@ def list_job_summaries() -> list[dict]:
     return jobs
 
 
+def delete_job(job_id: str) -> bool:
+    with _LOCK:
+        if job_id in _JOBS:
+            del _JOBS[job_id]
+            return True
+        return False
+
+
+def rename_job(job_id: str, new_name: str) -> dict | None:
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return None
+        job.lecture_name = new_name
+        job.updated_at = _now()
+        return job.to_dict()
+
+
 def _find_stage(job: DemoJob, stage_key: str) -> dict:
     for stage in job.stages:
         if stage["key"] == stage_key:

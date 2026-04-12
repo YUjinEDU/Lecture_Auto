@@ -23,7 +23,7 @@ from lecture_auto.demo import (
     update_glossary,
     update_script_and_rebuild,
 )
-from lecture_auto.demo.state import get_job, list_job_summaries, upsert_slide
+from lecture_auto.demo.state import delete_job, get_job, list_job_summaries, rename_job, upsert_slide
 
 
 router = APIRouter(tags=["demo"])
@@ -84,6 +84,24 @@ async def create_demo_pipeline_job(
 @router.get("/demo/api/jobs/{job_id}")
 async def get_demo_pipeline_job(job_id: str):
     return JSONResponse(_require_job(job_id))
+
+
+@router.delete("/demo/api/jobs/{job_id}")
+async def delete_demo_job(job_id: str):
+    if not delete_job(job_id):
+        raise HTTPException(status_code=404, detail=f"Demo job not found: {job_id}")
+    return {"job_id": job_id, "deleted": True}
+
+
+@router.patch("/demo/api/jobs/{job_id}")
+async def patch_demo_job(job_id: str, payload: dict = Body(...)):
+    new_name = payload.get("lecture_name")
+    if not new_name or not isinstance(new_name, str):
+        raise HTTPException(status_code=400, detail="lecture_name is required.")
+    result = rename_job(job_id, new_name.strip())
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Demo job not found: {job_id}")
+    return JSONResponse(result)
 
 
 @router.post("/demo/api/jobs/{job_id}/voice-reference")

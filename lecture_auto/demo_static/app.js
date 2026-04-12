@@ -316,10 +316,18 @@ function renderHome() {
     const mins = job.target_minutes ?? 8;
     const updatedAt = job.updated_at ? new Date(job.updated_at).toLocaleString() : '';
     return `
-      <button class="lecture-card" data-status="${st}" data-job="${job.job_id}">
+      <div class="lecture-card" data-status="${st}" data-job="${job.job_id}">
         <div class="card-status-row">
           <span class="card-status-dot"></span>
           <span class="card-status-label">${statusLabel(st)}</span>
+          <div class="card-actions">
+            <button class="card-action-btn card-rename-btn" data-job="${job.job_id}" data-name="${name}" title="이름 수정" aria-label="이름 수정">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="card-action-btn card-delete-btn" data-job="${job.job_id}" title="삭제" aria-label="삭제">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
         </div>
         <span class="card-title">${name}</span>
         <span class="card-filename">${file}</span>
@@ -332,12 +340,45 @@ function renderHome() {
             <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </div>
-      </button>
+      </div>
     `;
   }).join('');
 
+  // Card click → navigate to detail
   lectureGrid.querySelectorAll('.lecture-card').forEach(card => {
-    card.addEventListener('click', () => navigateToDetail(card.dataset.job));
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.card-action-btn')) return; // don't navigate on action btn click
+      navigateToDetail(card.dataset.job);
+    });
+  });
+
+  // Delete buttons
+  lectureGrid.querySelectorAll('.card-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('이 강의를 삭제할까요?')) return;
+      await api(`/demo/api/jobs/${btn.dataset.job}`, { method: 'DELETE' });
+      await fetchJobs();
+      renderHome();
+    });
+  });
+
+  // Rename buttons
+  lectureGrid.querySelectorAll('.card-rename-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const newName = prompt('새 강의 이름:', btn.dataset.name);
+      if (!newName || !newName.trim()) return;
+      (async () => {
+        await api(`/demo/api/jobs/${btn.dataset.job}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lecture_name: newName.trim() }),
+        });
+        await fetchJobs();
+        renderHome();
+      })();
+    });
   });
 }
 

@@ -123,6 +123,11 @@ select:focus,
 #view-home {
   display: flex;
   flex-direction: column;
+  background:
+    radial-gradient(circle at top left, #e0f2fe 0%, transparent 40%),
+    radial-gradient(circle at bottom right, #d1fae5 0%, transparent 40%),
+    var(--bg);
+  background-attachment: fixed;
 }
 
 .home-header {
@@ -272,6 +277,32 @@ select:focus,
   border-color: var(--border-2);
   box-shadow: var(--shadow);
 }
+
+/* Card action buttons (rename, delete) */
+.card-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.lecture-card:hover .card-actions { opacity: 1; }
+
+.card-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: var(--surface-3);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  cursor: pointer;
+  transition: 0.15s;
+}
+.card-action-btn:hover { background: var(--border); color: var(--text); }
+.card-delete-btn:hover { background: #fef2f2; color: var(--red); }
 
 .lecture-card:focus-visible {
   outline: 2px solid var(--accent);
