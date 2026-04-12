@@ -829,9 +829,67 @@ function renderJobView(job) {
   }
 }
 
-function renderProgressSection(job) { /* Task 7 */ }
-function renderSummarySection(job) { /* Task 7 */ }
-function renderFailedSection(job) { /* Task 7 */ }
+function renderProgressSection(job) {
+  const stepsEl = document.getElementById('progress-steps');
+  if (stepsEl) {
+    stepsEl.innerHTML = (job.stages || []).map(s => `
+      <div class="stage-row" style="display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0">
+        <span>${s.status === 'done' ? '✅' : s.status === 'running' ? '⏳' : s.status === 'failed' ? '❌' : '○'}</span>
+        <span>${s.label || s.key}</span>
+        ${s.progress !== undefined && s.progress > 0 && s.status !== 'done' ? `<span style="color:#6b7280;font-size:0.8em">${s.progress}%</span>` : ''}
+        ${s.detail ? `<span style="color:#6b7280;font-size:0.8em">${s.detail}</span>` : ''}
+      </div>
+    `).join('');
+  }
+
+  // Log toggle
+  const logToggle = document.getElementById('progress-log-toggle');
+  const logEl = document.getElementById('progress-log');
+  if (logToggle && logEl && !logToggle.dataset.bound) {
+    logToggle.innerHTML = '<button onclick="this.closest(\'#progress-log-toggle\').nextElementSibling.classList.toggle(\'hidden\')">로그 보기 ▾</button>';
+    logToggle.dataset.bound = '1';
+  }
+  if (logEl) {
+    logEl.innerHTML = (job.events || []).slice(-30).map(e =>
+      `<div style="font-size:0.75rem;color:#6b7280">[${e.stage}] ${e.message}</div>`
+    ).join('');
+  }
+}
+
+function renderSummarySection(job) {
+  const el = document.getElementById('summary-steps');
+  if (!el) return;
+  el.innerHTML = (job.stages || []).map(s => `
+    <div class="stage-row" style="display:flex;align-items:center;gap:0.5rem;padding:0.2rem 0">
+      <span>${s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : '○'}</span>
+      <span>${s.label || s.key}</span>
+    </div>
+  `).join('');
+}
+
+function renderFailedSection(job) {
+  const msgEl = document.getElementById('error-message');
+  if (msgEl) msgEl.textContent = job.error || '알 수 없는 오류가 발생했습니다.';
+
+  const logEl = document.getElementById('error-log');
+  if (logEl) {
+    logEl.innerHTML = (job.events || []).slice(-20).map(e =>
+      `<div style="font-size:0.75rem;color:#6b7280">[${e.stage}] ${e.message}</div>`
+    ).join('');
+  }
+
+  const retryBtn = document.getElementById('btn-retry');
+  if (retryBtn && !retryBtn.dataset.bound) {
+    retryBtn.dataset.bound = '1';
+    retryBtn.addEventListener('click', () => retryJob(job.job_id), { once: true });
+  }
+}
+
+async function retryJob(jobId) {
+  // Full restart via existing /rerun endpoint
+  // (partial resume from failed step is future work — recovery.can_resume_from carries that info)
+  await fetch(`/demo/api/jobs/${jobId}/rerun`, { method: 'POST' });
+}
 function renderReviewSection(job) { /* Task 8 */ }
 function renderDownloadSection(job) { /* Task 9 */ }
 
