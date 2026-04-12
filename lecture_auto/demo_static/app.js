@@ -8,6 +8,7 @@ const state = {
   mediaStream: null,
   audioChunks: [],
   voiceBlob: null,
+  activeTab: 'pipeline',
   currentView: 'home',
   pendingVoiceBlob: null,   // voice file from modal, uploaded after job creation
 };
@@ -43,6 +44,7 @@ function showView(name) {
 function navigateToDetail(jobId) {
   window.location.hash = jobId;
   showView('detail');
+  switchTab('pipeline');
   startPolling(jobId);
 }
 
@@ -54,6 +56,23 @@ function navigateHome() {
   state.selectedSlide = null;
   renderHome();
 }
+
+// ─── Tab navigation ──────────────────────────────────────────────
+const TABS = ['pipeline', 'review', 'export'];
+
+function switchTab(name) {
+  if (!TABS.includes(name)) return;
+  state.activeTab = name;
+  TABS.forEach(tab => {
+    const active = tab === name;
+    document.querySelector(`.tab-bar [data-tab="${tab}"]`)?.classList.toggle('active', active);
+    document.querySelector(`#panel-${tab}`)?.classList.toggle('hidden', !active);
+  });
+}
+
+document.querySelectorAll('[data-tab]').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
 
 // ─── Log toggle ──────────────────────────────────────────────────
 const logToggleBtn = document.querySelector('#logToggleBtn');
@@ -261,7 +280,7 @@ function startPolling(jobId) {
         stopPolling();
         submitButton.disabled = false;
         if (status === 'completed' && state.job?.slides?.length) {
-          renderJobView(state.job);
+          switchTab('review');
           showToast('파이프라인 완료! 슬라이드 검수로 이동합니다.');
         }
         return;
@@ -804,283 +823,15 @@ function renderOutputs() {
   `;
 }
 
-// ─── Status-driven layout ─────────────────────────────────────────
-const SECTIONS = ['progress', 'summary', 'review', 'download', 'failed'];
-
-function showSections(...names) {
-  SECTIONS.forEach(s => {
-    document.getElementById(`section-${s}`)?.classList.toggle('hidden', !names.includes(s));
-  });
-}
-
-function renderJobView(job) {
-  const { status } = job;
-  if (status === 'running' || status === 'queued') {
-    showSections('progress');
-    renderProgressSection(job);
-  } else if (status === 'completed') {
-    showSections('summary', 'review', 'download');
-    renderSummarySection(job);
-    renderReviewSection(job);
-    renderDownloadSection(job);
-  } else if (status === 'failed' || status === 'stopped') {
-    showSections('failed');
-    renderFailedSection(job);
-  }
-}
-
-function _stepDotContent(status, index) {
-  if (status === 'done' || status === 'completed')
-    return `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7l3.5 3.5 5.5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  if (status === 'running')
-    return `<div class="step-spinner"></div>`;
-  if (status === 'failed')
-    return `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2 2 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
-  return String(index + 1);
-}
-
-function renderProgressSection(job) {
-  const stepsEl = document.getElementById('progress-steps');
-  if (stepsEl) {
-    stepsEl.innerHTML = `<h3>파이프라인 진행</h3>` + (job.stages || []).map((s, i) => `
-      <div class="step ${s.status}">
-        <div class="step-dot">${_stepDotContent(s.status, i)}</div>
-        <span class="step-label">${escapeHtml(s.label || s.key)}</span>
-        ${s.progress != null && s.progress > 0 && s.status === 'running' ? `<span class="step-progress">${s.progress}%</span>` : ''}
-        ${s.detail ? `<span class="step-detail">${escapeHtml(s.detail)}</span>` : ''}
-      </div>
-    `).join('');
-  }
-
-  const logToggle = document.getElementById('progress-log-toggle');
-  const logEl = document.getElementById('progress-log');
-  if (logToggle && !logToggle.dataset.bound) {
-    logToggle.innerHTML = `<button class="btn-ghost" onclick="document.getElementById('progress-log').classList.toggle('hidden')">로그 보기 ▾</button>`;
-    logToggle.dataset.bound = '1';
-  }
-  if (logEl) {
-    logEl.innerHTML = (job.events || []).slice(-30).map(e =>
-      `<article class="event-item"><span class="event-time">${escapeHtml(e.stage)}</span><div>${escapeHtml(e.message)}</div></article>`
-    ).join('');
-  }
-}
-
-function renderSummarySection(job) {
-  const el = document.getElementById('summary-steps');
-  if (!el) return;
-  el.innerHTML = (job.stages || []).map((s, i) => `
-    <div class="step ${s.status}">
-      <div class="step-dot">${_stepDotContent(s.status, i)}</div>
-      <span class="step-label">${escapeHtml(s.label || s.key)}</span>
-    </div>
-  `).join('');
-}
-
-function renderFailedSection(job) {
-  const msgEl = document.getElementById('error-message');
-  if (msgEl) {
-    msgEl.innerHTML = `<div class="error-box">${escapeHtml(job.error || '알 수 없는 오류가 발생했습니다.')}</div>`;
-  }
-
-  const logEl = document.getElementById('error-log');
-  if (logEl) {
-    logEl.innerHTML = (job.events || []).slice(-20).map(e =>
-      `<article class="event-item"><span class="event-time">${escapeHtml(e.stage)}</span><div>${escapeHtml(e.message)}</div></article>`
-    ).join('');
-  }
-
-  const retryBtn = document.getElementById('btn-retry');
-  if (retryBtn && !retryBtn.dataset.bound) {
-    retryBtn.dataset.bound = '1';
-    retryBtn.addEventListener('click', () => retryJob(job.job_id), { once: true });
-  }
-}
-
-async function retryJob(jobId) {
-  // Full restart via existing /rerun endpoint
-  // (partial resume from failed step is future work — recovery.can_resume_from carries that info)
-  await fetch(`/demo/api/jobs/${jobId}/rerun`, { method: 'POST' });
-}
-let _currentSlide = 1;
-let _scriptDirty = false;
-
-function renderReviewSection(job) {
-  const list = document.getElementById('slide-list');
-  if (!list) return;
-  list.innerHTML = `<h3>슬라이드 검수</h3>` + (job.slides || []).map(s => `
-    <div class="slide-list-item ${s.slide_number === _currentSlide ? 'active' : ''}"
-         data-slide="${s.slide_number}">
-      <img src="/demo/api/jobs/${job.job_id}/slides/${s.slide_number}/png"
-           alt="Slide ${s.slide_number}" loading="lazy"
-           onerror="this.style.visibility='hidden'">
-      <span>S${s.slide_number}${s.approved ? ' ✅' : ''}</span>
-    </div>
-  `).join('');
-
-  list.querySelectorAll('.slide-list-item').forEach(item => {
-    item.addEventListener('click', () => {
-      if (_scriptDirty && !confirm('편집 내용이 저장되지 않았습니다. 다른 슬라이드로 이동할까요?')) return;
-      _scriptDirty = false;
-      _currentSlide = parseInt(item.dataset.slide, 10);
-      renderReviewSection(job);
-    });
-  });
-
-  renderSlideView(job, _currentSlide);
-}
-
-function renderSlideView(job, slideNum) {
-  const slide = (job.slides || []).find(s => s.slide_number === slideNum);
-  if (!slide) return;
-
-  const imgWrap = document.getElementById('slide-image-wrap');
-  if (imgWrap) {
-    imgWrap.innerHTML = `<img src="/demo/api/jobs/${job.job_id}/slides/${slideNum}/png"
-      alt="Slide ${slideNum}"
-      onerror="this.alt='이미지 없음'">`;
-  }
-
-  const editor = document.getElementById('script-editor');
-  if (editor) {
-    editor.value = slide.script || '';
-    editor.oninput = () => {
-      _scriptDirty = true;
-      document.getElementById('save-indicator')?.classList.remove('hidden');
-    };
-    editor.onblur = () => autoSaveScript(job.job_id, slideNum, editor.value);
-  }
-
-  const btnApprove = document.getElementById('btn-approve');
-  if (btnApprove) {
-    const ttsStatus = slide.tts_status || 'pending';
-    btnApprove.disabled = ttsStatus === 'queued' || ttsStatus === 'done';
-    btnApprove.textContent = ttsStatus === 'queued' ? 'TTS 생성 중…'
-      : ttsStatus === 'done' ? '승인 완료 ✅' : '승인 → TTS 시작';
-    btnApprove.onclick = () => approveSlide(job.job_id, slideNum);
-  }
-
-  const btnRegen = document.getElementById('btn-regenerate');
-  if (btnRegen) {
-    btnRegen.onclick = () => {
-      if (_scriptDirty && !confirm('편집 내용이 사라집니다. 계속할까요?')) return;
-      _scriptDirty = false;
-      rerunTtsForSlide(job.job_id, slideNum);
-    };
-  }
-}
-
-async function autoSaveScript(jobId, slideNum, text) {
-  const indicator = document.getElementById('save-indicator');
-  try {
-    // Backend uses PUT (not PATCH) — matches existing demo.py route
-    await fetch(`/demo/api/jobs/${jobId}/slides/${slideNum}/script`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ script: text }),
-    });
-    _scriptDirty = false;
-    if (indicator) indicator.classList.add('hidden');
-  } catch {
-    if (indicator) { indicator.textContent = '저장 실패'; indicator.classList.remove('hidden'); }
-  }
-}
-
-async function approveSlide(jobId, slideNum) {
-  await fetch(`/demo/api/jobs/${jobId}/slides/${slideNum}/approve`, { method: 'POST' });
-  // Polling will pick up tts_status change on next tick
-}
-
-async function rerunTtsForSlide(jobId, slideNum) {
-  await fetch(`/demo/api/jobs/${jobId}/actions/rerun-tts`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slide_number: slideNum }),
-  });
-}
-function renderDownloadSection(job) {
-  const el = document.getElementById('download-content');
-  if (!el) return;
-
-  const slides = job.slides || [];
-  const totalSlides = slides.length;
-  const doneSlides = (job.tts_done_slides || []);
-  const doneCount = doneSlides.length;
-  const allDone = totalSlides > 0 && doneCount === totalSlides;
-  const noneDone = doneCount === 0;
-
-  const wholeRowClass = (!allDone) ? 'download-row-disabled' : '';
-  const statusLabel = noneDone ? 'TTS 생성 대기 중'
-    : allDone ? '' : `${doneCount}/${totalSlides} 슬라이드 완료`;
-
-  el.innerHTML = `
-    <h3>다운로드</h3>
-    <table class="download-table">
-      <thead><tr>
-        <th>파일</th><th>범위</th><th>상태</th><th></th>
-      </tr></thead>
-      <tbody>
-        <tr class="${wholeRowClass}">
-          <td>음성 (WAV)</td><td>전체</td>
-          <td>${statusLabel}</td>
-          <td>${allDone ? `<a href="/demo/api/jobs/${job.job_id}/audio/merged" download>↓</a>` : ''}</td>
-        </tr>
-        <tr class="${wholeRowClass}">
-          <td>음성 (MP3)</td><td>전체</td>
-          <td>${allDone ? '' : statusLabel}</td>
-          <td>${allDone ? `<a href="/demo/api/jobs/${job.job_id}/audio/merged" download="lecture_merged.mp3">↓</a>` : ''}</td>
-        </tr>
-        <tr class="${wholeRowClass}">
-          <td>스크립트</td><td>전체</td>
-          <td>${statusLabel}</td>
-          <td>${allDone ? `<a href="/demo/api/jobs/${job.job_id}/package/download" download>↓ ZIP</a>` : ''}</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h4 class="download-sub-title">슬라이드별</h4>
-    <table class="download-table">
-      <tbody>
-        ${slides.map(s => {
-          const done = doneSlides.includes(s.slide_number);
-          return `<tr class="${done ? '' : 'download-row-disabled'}">
-            <td>슬라이드 ${s.slide_number}</td>
-            <td>${done
-              ? `<a href="/demo/api/jobs/${job.job_id}/audio/${s.slide_number}/wav" download>음성↓</a>`
-              : '생성 대기'}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>
-
-    ${allDone ? `
-    <button class="btn-cta btn-cta--full" id="btn-zip-download" style="margin-top:1rem">
-      선택 항목 ZIP 다운로드
-    </button>` : ''}
-  `;
-
-  if (allDone) {
-    document.getElementById('btn-zip-download')?.addEventListener('click', () => {
-      const hasUnapproved = slides.some(s => !s.approved);
-      if (hasUnapproved && !confirm('일부 슬라이드가 미승인 상태입니다. 그래도 다운로드할까요?')) return;
-      window.location.href = `/demo/api/jobs/${job.job_id}/package/download`;
-    }, { once: true });
-  }
-}
-
 // ─── Render (detail view) ─────────────────────────────────────────
 function render() {
-  // New status-driven layout (single-scroll sections)
-  if (state.job) renderJobView(state.job);
-
-  // Legacy renderers — target DOM elements removed in single-scroll refactor.
-  // Guarded with optional chaining; will be fully removed once legacy code is cleaned up.
   setDetailTopbar();
-  if (stageGrid)       renderStages();
-  if (eventList)       renderEvents();
-  if (jobControls)     renderJobControls();
-  if (slideThumbStrip) renderSlideStrip();
-  if (slideDetail)     renderSlideDetail();
-  if (outputsArea)     renderOutputs();
+  renderStages();
+  renderEvents();
+  renderJobControls();
+  renderSlideStrip();
+  renderSlideDetail();
+  renderOutputs();
 }
 
 // ─── Create modal ─────────────────────────────────────────────────
@@ -1218,6 +969,7 @@ async function boot() {
   const jobId = window.location.hash.replace('#', '').trim();
   if (jobId) {
     showView('detail');
+    switchTab('pipeline');
     startPolling(jobId);
   } else {
     showView('home');

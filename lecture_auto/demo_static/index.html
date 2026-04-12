@@ -78,55 +78,42 @@
     </div>
   </div>
 
+  <nav class="tab-bar">
+    <div class="tab-list">
+      <button class="tab active" data-tab="pipeline">진행상황</button>
+      <button class="tab" data-tab="review">슬라이드 검수</button>
+      <button class="tab" data-tab="export">다운로드</button>
+    </div>
+    <span id="uploadMessage" class="status-msg" role="status" aria-live="polite"></span>
+  </nav>
+
   <div class="detail-body">
-    <!-- running state -->
-    <section id="section-progress" class="job-section hidden">
-      <div id="progress-steps"></div>
-      <div id="progress-log-toggle"></div>
-      <div id="progress-log" class="log-panel hidden"></div>
-      <div id="review-placeholder" class="review-placeholder">
-        <span>⏳ 파이프라인 완료 후 열립니다</span>
-      </div>
-    </section>
-
-    <!-- completed state: collapsed summary -->
-    <section id="section-summary" class="job-section hidden">
-      <details id="progress-summary">
-        <summary>진행 요약 보기</summary>
-        <div id="summary-steps"></div>
-      </details>
-    </section>
-
-    <!-- completed state: slide review -->
-    <section id="section-review" class="job-section hidden">
-      <div class="review-panel">
-        <aside id="slide-list" class="slide-list"></aside>
-        <div id="slide-view" class="slide-view">
-          <div id="slide-image-wrap"></div>
-          <div id="script-editor-wrap">
-            <textarea id="script-editor"></textarea>
-            <span id="save-indicator" class="save-indicator hidden">저장 중…</span>
-          </div>
-          <div class="slide-actions">
-            <button id="btn-regenerate" class="btn-secondary">재생성</button>
-            <button id="btn-approve" class="btn-primary">승인 → TTS 시작</button>
-          </div>
+    <!-- Pipeline -->
+    <div id="panel-pipeline" class="panel">
+      <div id="stageGrid" class="stage-grid"></div>
+      <button class="log-toggle-btn" id="logToggleBtn" type="button">
+        로그 보기 ▼
+      </button>
+      <section class="log-section hidden" id="logSection">
+        <div class="log-label-row">
+          <span class="log-label">실행 로그</span>
         </div>
+        <div id="eventList" class="event-list"></div>
+      </section>
+    </div>
+
+    <!-- Review -->
+    <div id="panel-review" class="panel hidden">
+      <div class="review-layout">
+        <div id="slideThumbStrip" class="thumb-strip"></div>
+        <div id="slideDetail" class="slide-detail"></div>
       </div>
-    </section>
+    </div>
 
-    <!-- completed state: download -->
-    <section id="section-download" class="job-section hidden">
-      <div id="download-content"></div>
-    </section>
-
-    <!-- failed state -->
-    <section id="section-failed" class="job-section hidden">
-      <div id="error-message"></div>
-      <div id="error-log-toggle"></div>
-      <div id="error-log" class="log-panel hidden"></div>
-      <button id="btn-retry" class="btn-primary">재시도</button>
-    </section>
+    <!-- Export -->
+    <div id="panel-export" class="panel hidden">
+      <div id="outputsArea"></div>
+    </div>
   </div>
 </div>
 
