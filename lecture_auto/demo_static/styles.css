@@ -1408,23 +1408,42 @@ select:focus,
 
 /* ═══════════════════════════════════════════════════════════════
    SINGLE-SCREEN OVERRIDE — hide tabs, stack panels as cards
+   Matches mockup: .superpowers/brainstorm/60161-single-screen-mockup
 ════════════════════════════════════════════════════════════════ */
 
 /* Hide tab bar */
 .tab-bar { display: none !important; }
 
-/* Detail body becomes a vertical scroll container */
+/* Topbar — sticky glassmorphism */
+.detail-topbar {
+  position: sticky !important;
+  top: 0;
+  z-index: 50;
+  background: rgba(255, 255, 255, 0.7) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
+}
+
+/* Detail body — centered container, vertical stack */
 .detail-body {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 24px 28px;
-  background: var(--bg);
+  gap: 24px;
+  padding: 32px;
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+  background:
+    radial-gradient(circle at top left, #e0f2fe 0%, transparent 40%),
+    radial-gradient(circle at bottom right, #d1fae5 0%, transparent 40%),
+    var(--bg);
 }
 
-/* All panels visible, styled as cards */
+/* All panels visible */
 .panel {
   height: auto !important;
   overflow: visible !important;
@@ -1433,56 +1452,68 @@ select:focus,
 }
 .panel.hidden { display: block !important; }
 
+/* Card treatment */
 .panel-card {
   background: var(--surface);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
   padding: 20px 24px !important;
-  transition: box-shadow 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
-.panel-card:hover { box-shadow: var(--shadow), 0 2px 8px rgba(0,0,0,0.04); }
-
-/* Pipeline card — compact progress summary */
-#panel-pipeline .stage-grid {
-  padding: 0;
+.panel-card:hover {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
 }
 
-/* Review card — sidebar + editor grid from mockup */
+/* ── Pipeline card ─────────────────────── */
+#panel-pipeline .stage-grid { padding: 0; }
+
+/* ── Review card — 280px sidebar + editor ── */
 #panel-review .review-layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 20px;
-  min-height: 500px;
+  grid-template-columns: 280px 1fr;
+  gap: 24px;
+  min-height: 600px;
 }
 #panel-review .thumb-strip {
   flex-direction: column;
   overflow-y: auto;
-  max-height: 600px;
+  max-height: 650px;
   border-right: 1px solid var(--border);
   padding-right: 16px;
 }
+/* Slide items — match mockup active/hover */
+#panel-review .thumb-strip .thumb-item:hover {
+  background: #f8fafc;
+}
+#panel-review .thumb-strip .thumb-item.selected {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px #d1fae5;
+}
 
-/* Export card — grid layout for download options */
+/* ── Export card — 3-col grid ────────────── */
 #panel-export .output-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
 }
-
-/* Topbar gets glassmorphism from mockup */
-.detail-topbar {
-  background: rgba(255, 255, 255, 0.75) !important;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-bottom: 1px solid var(--border) !important;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
+#panel-export .output-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  transition: 0.2s;
+}
+#panel-export .output-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
-/* ── Single-screen mobile ─────────────── */
+/* ── Mobile (< 768px) ────────────────────── */
 @media (max-width: 767px) {
   .detail-body { padding: 16px; gap: 16px; }
-  .panel-card { padding: 16px !important; }
+  .panel-card { padding: 16px !important; border-radius: 12px; }
 
   #panel-review .review-layout {
     grid-template-columns: 1fr;
@@ -1497,14 +1528,14 @@ select:focus,
     padding-right: 0;
     padding-bottom: 8px;
   }
-
   #panel-export .output-grid {
     grid-template-columns: 1fr;
   }
 }
 
-/* Tablet */
+/* ── Tablet (768–1024px) ─────────────────── */
 @media (min-width: 768px) and (max-width: 1023px) {
+  .detail-body { padding: 24px; }
   #panel-review .review-layout {
     grid-template-columns: 200px 1fr;
   }
