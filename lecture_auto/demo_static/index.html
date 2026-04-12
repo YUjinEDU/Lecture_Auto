@@ -80,10 +80,9 @@
 
   <nav class="tab-bar">
     <div class="tab-list">
-      <button class="tab active" data-tab="pipeline">파이프라인</button>
+      <button class="tab active" data-tab="pipeline">진행상황</button>
       <button class="tab" data-tab="review">슬라이드 검수</button>
-      <button class="tab" data-tab="settings">설정</button>
-      <button class="tab" data-tab="export">내보내기</button>
+      <button class="tab" data-tab="export">다운로드</button>
     </div>
     <span id="uploadMessage" class="status-msg" role="status" aria-live="polite"></span>
   </nav>
@@ -92,7 +91,10 @@
     <!-- Pipeline -->
     <div id="panel-pipeline" class="panel">
       <div id="stageGrid" class="stage-grid"></div>
-      <section class="log-section">
+      <button class="log-toggle-btn" id="logToggleBtn" type="button">
+        로그 보기 ▼
+      </button>
+      <section class="log-section hidden" id="logSection">
         <div class="log-label-row">
           <span class="log-label">실행 로그</span>
         </div>
@@ -106,11 +108,6 @@
         <div id="slideThumbStrip" class="thumb-strip"></div>
         <div id="slideDetail" class="slide-detail"></div>
       </div>
-    </div>
-
-    <!-- Settings -->
-    <div id="panel-settings" class="panel hidden">
-      <div id="jobControls"></div>
     </div>
 
     <!-- Export -->
