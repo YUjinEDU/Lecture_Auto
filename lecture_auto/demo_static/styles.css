@@ -303,6 +303,7 @@ select:focus,
 }
 .card-action-btn:hover { background: var(--border); color: var(--text); }
 .card-delete-btn:hover { background: #fef2f2; color: var(--red); }
+.card-restart-btn:hover { background: #ecfdf5; color: var(--accent); }
 
 .lecture-card:focus-visible {
   outline: 2px solid var(--accent);
