@@ -829,29 +829,38 @@ function renderJobView(job) {
   }
 }
 
+function _stepDotContent(status, index) {
+  if (status === 'done' || status === 'completed')
+    return `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7l3.5 3.5 5.5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  if (status === 'running')
+    return `<div class="step-spinner"></div>`;
+  if (status === 'failed')
+    return `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2 2 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+  return String(index + 1);
+}
+
 function renderProgressSection(job) {
   const stepsEl = document.getElementById('progress-steps');
   if (stepsEl) {
-    stepsEl.innerHTML = (job.stages || []).map(s => `
-      <div class="stage-row" style="display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0">
-        <span>${s.status === 'done' ? '✅' : s.status === 'running' ? '⏳' : s.status === 'failed' ? '❌' : '○'}</span>
-        <span>${s.label || s.key}</span>
-        ${s.progress !== undefined && s.progress > 0 && s.status !== 'done' ? `<span style="color:#6b7280;font-size:0.8em">${s.progress}%</span>` : ''}
-        ${s.detail ? `<span style="color:#6b7280;font-size:0.8em">${s.detail}</span>` : ''}
+    stepsEl.innerHTML = `<h3>파이프라인 진행</h3>` + (job.stages || []).map((s, i) => `
+      <div class="step ${s.status}">
+        <div class="step-dot">${_stepDotContent(s.status, i)}</div>
+        <span class="step-label">${escapeHtml(s.label || s.key)}</span>
+        ${s.progress != null && s.progress > 0 && s.status === 'running' ? `<span class="step-progress">${s.progress}%</span>` : ''}
+        ${s.detail ? `<span class="step-detail">${escapeHtml(s.detail)}</span>` : ''}
       </div>
     `).join('');
   }
 
-  // Log toggle
   const logToggle = document.getElementById('progress-log-toggle');
   const logEl = document.getElementById('progress-log');
-  if (logToggle && logEl && !logToggle.dataset.bound) {
-    logToggle.innerHTML = '<button onclick="this.closest(\'#progress-log-toggle\').nextElementSibling.classList.toggle(\'hidden\')">로그 보기 ▾</button>';
+  if (logToggle && !logToggle.dataset.bound) {
+    logToggle.innerHTML = `<button class="btn-ghost" onclick="document.getElementById('progress-log').classList.toggle('hidden')">로그 보기 ▾</button>`;
     logToggle.dataset.bound = '1';
   }
   if (logEl) {
     logEl.innerHTML = (job.events || []).slice(-30).map(e =>
-      `<div style="font-size:0.75rem;color:#6b7280">[${e.stage}] ${e.message}</div>`
+      `<article class="event-item"><span class="event-time">${escapeHtml(e.stage)}</span><div>${escapeHtml(e.message)}</div></article>`
     ).join('');
   }
 }
@@ -859,22 +868,24 @@ function renderProgressSection(job) {
 function renderSummarySection(job) {
   const el = document.getElementById('summary-steps');
   if (!el) return;
-  el.innerHTML = (job.stages || []).map(s => `
-    <div class="stage-row" style="display:flex;align-items:center;gap:0.5rem;padding:0.2rem 0">
-      <span>${s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : '○'}</span>
-      <span>${s.label || s.key}</span>
+  el.innerHTML = (job.stages || []).map((s, i) => `
+    <div class="step ${s.status}">
+      <div class="step-dot">${_stepDotContent(s.status, i)}</div>
+      <span class="step-label">${escapeHtml(s.label || s.key)}</span>
     </div>
   `).join('');
 }
 
 function renderFailedSection(job) {
   const msgEl = document.getElementById('error-message');
-  if (msgEl) msgEl.textContent = job.error || '알 수 없는 오류가 발생했습니다.';
+  if (msgEl) {
+    msgEl.innerHTML = `<div class="error-box">${escapeHtml(job.error || '알 수 없는 오류가 발생했습니다.')}</div>`;
+  }
 
   const logEl = document.getElementById('error-log');
   if (logEl) {
     logEl.innerHTML = (job.events || []).slice(-20).map(e =>
-      `<div style="font-size:0.75rem;color:#6b7280">[${e.stage}] ${e.message}</div>`
+      `<article class="event-item"><span class="event-time">${escapeHtml(e.stage)}</span><div>${escapeHtml(e.message)}</div></article>`
     ).join('');
   }
 
@@ -896,12 +907,12 @@ let _scriptDirty = false;
 function renderReviewSection(job) {
   const list = document.getElementById('slide-list');
   if (!list) return;
-  list.innerHTML = (job.slides || []).map(s => `
+  list.innerHTML = `<h3>슬라이드 검수</h3>` + (job.slides || []).map(s => `
     <div class="slide-list-item ${s.slide_number === _currentSlide ? 'active' : ''}"
-         data-slide="${s.slide_number}" style="cursor:pointer">
+         data-slide="${s.slide_number}">
       <img src="/demo/api/jobs/${job.job_id}/slides/${s.slide_number}/png"
            alt="Slide ${s.slide_number}" loading="lazy"
-           onerror="this.style.display='none'">
+           onerror="this.style.visibility='hidden'">
       <span>S${s.slide_number}${s.approved ? ' ✅' : ''}</span>
     </div>
   `).join('');
@@ -925,7 +936,7 @@ function renderSlideView(job, slideNum) {
   const imgWrap = document.getElementById('slide-image-wrap');
   if (imgWrap) {
     imgWrap.innerHTML = `<img src="/demo/api/jobs/${job.job_id}/slides/${slideNum}/png"
-      alt="Slide ${slideNum}" style="width:100%;border-radius:8px;border:1px solid #e5e7eb"
+      alt="Slide ${slideNum}"
       onerror="this.alt='이미지 없음'">`;
   }
 
@@ -1002,7 +1013,7 @@ function renderDownloadSection(job) {
     : allDone ? '' : `${doneCount}/${totalSlides} 슬라이드 완료`;
 
   el.innerHTML = `
-    <h3 style="margin-bottom:0.75rem;font-size:1rem;font-weight:600">다운로드</h3>
+    <h3>다운로드</h3>
     <table class="download-table">
       <thead><tr>
         <th>파일</th><th>범위</th><th>상태</th><th></th>
@@ -1026,7 +1037,7 @@ function renderDownloadSection(job) {
       </tbody>
     </table>
 
-    <h4 style="margin-top:1rem;margin-bottom:0.5rem;font-size:0.875rem;font-weight:600">슬라이드별</h4>
+    <h4 class="download-sub-title">슬라이드별</h4>
     <table class="download-table">
       <tbody>
         ${slides.map(s => {
@@ -1042,7 +1053,7 @@ function renderDownloadSection(job) {
     </table>
 
     ${allDone ? `
-    <button class="btn-primary" style="margin-top:1rem" id="btn-zip-download">
+    <button class="btn-cta btn-cta--full" id="btn-zip-download" style="margin-top:1rem">
       선택 항목 ZIP 다운로드
     </button>` : ''}
   `;
