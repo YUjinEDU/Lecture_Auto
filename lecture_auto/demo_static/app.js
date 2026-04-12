@@ -405,6 +405,7 @@ function renderEvents() {
 
 // ─── Job Controls (Settings tab) ──────────────────────────────────
 function renderJobControls() {
+  if (!jobControls) return;  // panel removed — settings moved to modal
   if (!state.job) {
     jobControls.innerHTML = `<p class="empty-hint-sm">강의를 선택하면 설정 패널이 열립니다.</p>`;
     return;
@@ -872,10 +873,13 @@ uploadForm.addEventListener('submit', async event => {
     formData.set('use_vlm', formData.get('use_vlm') ? 'true' : 'false');
     const job = await api('/demo/api/jobs', { method: 'POST', body: formData });
     if (state.pendingVoiceBlob) {
-      const vfd = new FormData();
-      vfd.append('audio_file', state.pendingVoiceBlob, 'voice_reference.webm');
-      await fetch(`/demo/api/jobs/${job.job_id}/voice-reference`, { method: 'POST', body: vfd });
-      state.pendingVoiceBlob = null;
+      try {
+        const vfd = new FormData();
+        vfd.append('audio_file', state.pendingVoiceBlob, 'voice_reference.webm');
+        await fetch(`/demo/api/jobs/${job.job_id}/voice-reference`, { method: 'POST', body: vfd });
+      } finally {
+        state.pendingVoiceBlob = null;
+      }
     }
     closeCreateModal();
     state.job = job;
