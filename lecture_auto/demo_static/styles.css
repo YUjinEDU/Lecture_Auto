@@ -1405,3 +1405,110 @@ select:focus,
   border-color: var(--border-2);
   color: var(--text);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   SINGLE-SCREEN OVERRIDE — hide tabs, stack panels as cards
+════════════════════════════════════════════════════════════════ */
+
+/* Hide tab bar */
+.tab-bar { display: none !important; }
+
+/* Detail body becomes a vertical scroll container */
+.detail-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px 28px;
+  background: var(--bg);
+}
+
+/* All panels visible, styled as cards */
+.panel {
+  height: auto !important;
+  overflow: visible !important;
+  padding: 0 !important;
+  display: block !important;
+}
+.panel.hidden { display: block !important; }
+
+.panel-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  padding: 20px 24px !important;
+  transition: box-shadow 0.2s ease;
+}
+.panel-card:hover { box-shadow: var(--shadow), 0 2px 8px rgba(0,0,0,0.04); }
+
+/* Pipeline card — compact progress summary */
+#panel-pipeline .stage-grid {
+  padding: 0;
+}
+
+/* Review card — sidebar + editor grid from mockup */
+#panel-review .review-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 20px;
+  min-height: 500px;
+}
+#panel-review .thumb-strip {
+  flex-direction: column;
+  overflow-y: auto;
+  max-height: 600px;
+  border-right: 1px solid var(--border);
+  padding-right: 16px;
+}
+
+/* Export card — grid layout for download options */
+#panel-export .output-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+/* Topbar gets glassmorphism from mockup */
+.detail-topbar {
+  background: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
+}
+
+/* ── Single-screen mobile ─────────────── */
+@media (max-width: 767px) {
+  .detail-body { padding: 16px; gap: 16px; }
+  .panel-card { padding: 16px !important; }
+
+  #panel-review .review-layout {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+  #panel-review .thumb-strip {
+    flex-direction: row;
+    overflow-x: auto;
+    max-height: 80px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 8px;
+  }
+
+  #panel-export .output-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Tablet */
+@media (min-width: 768px) and (max-width: 1023px) {
+  #panel-review .review-layout {
+    grid-template-columns: 200px 1fr;
+  }
+  #panel-export .output-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

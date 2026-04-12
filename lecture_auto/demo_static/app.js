@@ -61,13 +61,10 @@ function navigateHome() {
 const TABS = ['pipeline', 'review', 'export'];
 
 function switchTab(name) {
+  // Single-screen mode: all panels always visible, no hidden toggling.
+  // Function kept as no-op so existing call sites don't break.
   if (!TABS.includes(name)) return;
   state.activeTab = name;
-  TABS.forEach(tab => {
-    const active = tab === name;
-    document.querySelector(`.tab-bar [data-tab="${tab}"]`)?.classList.toggle('active', active);
-    document.querySelector(`#panel-${tab}`)?.classList.toggle('hidden', !active);
-  });
 }
 
 document.querySelectorAll('[data-tab]').forEach(btn => {

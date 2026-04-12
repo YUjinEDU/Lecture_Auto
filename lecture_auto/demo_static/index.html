@@ -84,12 +84,12 @@
       <button class="tab" data-tab="review">슬라이드 검수</button>
       <button class="tab" data-tab="export">다운로드</button>
     </div>
-    <span id="uploadMessage" class="status-msg" role="status" aria-live="polite"></span>
   </nav>
+  <span id="uploadMessage" class="status-msg" role="status" aria-live="polite"></span>
 
   <div class="detail-body">
     <!-- Pipeline -->
-    <div id="panel-pipeline" class="panel">
+    <div id="panel-pipeline" class="panel panel-card">
       <div id="stageGrid" class="stage-grid"></div>
       <button class="log-toggle-btn" id="logToggleBtn" type="button">
         로그 보기 ▼
@@ -103,7 +103,7 @@
     </div>
 
     <!-- Review -->
-    <div id="panel-review" class="panel hidden">
+    <div id="panel-review" class="panel panel-card">
       <div class="review-layout">
         <div id="slideThumbStrip" class="thumb-strip"></div>
         <div id="slideDetail" class="slide-detail"></div>
@@ -111,7 +111,7 @@
     </div>
 
     <!-- Export -->
-    <div id="panel-export" class="panel hidden">
+    <div id="panel-export" class="panel panel-card">
       <div id="outputsArea"></div>
     </div>
   </div>
