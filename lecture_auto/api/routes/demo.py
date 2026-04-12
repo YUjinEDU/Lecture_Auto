@@ -23,7 +23,7 @@ from lecture_auto.demo import (
     update_glossary,
     update_script_and_rebuild,
 )
-from lecture_auto.demo.state import get_job, list_job_summaries
+from lecture_auto.demo.state import get_job, list_job_summaries, upsert_slide
 
 
 router = APIRouter(tags=["demo"])
@@ -165,6 +165,14 @@ async def rerun_demo_video(job_id: str):
     _require_job(job_id)
     rerun_video_only(job_id)
     return {"job_id": job_id, "status": "reran-video"}
+
+
+@router.post("/demo/api/jobs/{job_id}/slides/{slide_number}/approve")
+async def approve_slide(job_id: str, slide_number: int):
+    _require_job(job_id)
+    upsert_slide(job_id, slide_number, {"approved": True, "tts_status": "queued"})
+    rerun_tts_only(job_id, slide_number)
+    return {"status": "ok", "slide": slide_number, "tts": "queued"}
 
 
 @router.get("/demo/api/jobs/{job_id}/slides/{slide_number}/png")
