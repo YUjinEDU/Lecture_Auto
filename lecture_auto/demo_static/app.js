@@ -10,6 +10,7 @@ const state = {
   voiceBlob: null,
   activeTab: 'pipeline',
   currentView: 'home',
+  pendingVoiceBlob: null,   // voice file from modal, uploaded after job creation
 };
 
 // ─── DOM refs ────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ function navigateHome() {
 }
 
 // ─── Tab navigation ──────────────────────────────────────────────
-const TABS = ['pipeline', 'review', 'settings', 'export'];
+const TABS = ['pipeline', 'review', 'export'];
 
 function switchTab(name) {
   if (!TABS.includes(name)) return;
@@ -72,6 +73,87 @@ function switchTab(name) {
 document.querySelectorAll('[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
+
+// ─── Log toggle ──────────────────────────────────────────────────
+const logToggleBtn = document.querySelector('#logToggleBtn');
+const logSection   = document.querySelector('#logSection');
+
+logToggleBtn?.addEventListener('click', () => {
+  const isHidden = logSection.classList.contains('hidden');
+  logSection.classList.toggle('hidden', !isHidden);
+  logToggleBtn.textContent = isHidden ? '로그 숨기기 ▲' : '로그 보기 ▼';
+});
+
+// ─── Style toggle ────────────────────────────────────────────────
+document.querySelectorAll('.style-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.style-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const input = document.querySelector('#explanationStyleInput');
+    if (input) input.value = btn.dataset.style;
+  });
+});
+
+// ─── Modal voice handlers ────────────────────────────────────────
+(function setupModalVoice() {
+  const modalRecordBtn    = document.querySelector('#modalRecordButton');
+  const modalStopBtn      = document.querySelector('#modalStopButton');
+  const modalVoiceFile    = document.querySelector('#modalVoiceFileInput');
+  const modalVoiceStatus  = document.querySelector('#modalVoiceStatus');
+  const modalVoicePreview = document.querySelector('#modalVoicePreview');
+
+  if (!modalRecordBtn) return;
+
+  // File upload
+  modalVoiceFile?.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    state.pendingVoiceBlob = file;
+    if (modalVoicePreview) {
+      modalVoicePreview.hidden = false;
+      modalVoicePreview.src = URL.createObjectURL(file);
+    }
+    if (modalVoiceStatus) modalVoiceStatus.textContent = `선택됨: ${file.name}`;
+  });
+
+  // Recording
+  let mediaRecorder = null;
+  let audioChunks = [];
+
+  modalRecordBtn.addEventListener('click', async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      if (modalVoiceStatus) modalVoiceStatus.textContent = '마이크를 지원하지 않는 브라우저입니다.';
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = e => { if (e.data.size) audioChunks.push(e.data); };
+      mediaRecorder.onstop = () => {
+        state.pendingVoiceBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        if (modalVoicePreview) {
+          modalVoicePreview.hidden = false;
+          modalVoicePreview.src = URL.createObjectURL(state.pendingVoiceBlob);
+        }
+        if (modalVoiceStatus) modalVoiceStatus.textContent = '녹음 완료';
+        stream.getTracks().forEach(t => t.stop());
+        modalRecordBtn.disabled = false;
+        if (modalStopBtn) modalStopBtn.disabled = true;
+      };
+      mediaRecorder.start();
+      if (modalVoiceStatus) modalVoiceStatus.textContent = '녹음 중…';
+      modalRecordBtn.disabled = true;
+      if (modalStopBtn) modalStopBtn.disabled = false;
+    } catch (err) {
+      if (modalVoiceStatus) modalVoiceStatus.textContent = err.message || '마이크 접근 실패';
+    }
+  });
+
+  modalStopBtn?.addEventListener('click', () => {
+    mediaRecorder?.stop();
+  });
+})();
 
 // ─── Helpers ─────────────────────────────────────────────────────
 function statusLabel(status) {
@@ -126,6 +208,18 @@ function buildDiffHtml(previous = '', current = '') {
     before: oldS.map(s => `<p class="diff-removed">${escapeHtml(s)}</p>`).join(''),
     after:  newS.map(s => `<p class="diff-added">${escapeHtml(s)}</p>`).join(''),
   };
+}
+
+function showToast(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('toast--visible'), 10);
+  setTimeout(() => {
+    el.classList.remove('toast--visible');
+    setTimeout(() => el.remove(), 300);
+  }, 3000);
 }
 
 // ─── API ──────────────────────────────────────────────────────────
@@ -187,6 +281,7 @@ function startPolling(jobId) {
         submitButton.disabled = false;
         if (status === 'completed' && state.job?.slides?.length) {
           switchTab('review');
+          showToast('파이프라인 완료! 슬라이드 검수로 이동합니다.');
         }
         return;
       }
@@ -748,6 +843,15 @@ function openCreateModal() {
 function closeCreateModal() {
   modalCreate.classList.add('hidden');
   modalCreate.setAttribute('aria-hidden', 'true');
+  uploadForm?.reset();
+  state.pendingVoiceBlob = null;
+  const modalVoicePreview = document.querySelector('#modalVoicePreview');
+  if (modalVoicePreview) { modalVoicePreview.hidden = true; modalVoicePreview.src = ''; }
+  const modalVoiceStatus = document.querySelector('#modalVoiceStatus');
+  if (modalVoiceStatus) modalVoiceStatus.textContent = '';
+  document.querySelectorAll('.style-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
+  const styleInput = document.querySelector('#explanationStyleInput');
+  if (styleInput) styleInput.value = '개념 중심';
 }
 
 document.querySelector('#btnNewLecture')?.addEventListener('click', openCreateModal);
@@ -767,6 +871,12 @@ uploadForm.addEventListener('submit', async event => {
     const formData = new FormData(uploadForm);
     formData.set('use_vlm', formData.get('use_vlm') ? 'true' : 'false');
     const job = await api('/demo/api/jobs', { method: 'POST', body: formData });
+    if (state.pendingVoiceBlob) {
+      const vfd = new FormData();
+      vfd.append('audio_file', state.pendingVoiceBlob, 'voice_reference.webm');
+      await fetch(`/demo/api/jobs/${job.job_id}/voice-reference`, { method: 'POST', body: vfd });
+      state.pendingVoiceBlob = null;
+    }
     closeCreateModal();
     state.job = job;
     state.selectedSlide = null;
