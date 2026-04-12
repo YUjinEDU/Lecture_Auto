@@ -88,8 +88,13 @@ async def get_demo_pipeline_job(job_id: str):
 
 @router.delete("/demo/api/jobs/{job_id}")
 async def delete_demo_job(job_id: str):
-    if not delete_job(job_id):
-        raise HTTPException(status_code=404, detail=f"Demo job not found: {job_id}")
+    import shutil
+    # Delete from memory
+    delete_job(job_id)
+    # Delete from disk so restore_all_jobs_from_disk won't revive it
+    job_dir = get_demo_job_paths(job_id).job_dir
+    if job_dir.exists():
+        shutil.rmtree(job_dir)
     return {"job_id": job_id, "deleted": True}
 
 
