@@ -1058,14 +1058,18 @@ function renderDownloadSection(job) {
 
 // ─── Render (detail view) ─────────────────────────────────────────
 function render() {
-  setDetailTopbar();
-  renderStages();
-  renderEvents();
-  renderJobControls();
-  renderSlideStrip();
-  renderSlideDetail();
-  renderOutputs();
+  // New status-driven layout (single-scroll sections)
   if (state.job) renderJobView(state.job);
+
+  // Legacy renderers — target DOM elements removed in single-scroll refactor.
+  // Guarded with optional chaining; will be fully removed once legacy code is cleaned up.
+  setDetailTopbar();
+  if (stageGrid)       renderStages();
+  if (eventList)       renderEvents();
+  if (jobControls)     renderJobControls();
+  if (slideThumbStrip) renderSlideStrip();
+  if (slideDetail)     renderSlideDetail();
+  if (outputsArea)     renderOutputs();
 }
 
 // ─── Create modal ─────────────────────────────────────────────────
