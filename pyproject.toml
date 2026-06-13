@@ -21,6 +21,7 @@ dependencies = [
     "pdfplumber>=0.11",
     "zipstream-ng>=1.9.0",
     "python-multipart>=0.0.22",
+    "openai>=1.30.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,10 @@
+.codegraph/
+__pycache__/
+*.pyc
+
+.superpowers/
+.serena/
+.planning/
+*.png
+*.wav
+*.mp4

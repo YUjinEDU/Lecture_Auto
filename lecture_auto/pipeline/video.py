@@ -2,17 +2,19 @@
 
 Combines per-slide PNG images and WAV audio files into a single lecture MP4.
 
-Pipeline (per CONTEXT.md D-07/D-08/D-09):
-  1. create_slide_clip: PNG + WAV → per-slide MP4 via ffmpeg -loop 1
-  2. concat_clips:      list[MP4] → single MP4 via ffmpeg concat demuxer
-  3. assemble_video:    orchestrates both steps, cleans up intermediates
+For downloaded artifacts we prefer a single encode pass over clip-by-clip
+concatenation because it produces more reliable timestamps across players and
+is materially faster for large slide decks.
 """
 from __future__ import annotations
 
 import logging
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
+
+from lecture_auto.pipeline.tts import merge_audio
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,7 @@ def create_slide_clip(
         "-framerate", str(fps),
         "-i", str(png_path),
         "-i", str(wav_path),
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-c:v", "libx264",
         "-tune", "stillimage",
         "-c:a", "aac",
@@ -156,6 +159,13 @@ def _slide_number_from_path(p: Path) -> int | None:
     return None
 
 
+def _wav_duration_seconds(wav_path: Path) -> float:
+    with wave.open(str(wav_path), "rb") as handle:
+        frames = handle.getnframes()
+        rate = handle.getframerate() or 1
+    return max(frames / float(rate), 0.05)
+
+
 def assemble_video(
     png_paths: list[Path],
     wav_paths: list[Path],
@@ -163,11 +173,11 @@ def assemble_video(
     output_path: Path,
     job_id: str,
 ) -> Path:
-    """Orchestrate per-slide clip creation and final concatenation.
+    """Assemble the final lecture MP4 in a single encode pass.
 
-    Matches PNG and WAV files by slide number (parsed from filename), creates
-    one MP4 clip per matched pair, concatenates them in order, then removes
-    the intermediate clip files.
+    Matches PNG and WAV files by slide number, builds an ffmpeg concat manifest
+    with per-slide image durations derived from the WAV lengths, merges the WAV
+    files once, and encodes the final MP4 directly.
 
     Parameters
     ----------
@@ -191,59 +201,85 @@ def assemble_video(
     video_dir.mkdir(parents=True, exist_ok=True)
     output_path = Path(output_path)
 
-    # Build lookup: slide_number -> wav_path
     wav_by_number: dict[int, Path] = {}
     for wav in wav_paths:
         num = _slide_number_from_path(wav)
         if num is not None:
             wav_by_number[num] = wav
 
-    # Build lookup: slide_number -> png_path
     png_by_number: dict[int, Path] = {}
     for png in png_paths:
         num = _slide_number_from_path(png)
         if num is not None:
             png_by_number[num] = png
 
-    # Process slides in sorted order.
     all_slide_numbers = sorted(png_by_number.keys())
-
-    clip_paths: list[Path] = []
+    slide_pairs: list[tuple[Path, Path]] = []
     for slide_number in all_slide_numbers:
         png = png_by_number[slide_number]
         wav = wav_by_number.get(slide_number)
-
         if wav is None:
             logger.warning(
                 "Slide %d: no WAV found — skipping (job_id=%s)", slide_number, job_id
             )
             continue
+        slide_pairs.append((png, wav))
 
-        clip_path = video_dir / f"clip_{slide_number:03d}.mp4"
+    if not slide_pairs:
+        raise RuntimeError("No slide/audio pairs were found — cannot assemble video.")
+
+    merged_audio_path = video_dir / f"{job_id}_merged_audio.wav"
+    slideshow_manifest_path: Path | None = None
+    total_duration = 0.0
+
+    try:
+        merge_audio(slide_pairs[0][1].parent, merged_audio_path)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as manifest_file:
+            slideshow_manifest_path = Path(manifest_file.name)
+            for png, wav in slide_pairs:
+                duration = _wav_duration_seconds(wav)
+                total_duration += duration
+                safe_path = str(png.resolve()).replace("'", "'\\''")
+                manifest_file.write(f"file '{safe_path}'\n")
+                manifest_file.write(f"duration {duration:.6f}\n")
+            last_png = str(slide_pairs[-1][0].resolve()).replace("'", "'\\''")
+            manifest_file.write(f"file '{last_png}'\n")
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(slideshow_manifest_path),
+            "-i", str(merged_audio_path),
+            "-t", f"{total_duration:.6f}",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-shortest",
+            str(output_path),
+        ]
+
         logger.info(
-            "Creating clip %d/%d: %s + %s -> %s",
-            slide_number,
-            len(all_slide_numbers),
-            png.name,
-            wav.name,
-            clip_path.name,
+            "Encoding slideshow video: %d slides -> %s (job_id=%s)",
+            len(slide_pairs),
+            output_path.name,
+            job_id,
         )
-        create_slide_clip(png, wav, clip_path)
-        clip_paths.append(clip_path)
-
-    if not clip_paths:
-        raise RuntimeError("No slide clips were created — cannot assemble video.")
-
-    logger.info("Concatenating %d clips -> %s (job_id=%s)", len(clip_paths), output_path, job_id)
-    concat_clips(clip_paths, output_path)
-
-    # Clean up intermediate clip files.
-    for clip in clip_paths:
-        try:
-            clip.unlink()
-            logger.debug("Removed intermediate clip: %s", clip.name)
-        except OSError as exc:
-            logger.warning("Could not remove intermediate clip %s: %s", clip.name, exc)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg slideshow assembly failed (exit {result.returncode}):\n{result.stderr}"
+            )
+    finally:
+        if slideshow_manifest_path is not None:
+            slideshow_manifest_path.unlink(missing_ok=True)
+        merged_audio_path.unlink(missing_ok=True)
 
     logger.info("Video assembly complete: %s (job_id=%s)", output_path, job_id)
     return output_path
