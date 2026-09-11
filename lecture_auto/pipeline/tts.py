@@ -223,12 +223,12 @@ def merge_audio(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    sorted_files = sorted(audio_dir.glob("audio_*.wav"))
+    sorted_files = sorted(audio_dir.glob("slide_*.wav")) or sorted(audio_dir.glob("audio_*.wav")) or sorted(audio_dir.glob("*.wav"))
     # Exclude the merged file itself if it already exists in the directory.
     sorted_files = [f for f in sorted_files if f.name != output_path.name]
 
     if not sorted_files:
-        raise FileNotFoundError(f"No audio_*.wav files found in {audio_dir}")
+        raise FileNotFoundError(f"No WAV files found in {audio_dir}")
 
     segments = [sf.read(str(f))[0] for f in sorted_files]
     merged = np.concatenate(segments)

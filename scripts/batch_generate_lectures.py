@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger("batch_generator")
 
 TARGET_MINUTES = 30.0  # 30분 영상 목표
-REF_VOICE = Path("data/audio_ref/professor_voice_ref.wav")
+REF_VOICE = Path("data/audio_ref/test_variants/ref_combined.wav")
 
 LECTURES = [
     {
