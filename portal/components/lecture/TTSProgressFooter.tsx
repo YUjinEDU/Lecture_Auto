@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const GPU_API_URL =
-  process.env.NEXT_PUBLIC_GPU_API_URL ?? "http://localhost:8000";
+// Same-origin proxy — the homepage server forwards to GPU_API_URL.
+// See portal/app/api/gpu/[...path]/route.ts.
+const GPU_API_URL = "/api/gpu";
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 3_000;

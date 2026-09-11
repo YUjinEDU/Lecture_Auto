@@ -1,7 +1,8 @@
 import type { ScriptResponse } from "./types";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_GPU_API_URL ?? "http://localhost:8000";
+// Same-origin proxy — the homepage server forwards to GPU_API_URL.
+// See portal/app/api/gpu/[...path]/route.ts.
+const API_URL = "/api/gpu";
 
 // ---------------------------------------------------------------------------
 // Helpers

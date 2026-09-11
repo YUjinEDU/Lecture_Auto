@@ -1,45 +1,29 @@
 """
-Unit tests for lecture_auto/pipeline/vlm.py
-All vLLM dependencies are mocked — GPU not required.
+Unit tests for lecture_auto/pipeline/vlm.py.
+
+The LLM transport is mocked via a fake LLMClient — no GPU / OpenAI required.
 """
 from __future__ import annotations
 
 import json
-import sys
-import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Minimal stubs for heavy dependencies that are not installed in the test env
-# ---------------------------------------------------------------------------
-
-# Stub vllm
-vllm_stub = types.ModuleType("vllm")
-vllm_stub.LLM = MagicMock
-vllm_stub.SamplingParams = MagicMock
-sys.modules.setdefault("vllm", vllm_stub)
-
-# Stub qwen_vl_utils
-qwen_stub = types.ModuleType("qwen_vl_utils")
-sys.modules.setdefault("qwen_vl_utils", qwen_stub)
-
-# Now import the module under test
-from lecture_auto.pipeline.vlm import (  # noqa: E402
+from lecture_auto.pipeline.vlm import (
     VlmNote,
     build_vlm_prompt,
     generate_visual_notes,
-    load_vlm,
 )
-from lecture_auto.schemas.manifest import (  # noqa: E402
+from lecture_auto.schemas.manifest import (
     FontInfo,
     ShapeRecord,
     SlideRecord,
     TextParagraph,
     TextRun,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -96,6 +80,16 @@ def _valid_vlm_response(slide_index: int = 0) -> str:
     )
 
 
+def _mock_client(*responses: str) -> MagicMock:
+    """A fake LLMClient whose analyze_image returns the given response(s)."""
+    client = MagicMock()
+    if len(responses) == 1:
+        client.analyze_image.return_value = responses[0]
+    else:
+        client.analyze_image.side_effect = list(responses)
+    return client
+
+
 # ---------------------------------------------------------------------------
 # Test 1: generate_visual_notes returns list[VlmNote] with correct schema
 # ---------------------------------------------------------------------------
@@ -109,12 +103,8 @@ def test_generate_visual_notes_returns_vlmnote_schema(tmp_path: Path):
     slide = _make_slide(0, [_make_shape(has_text=True, texts=["Hello World"])])
     (rendered_dir / "slide_001.png").write_bytes(b"fake png")
 
-    mock_llm = MagicMock()
-    mock_result = MagicMock()
-    mock_result.outputs = [MagicMock(text=_valid_vlm_response(0))]
-    mock_llm.generate.return_value = [mock_result]
-
-    notes = generate_visual_notes(mock_llm, [slide], rendered_dir, vlm_dir)
+    client = _mock_client(_valid_vlm_response(0))
+    notes = generate_visual_notes(client, [slide], rendered_dir, vlm_dir)
 
     assert len(notes) == 1
     note = notes[0]
@@ -143,10 +133,9 @@ def test_build_vlm_prompt_includes_parsed_text(tmp_path: Path):
 
     prompt = build_vlm_prompt(slide, rendered_dir)
 
-    # Text-grounded prompting: parsed text must appear
-    assert "Introduction to ML" in str(prompt)
-    assert "Key concepts here" in str(prompt)
-    assert "Parsed text from this slide" in str(prompt)
+    assert "Introduction to ML" in prompt
+    assert "Key concepts here" in prompt
+    assert "Parsed text from this slide" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +144,7 @@ def test_build_vlm_prompt_includes_parsed_text(tmp_path: Path):
 
 def test_vlmnote_validation_rejects_missing_fields():
     with pytest.raises(Exception):
-        VlmNote(
-            slide_index=0,
-            visual_summary="summary",
-            # missing: key_elements, layout_relations, teaching_points, possible_confusions
-        )
+        VlmNote(slide_index=0, visual_summary="summary")
 
 
 def test_vlmnote_validation_accepts_valid_data():
@@ -190,46 +175,40 @@ def test_generate_visual_notes_writes_json_files(tmp_path: Path):
         (rendered_dir / f"slide_{i+1:03d}.png").write_bytes(b"fake png")
         slides.append(slide)
 
-    mock_llm = MagicMock()
-    mock_llm.generate.side_effect = [
-        [MagicMock(outputs=[MagicMock(text=_valid_vlm_response(i))])] for i in range(3)
-    ]
+    client = _mock_client(*[_valid_vlm_response(i) for i in range(3)])
+    generate_visual_notes(client, slides, rendered_dir, vlm_dir)
 
-    generate_visual_notes(mock_llm, slides, rendered_dir, vlm_dir)
-
-    # Files must be named vlm_note_001.json, vlm_note_002.json, vlm_note_003.json
     assert (vlm_dir / "vlm_note_001.json").exists()
     assert (vlm_dir / "vlm_note_002.json").exists()
     assert (vlm_dir / "vlm_note_003.json").exists()
 
-    # File content must be valid JSON matching VlmNote
     data = json.loads((vlm_dir / "vlm_note_001.json").read_text())
     assert "visual_summary" in data
     assert "key_elements" in data
 
 
 # ---------------------------------------------------------------------------
-# Test 5: load_vlm accepts model_path parameter with default
+# Test 5: client receives the slide image path
 # ---------------------------------------------------------------------------
 
-def test_load_vlm_accepts_model_path():
-    with patch("lecture_auto.pipeline.vlm.LLM") as mock_llm_cls:
-        mock_llm_cls.return_value = MagicMock()
-        result = load_vlm(model_path="Qwen/Qwen3-VL-8B-Instruct")
-        mock_llm_cls.assert_called_once()
-        call_kwargs = mock_llm_cls.call_args
-        assert call_kwargs is not None
+def test_generate_visual_notes_passes_image_path(tmp_path: Path):
+    rendered_dir = tmp_path / "rendered"
+    rendered_dir.mkdir()
+    vlm_dir = tmp_path / "vlm"
+    vlm_dir.mkdir()
 
+    slide = _make_slide(0, [_make_shape(has_text=True, texts=["x"])])
+    (rendered_dir / "slide_001.png").write_bytes(b"fake png")
 
-def test_load_vlm_uses_default_model_path():
-    with patch("lecture_auto.pipeline.vlm.LLM") as mock_llm_cls:
-        mock_llm_cls.return_value = MagicMock()
-        load_vlm()
-        mock_llm_cls.assert_called_once()
+    client = _mock_client(_valid_vlm_response(0))
+    generate_visual_notes(client, [slide], rendered_dir, vlm_dir)
+
+    args, kwargs = client.analyze_image.call_args
+    assert args[0] == rendered_dir / "slide_001.png"
 
 
 # ---------------------------------------------------------------------------
-# Test 6: generate_visual_notes handles empty slide (no shapes) gracefully
+# Test 6: empty slide (no shapes) handled gracefully
 # ---------------------------------------------------------------------------
 
 def test_generate_visual_notes_handles_empty_slide(tmp_path: Path):
@@ -241,21 +220,16 @@ def test_generate_visual_notes_handles_empty_slide(tmp_path: Path):
     slide = _make_slide(0, [])  # no shapes
     (rendered_dir / "slide_001.png").write_bytes(b"fake png")
 
-    mock_llm = MagicMock()
-    mock_result = MagicMock()
-    mock_result.outputs = [MagicMock(text=_valid_vlm_response(0))]
-    mock_llm.generate.return_value = [mock_result]
-
-    notes = generate_visual_notes(mock_llm, [slide], rendered_dir, vlm_dir)
+    client = _mock_client(_valid_vlm_response(0))
+    notes = generate_visual_notes(client, [slide], rendered_dir, vlm_dir)
 
     assert len(notes) == 1
-    # Prompt must still work — just no parsed text to include
     prompt = build_vlm_prompt(slide, rendered_dir)
-    assert "Parsed text from this slide" in str(prompt)
+    assert "Parsed text from this slide" in prompt
 
 
 # ---------------------------------------------------------------------------
-# Test 7: Retry on malformed JSON
+# Test 7: Retry once on malformed JSON
 # ---------------------------------------------------------------------------
 
 def test_generate_visual_notes_retries_on_malformed_json(tmp_path: Path):
@@ -267,17 +241,9 @@ def test_generate_visual_notes_retries_on_malformed_json(tmp_path: Path):
     slide = _make_slide(0, [_make_shape(has_text=True, texts=["Test content"])])
     (rendered_dir / "slide_001.png").write_bytes(b"fake png")
 
-    # First call returns malformed JSON; second call returns valid JSON
-    # generate() returns a list of RequestOutput objects → results[0].outputs[0].text
-    bad_result = MagicMock()
-    bad_result.outputs = [MagicMock(text="not valid json {{{")]
-    good_result = MagicMock()
-    good_result.outputs = [MagicMock(text=_valid_vlm_response(0))]
-
-    mock_llm = MagicMock()
-    mock_llm.generate.side_effect = [[bad_result], [good_result]]
-
-    notes = generate_visual_notes(mock_llm, [slide], rendered_dir, vlm_dir)
+    # First response malformed, second valid -> exactly one retry.
+    client = _mock_client("not valid json {{{", _valid_vlm_response(0))
+    notes = generate_visual_notes(client, [slide], rendered_dir, vlm_dir)
 
     assert len(notes) == 1
-    assert mock_llm.generate.call_count == 2  # retried once
+    assert client.analyze_image.call_count == 2

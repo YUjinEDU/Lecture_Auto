@@ -1,20 +1,17 @@
 """
-Unit tests for lecture_auto/pipeline/script_gen.py
-asyncio.create_subprocess_exec is mocked — claude binary not required.
+Unit tests for lecture_auto/pipeline/script_gen.py.
+
+The LLM transport is mocked via a fake LLMClient — no claude CLI / OpenAI required.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from lecture_auto.pipeline.script_gen import (
     SlideScript,
     build_script_prompt,
-    call_claude,
     generate_scripts,
 )
 from lecture_auto.schemas.manifest import (
@@ -26,6 +23,7 @@ from lecture_auto.schemas.manifest import (
     TextParagraph,
     TextRun,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,12 +96,30 @@ def _valid_script_response(slide_index: int = 0, slide_number: int = 1) -> str:
     )
 
 
+def _client_returning_per_call(capture: list[str] | None = None) -> MagicMock:
+    """Fake LLMClient: complete_text returns a valid script for each call in order.
+
+    If ``capture`` is given, each prompt is appended to it.
+    """
+    state = {"i": 0}
+
+    def fake_complete(prompt, **kwargs):
+        if capture is not None:
+            capture.append(prompt)
+        idx = state["i"]
+        state["i"] += 1
+        return _valid_script_response(idx, idx + 1)
+
+    client = MagicMock()
+    client.complete_text.side_effect = fake_complete
+    return client
+
+
 # ---------------------------------------------------------------------------
 # Test 1: generate_scripts returns list[SlideScript] with correct schema
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_generate_scripts_returns_slidescript_schema(tmp_path: Path):
+def test_generate_scripts_returns_slidescript_schema(tmp_path: Path):
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
 
@@ -111,20 +127,10 @@ async def test_generate_scripts_returns_slidescript_schema(tmp_path: Path):
     manifest = _make_manifest(slide_count=1, target_minutes=5)
     vlm_notes = [{"slide_index": 0, "visual_summary": "Intro diagram"}]
 
-    mock_process = MagicMock()
-    mock_process.returncode = 0
-    mock_process.communicate = AsyncMock(
-        return_value=(
-            _valid_script_response(0, 1).encode("utf-8"),
-            b"",
-        )
-    )
+    client = MagicMock()
+    client.complete_text.return_value = _valid_script_response(0, 1)
 
-    with patch(
-        "lecture_auto.pipeline.script_gen.asyncio.create_subprocess_exec",
-        new=AsyncMock(return_value=mock_process),
-    ):
-        result = await generate_scripts(slides, vlm_notes, manifest, scripts_dir)
+    result = generate_scripts(slides, vlm_notes, manifest, scripts_dir, client=client)
 
     assert len(result) == 1
     script = result[0]
@@ -162,15 +168,14 @@ def test_build_script_prompt_includes_context_window():
     assert "Current slide content" in prompt
     assert "Previous slide content" in prompt
     assert "Next slide content" in prompt
-    assert "마지막 부분입니다." in prompt  # last 100 chars of prev_script
+    assert "마지막 부분입니다." in prompt
 
 
 # ---------------------------------------------------------------------------
 # Test 3: target_seconds calculation (target_minutes * 60 / slide_count)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_target_seconds_calculation(tmp_path: Path):
+def test_target_seconds_calculation(tmp_path: Path):
     """30 min / 20 slides = 90 sec/slide."""
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
@@ -179,39 +184,20 @@ async def test_target_seconds_calculation(tmp_path: Path):
     manifest = _make_manifest(slide_count=20, target_minutes=30)
     vlm_notes = [{"slide_index": i, "visual_summary": "vis"} for i in range(20)]
 
-    captured_prompts: list[str] = []
+    captured: list[str] = []
+    client = _client_returning_per_call(captured)
 
-    async def fake_subprocess(*args, **kwargs):
-        prompt_text = args[2]  # claude, -p, <prompt>
-        captured_prompts.append(prompt_text)
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        idx = len(captured_prompts) - 1
-        mock_proc.communicate = AsyncMock(
-            return_value=(
-                _valid_script_response(idx, idx + 1).encode("utf-8"),
-                b"",
-            )
-        )
-        return mock_proc
-
-    with patch(
-        "lecture_auto.pipeline.script_gen.asyncio.create_subprocess_exec",
-        new=fake_subprocess,
-    ):
-        result = await generate_scripts(slides, vlm_notes, manifest, scripts_dir)
+    result = generate_scripts(slides, vlm_notes, manifest, scripts_dir, client=client)
 
     assert len(result) == 20
-    # target_seconds = 30 * 60 / 20 = 90.0 — check it appears in a prompt
-    assert "90" in captured_prompts[0]
+    assert "90" in captured[0]  # 30 * 60 / 20 = 90.0
 
 
 # ---------------------------------------------------------------------------
 # Test 4: Each script saved as script_NNN.json in scripts_dir
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_generate_scripts_writes_json_files(tmp_path: Path):
+def test_generate_scripts_writes_json_files(tmp_path: Path):
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
 
@@ -220,23 +206,8 @@ async def test_generate_scripts_writes_json_files(tmp_path: Path):
     manifest = _make_manifest(slide_count=n, target_minutes=15)
     vlm_notes = [{"slide_index": i} for i in range(n)]
 
-    async def fake_subprocess(*args, **kwargs):
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        idx = len(list(scripts_dir.glob("script_*.json")))
-        mock_proc.communicate = AsyncMock(
-            return_value=(
-                _valid_script_response(idx, idx + 1).encode("utf-8"),
-                b"",
-            )
-        )
-        return mock_proc
-
-    with patch(
-        "lecture_auto.pipeline.script_gen.asyncio.create_subprocess_exec",
-        new=fake_subprocess,
-    ):
-        await generate_scripts(slides, vlm_notes, manifest, scripts_dir)
+    client = _client_returning_per_call()
+    generate_scripts(slides, vlm_notes, manifest, scripts_dir, client=client)
 
     assert (scripts_dir / "script_001.json").exists()
     assert (scripts_dir / "script_002.json").exists()
@@ -248,33 +219,7 @@ async def test_generate_scripts_writes_json_files(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: claude -p subprocess called via asyncio.create_subprocess_exec
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_call_claude_uses_asyncio_subprocess():
-    mock_process = MagicMock()
-    mock_process.returncode = 0
-    mock_process.communicate = AsyncMock(
-        return_value=(b'{"result": "ok"}', b"")
-    )
-
-    with patch(
-        "lecture_auto.pipeline.script_gen.asyncio.create_subprocess_exec",
-        new=AsyncMock(return_value=mock_process),
-    ) as mock_exec:
-        result = await call_claude("test prompt")
-
-    mock_exec.assert_called_once()
-    call_args = mock_exec.call_args
-    # First positional args must be "claude", "-p", prompt
-    assert call_args.args[0] == "claude"
-    assert call_args.args[1] == "-p"
-    assert '{"result": "ok"}' == result
-
-
-# ---------------------------------------------------------------------------
-# Test 6: LectureStyle parameters embedded in prompt
+# Test 5: LectureStyle parameters embedded in prompt
 # ---------------------------------------------------------------------------
 
 def test_build_script_prompt_includes_style_parameters():
@@ -298,34 +243,11 @@ def test_build_script_prompt_includes_style_parameters():
 
 
 # ---------------------------------------------------------------------------
-# Test 7: Handles claude -p failure (non-zero exit) with clear error message
+# Test 6: JSON extraction from markdown code fence output
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_call_claude_raises_on_nonzero_exit():
-    mock_process = MagicMock()
-    mock_process.returncode = 1
-    mock_process.communicate = AsyncMock(
-        return_value=(b"", b"Error: claude not authenticated")
-    )
-
-    with patch(
-        "lecture_auto.pipeline.script_gen.asyncio.create_subprocess_exec",
-        new=AsyncMock(return_value=mock_process),
-    ):
-        with pytest.raises(RuntimeError) as exc_info:
-            await call_claude("some prompt")
-
-    assert "claude" in str(exc_info.value).lower() or "Error" in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# Test 8: JSON extraction from markdown code fence output
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_call_claude_extracts_json_from_markdown_fence(tmp_path: Path):
-    """Claude sometimes wraps JSON in ```json ... ``` fences."""
+def test_generate_scripts_extracts_json_from_markdown_fence(tmp_path: Path):
+    """The LLM sometimes wraps JSON in ```json ... ``` fences; _parse_script_json strips them."""
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
 
@@ -333,19 +255,34 @@ async def test_call_claude_extracts_json_from_markdown_fence(tmp_path: Path):
     manifest = _make_manifest(slide_count=1, target_minutes=5)
     vlm_notes = [{"slide_index": 0}]
 
-    fenced_output = f"```json\n{_valid_script_response(0, 1)}\n```"
+    fenced = f"```json\n{_valid_script_response(0, 1)}\n```"
+    client = MagicMock()
+    client.complete_text.return_value = fenced
 
-    mock_process = MagicMock()
-    mock_process.returncode = 0
-    mock_process.communicate = AsyncMock(
-        return_value=(fenced_output.encode("utf-8"), b"")
-    )
-
-    with patch(
-        "lecture_auto.pipeline.script_gen.asyncio.create_subprocess_exec",
-        new=AsyncMock(return_value=mock_process),
-    ):
-        result = await generate_scripts(slides, vlm_notes, manifest, scripts_dir)
+    result = generate_scripts(slides, vlm_notes, manifest, scripts_dir, client=client)
 
     assert len(result) == 1
     assert isinstance(result[0], SlideScript)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: defaults to get_llm_client when no client passed
+# ---------------------------------------------------------------------------
+
+def test_generate_scripts_defaults_to_factory(tmp_path: Path, monkeypatch):
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+
+    slides = [_make_slide(0, ["Content"])]
+    manifest = _make_manifest(slide_count=1, target_minutes=5)
+    vlm_notes = [{"slide_index": 0}]
+
+    fake_client = MagicMock()
+    fake_client.complete_text.return_value = _valid_script_response(0, 1)
+
+    import lecture_auto.pipeline.script_gen as sg
+    monkeypatch.setattr(sg, "get_llm_client", lambda *a, **k: fake_client)
+
+    result = generate_scripts(slides, vlm_notes, manifest, scripts_dir)  # no client
+    assert len(result) == 1
+    fake_client.complete_text.assert_called_once()

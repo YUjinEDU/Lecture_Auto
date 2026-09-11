@@ -355,9 +355,7 @@ def _read_llm_api_key() -> str | None:
 
 
 def _run_gpt_vlm(slide: SlideRecord, image_path: Path, pdf_path: Path) -> dict:
-    """Analyze a slide image using GPT-4o vision. Falls back to heuristic on error."""
-    import base64
-
+    """Analyze a slide image via the unified LLM client. Falls back to heuristic on error."""
     api_key = _read_llm_api_key()
     if not api_key:
         return _heuristic_vlm_note(slide, pdf_path)
@@ -379,23 +377,12 @@ def _run_gpt_vlm(slide: SlideRecord, image_path: Path, pdf_path: Path) -> dict:
     )
 
     try:
-        from openai import OpenAI
+        from lecture_auto.llm.openai_client import OpenAILLMClient
 
-        image_b64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model_id,
-            temperature=0.1,
-            max_tokens=500,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}", "detail": "low"}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-        )
-        text = response.choices[0].message.content.strip()
+        client = OpenAILLMClient(api_key=api_key, vlm_model=model_id)
+        text = client.analyze_image(
+            image_path, prompt, temperature=0.1, max_tokens=500
+        ).strip()
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             payload = json.loads(match.group(0))
@@ -499,9 +486,9 @@ def _call_script_model_batch(
     if not api_key:
         raise RuntimeError("OpenAI API key not found. Put an OpenAI key in api.txt or OPENAI_API_KEY.")
 
-    from openai import OpenAI
+    from lecture_auto.llm.openai_client import OpenAILLMClient
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAILLMClient(api_key=api_key)
     request_kwargs = {
         "model": os.environ.get("DEMO_SCRIPT_MODEL", DEFAULT_SCRIPT_MODEL),
         "temperature": 0.3,
@@ -564,11 +551,15 @@ def _call_script_model_batch(
             },
         ],
     }
-    response = None
+    content: str | None = None
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(**request_kwargs)
+            content = client.chat(
+                request_kwargs["messages"],
+                model=request_kwargs["model"],
+                temperature=request_kwargs["temperature"],
+            )
             break
         except Exception as exc:
             last_error = exc
@@ -577,9 +568,9 @@ def _call_script_model_batch(
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))
 
-    if response is None:
+    if content is None:
         raise last_error or RuntimeError("OpenAI script generation failed.")
-    content = response.choices[0].message.content or ""
+    content = content or ""
     match = re.search(r"\{.*\}", content, re.DOTALL)
     if match:
         payload = json.loads(match.group(0))

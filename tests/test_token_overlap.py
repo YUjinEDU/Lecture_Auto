@@ -231,12 +231,10 @@ class TestGenerateSingleNote:
         response_data["key_elements"] = ["fabricated", "nonsense"]
         response_data["teaching_points"] = ["invented point"]
 
-        mock_llm = MagicMock()
-        mock_result = MagicMock()
-        mock_result.outputs = [MagicMock(text=json.dumps(response_data))]
-        mock_llm.generate.return_value = [mock_result]
+        mock_client = MagicMock()
+        mock_client.analyze_image.return_value = json.dumps(response_data)
 
-        note = generate_single_note(mock_llm, slide, rendered_dir, vlm_dir)
+        note = generate_single_note(mock_client, slide, rendered_dir, vlm_dir)
 
         # Check file was written
         out_path = vlm_dir / "vlm_note_001.json"
@@ -259,12 +257,10 @@ class TestGenerateSingleNote:
         response_data = _valid_vlm_response_dict(0)
         response_data["visual_summary"] = "totally unrelated hallucinated text"
 
-        mock_llm = MagicMock()
-        mock_result = MagicMock()
-        mock_result.outputs = [MagicMock(text=json.dumps(response_data))]
-        mock_llm.generate.return_value = [mock_result]
+        mock_client = MagicMock()
+        mock_client.analyze_image.return_value = json.dumps(response_data)
 
-        note = generate_single_note(mock_llm, slide, rendered_dir, vlm_dir)
+        note = generate_single_note(mock_client, slide, rendered_dir, vlm_dir)
 
         # Image-heavy slide: needs_review should be False regardless
         assert note.needs_review is False
@@ -278,18 +274,16 @@ class TestGenerateSingleNote:
         slide = _make_slide(0, [_make_shape(has_text=True, texts=["Content"])])
         (rendered_dir / "slide_001.png").write_bytes(b"fake png")
 
-        bad_result = MagicMock()
-        bad_result.outputs = [MagicMock(text="not valid json {{{")]
-        good_result = MagicMock()
-        good_result.outputs = [MagicMock(text=_valid_vlm_response(0))]
+        mock_client = MagicMock()
+        mock_client.analyze_image.side_effect = [
+            "not valid json {{{",
+            _valid_vlm_response(0),
+        ]
 
-        mock_llm = MagicMock()
-        mock_llm.generate.side_effect = [[bad_result], [good_result]]
-
-        note = generate_single_note(mock_llm, slide, rendered_dir, vlm_dir)
+        note = generate_single_note(mock_client, slide, rendered_dir, vlm_dir)
 
         assert note is not None
-        assert mock_llm.generate.call_count == 2
+        assert mock_client.analyze_image.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +299,15 @@ class TestJobStatus:
         assert JobStatus.failed == "failed"
 
     def test_enum_count(self):
-        assert len(list(JobStatus)) == 5
+        assert {s.value for s in JobStatus} == {
+            "queued",
+            "started",
+            "vlm_processing",
+            "script_generating",
+            "script_completed",
+            "completed",
+            "failed",
+        }
 
 
 # ---------------------------------------------------------------------------

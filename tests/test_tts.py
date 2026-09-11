@@ -89,31 +89,29 @@ def test_synthesize_audio_file_naming(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_load_tts_signature():
-    """load_tts must accept model_path with default 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice'."""
+    """load_tts must accept model_path with default 'Qwen/Qwen3-TTS-12Hz-1.7B-Base'."""
     sig = inspect.signature(load_tts)
     params = sig.parameters
     assert "model_path" in params
     default = params["model_path"].default
-    assert default == "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    assert default == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 
-def test_load_tts_returns_dict_with_model_and_tokenizer():
-    """load_tts must return dict with 'model' and 'tokenizer' keys."""
+def test_load_tts_returns_qwen_model():
+    """load_tts returns the Qwen3TTSModel instance from the qwen-tts package.
+
+    (The previous transformers-based dict return — model + tokenizer — is
+    obsolete: qwen-tts exposes a single model object with voice-clone methods.)
+    """
     fake_model = MagicMock()
-    fake_tokenizer = MagicMock()
 
-    with patch("lecture_auto.pipeline.tts.AutoModelForCausalLM") as mock_model_cls, \
-         patch("lecture_auto.pipeline.tts.AutoTokenizer") as mock_tok_cls:
-        mock_tok_cls.from_pretrained.return_value = fake_tokenizer
+    with patch.object(tts_module, "Qwen3TTSModel") as mock_model_cls:
         mock_model_cls.from_pretrained.return_value = fake_model
 
         result = load_tts("some/model/path")
 
-    assert isinstance(result, dict)
-    assert "model" in result
-    assert "tokenizer" in result
-    assert result["model"] is fake_model
-    assert result["tokenizer"] is fake_tokenizer
+    assert result is fake_model
+    mock_model_cls.from_pretrained.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

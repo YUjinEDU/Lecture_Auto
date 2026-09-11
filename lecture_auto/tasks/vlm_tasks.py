@@ -15,17 +15,17 @@ from lecture_auto.tasks.progress import publish_progress
 
 logger = logging.getLogger(__name__)
 
-_vlm_model = None
+_llm_client = None
 
 
 def _get_vlm():
-    """Lazy-load VLM model (singleton per worker process)."""
-    global _vlm_model
-    if _vlm_model is None:
-        from lecture_auto.pipeline.vlm import load_vlm
+    """Lazy-init the LLM client (singleton per worker process)."""
+    global _llm_client
+    if _llm_client is None:
+        from lecture_auto.llm import get_llm_client
 
-        _vlm_model = load_vlm()
-    return _vlm_model
+        _llm_client = get_llm_client()
+    return _llm_client
 
 
 @shared_task(
@@ -62,7 +62,7 @@ def process_slides_task(self, job_id: str) -> dict:
     total = len(slides)
     skipped = 0
 
-    llm = _get_vlm()
+    client = _get_vlm()
 
     for i, slide in enumerate(slides):
         note_path = job_paths.vlm_dir / f"vlm_note_{slide.slide_number:03d}.json"
@@ -82,7 +82,7 @@ def process_slides_task(self, job_id: str) -> dict:
         publish_progress(job_id, "vlm", i + 1, total, "processing")
         try:
             generate_single_note(
-                llm, slide, job_paths.rendered_dir, job_paths.vlm_dir
+                client, slide, job_paths.rendered_dir, job_paths.vlm_dir
             )
             publish_progress(job_id, "vlm", i + 1, total, "done")
         except Exception as exc:

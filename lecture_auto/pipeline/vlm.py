@@ -1,10 +1,13 @@
 """
-VLM visual notes module — Qwen3-VL via vLLM offline inference.
+VLM visual notes module — slide image analysis via the unified LLM client.
+
+Provider/transport lives in :mod:`lecture_auto.llm` (OpenAI by default); this
+module only builds the text-grounded prompt, sends image + prompt through the
+client, validates the JSON, and computes the grounding (token-overlap) signal.
 
 Exports:
     VlmNote               — Pydantic schema for per-slide visual notes
-    load_vlm              — Load Qwen3-VL model via vLLM
-    build_vlm_prompt      — Build multimodal (image + parsed text) prompt dict
+    build_vlm_prompt      — Build the text-grounded prompt (parsed text + schema)
     generate_visual_notes — Batch entry point: produce VlmNote JSON per slide
     generate_single_note  — Atomic single-slide inference (for resumable tasks)
     compute_token_overlap — Token-level overlap between VLM output and parsed text
@@ -17,14 +20,12 @@ import re
 from pathlib import Path
 
 from pydantic import BaseModel
-from vllm import LLM, SamplingParams
 
+from lecture_auto.llm import LLMClient
 from lecture_auto.schemas.manifest import SlideRecord
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
-_DEFAULT_MAX_MODEL_LEN = 4096
 _TEMPERATURE_FIRST = 0.3
 _TEMPERATURE_RETRY = 0.1
 _MAX_TOKENS = 1024
@@ -46,50 +47,23 @@ class VlmNote(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------------------------
-
-def load_vlm(model_path: str = _DEFAULT_MODEL) -> LLM:
-    """Load Qwen3-VL via vLLM offline inference.
-
-    Args:
-        model_path: HuggingFace model ID or local path.
-                    Defaults to "Qwen/Qwen3-VL-8B-Instruct".
-
-    Returns:
-        Loaded vLLM LLM instance.
-    """
-    logger.info("Loading VLM model: %s", model_path)
-    llm = LLM(
-        model=model_path,
-        dtype="auto",
-        max_model_len=_DEFAULT_MAX_MODEL_LEN,
-        trust_remote_code=True,
-    )
-    logger.info("VLM model loaded successfully")
-    return llm
-
-
-# ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
 
-def build_vlm_prompt(slide: SlideRecord, rendered_dir: Path) -> dict:
-    """Build a multimodal vLLM prompt for one slide.
+def build_vlm_prompt(slide: SlideRecord, rendered_dir: Path | None = None) -> str:
+    """Build the text half of the VLM prompt (text-grounded prompting, VLM-02).
 
-    Implements text-grounded prompting (VLM-02): parsed text from slide shapes
-    is provided alongside the image to prevent hallucination.
+    Parsed text from the slide shapes is provided alongside the image (passed
+    separately to :meth:`LLMClient.analyze_image`) to curb hallucination.
 
     Args:
         slide:        SlideRecord with shape/text data.
-        rendered_dir: Directory containing rendered PNG files.
+        rendered_dir: Accepted for backward compatibility; unused (the image is
+                      supplied to the LLM client by the caller).
 
     Returns:
-        vLLM messages list suitable for llm.generate().
+        A prompt string instructing the model to emit the VlmNote JSON schema.
     """
-    image_path = rendered_dir / slide.png_path
-
-    # Collect all paragraph text from shapes that have text
     parsed_texts: list[str] = []
     for shape in slide.shapes:
         if shape.has_text:
@@ -99,49 +73,30 @@ def build_vlm_prompt(slide: SlideRecord, rendered_dir: Path) -> dict:
 
     parsed_text_block = "\n".join(parsed_texts) if parsed_texts else "(no text on slide)"
 
-    system_content = (
-        "You are a visual analysis assistant for academic lecture slides. "
-        "Analyze the given slide image and produce structured JSON output."
-    )
-
     output_schema = (
         "Respond ONLY with valid JSON matching this schema: "
         '{"visual_summary": str, "key_elements": [str], "layout_relations": str, '
         '"teaching_points": [str], "possible_confusions": [str]}'
     )
 
-    user_text = (
+    return (
+        "You are a visual analysis assistant for academic lecture slides. "
+        "Analyze the given slide image and produce structured JSON output.\n\n"
         f"Parsed text from this slide:\n{parsed_text_block}\n\n"
-        f"Now analyze the slide image above.\n\n"
+        "Now analyze the slide image above.\n\n"
         f"{output_schema}"
     )
 
-    # vLLM multimodal messages format for Qwen3-VL
-    messages = [
-        {"role": "system", "content": system_content},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": str(image_path)},
-                {"type": "text", "text": user_text},
-            ],
-        },
-    ]
-
-    return messages
-
 
 # ---------------------------------------------------------------------------
-# Inference
+# JSON parsing
 # ---------------------------------------------------------------------------
 
 def _parse_vlm_json(text: str, slide_index: int) -> dict:
-    """Parse JSON from VLM response text, adding slide_index."""
+    """Parse JSON from a VLM response, stripping markdown fences, adding slide_index."""
     text = text.strip()
-    # Strip markdown code fences if present
     if text.startswith("```"):
         lines = text.splitlines()
-        # Remove first (```json or ```) and last (```) lines
         inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
         text = "\n".join(inner)
     data = json.loads(text)
@@ -154,13 +109,10 @@ def _parse_vlm_json(text: str, slide_index: int) -> dict:
 # ---------------------------------------------------------------------------
 
 def compute_token_overlap(vlm_text: str, parsed_text: str) -> float:
-    """Compute token-level overlap between VLM output and parsed slide text.
-
-    Returns a ratio [0.0, 1.0] indicating how much of the VLM output
-    can be grounded in the original parsed text.
+    """Token-level overlap [0.0, 1.0]: how much of the VLM output is grounded.
 
     Edge cases:
-        - Empty vlm_text  -> 1.0 (nothing to check)
+        - Empty vlm_text    -> 1.0 (nothing to check)
         - Empty parsed_text -> 0.0 (all VLM-generated)
     """
     def tokenize(text: str) -> set[str]:
@@ -188,38 +140,39 @@ def _extract_slide_text(slide: SlideRecord) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Single-slide inference (atomic unit for resumable tasks)
+# Inference (single slide = atomic unit for resumable tasks)
 # ---------------------------------------------------------------------------
 
 def generate_single_note(
-    llm: LLM,
+    client: LLMClient,
     slide: SlideRecord,
     rendered_dir: Path,
     vlm_dir: Path,
 ) -> VlmNote:
-    """Generate a VLM note for a single slide and write to disk.
+    """Generate a VLM note for a single slide and write it to disk.
 
     Steps:
-        1. Build multimodal prompt.
-        2. Run inference (temperature=0.3, retry at 0.1 on failure).
-        3. Compute token overlap and set needs_review flag.
+        1. Build the text-grounded prompt.
+        2. Send image + prompt via the LLM client (retry once at lower temperature
+           on JSON-parse failure).
+        3. Compute token overlap and set the needs_review flag.
         4. Write JSON to vlm_dir/vlm_note_{NNN}.json.
 
     Args:
-        llm:          Loaded vLLM LLM instance.
+        client:       An LLMClient (see lecture_auto.llm.get_llm_client).
         slide:        Single SlideRecord.
         rendered_dir: Directory containing rendered PNGs.
-        vlm_dir:      Directory to write output JSON.
+        vlm_dir:      Directory to write the output JSON.
 
     Returns:
-        Validated VlmNote instance.
+        The validated VlmNote.
     """
-    prompt = build_vlm_prompt(slide, rendered_dir)
+    prompt = build_vlm_prompt(slide)
+    image_path = rendered_dir / slide.png_path
 
-    # First attempt
-    sampling_params = SamplingParams(temperature=_TEMPERATURE_FIRST, max_tokens=_MAX_TOKENS)
-    results = llm.generate(prompt, sampling_params)
-    response_text = results[0].outputs[0].text
+    response_text = client.analyze_image(
+        image_path, prompt, temperature=_TEMPERATURE_FIRST, max_tokens=_MAX_TOKENS
+    )
 
     note: VlmNote | None = None
     try:
@@ -227,23 +180,21 @@ def generate_single_note(
         note = VlmNote(**data)
     except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
         logger.warning(
-            "Slide %d: JSON parse failed (%s), retrying with temperature=%.1f",
+            "Slide %d: JSON parse failed (%s), retrying at temperature=%.1f",
             slide.slide_number,
             exc,
             _TEMPERATURE_RETRY,
         )
-        retry_params = SamplingParams(temperature=_TEMPERATURE_RETRY, max_tokens=_MAX_TOKENS)
-        retry_results = llm.generate(prompt, retry_params)
-        retry_text = retry_results[0].outputs[0].text
+        retry_text = client.analyze_image(
+            image_path, prompt, temperature=_TEMPERATURE_RETRY, max_tokens=_MAX_TOKENS
+        )
         data = _parse_vlm_json(retry_text, slide.slide_index)
         note = VlmNote(**data)
 
-    # Compute token overlap for needs_review flag
+    # Grounding signal: flag low-overlap notes for human review.
     parsed_text = _extract_slide_text(slide)
     parsed_token_count = len(re.findall(r"[\w]+", parsed_text.lower()))
-
-    vlm_text_parts = [note.visual_summary] + note.key_elements + note.teaching_points
-    vlm_text = " ".join(vlm_text_parts)
+    vlm_text = " ".join([note.visual_summary, *note.key_elements, *note.teaching_points])
     overlap = compute_token_overlap(vlm_text, parsed_text)
 
     note = note.model_copy(update={
@@ -251,43 +202,33 @@ def generate_single_note(
         "needs_review": (parsed_token_count > 10 and overlap < 0.30),
     })
 
-    # Write JSON to disk
     out_path = vlm_dir / f"vlm_note_{slide.slide_number:03d}.json"
     out_path.write_text(
         json.dumps(note.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     logger.info("Saved VLM note: %s", out_path)
-
     return note
 
 
 def generate_visual_notes(
-    llm: LLM,
+    client: LLMClient,
     slides: list[SlideRecord],
     rendered_dir: Path,
     vlm_dir: Path,
 ) -> list[VlmNote]:
-    """Generate per-slide VLM visual notes and save to vlm_dir.
-
-    For each slide:
-      1. Builds multimodal prompt (image + parsed text).
-      2. Runs vLLM inference with SamplingParams(temperature=0.3, max_tokens=1024).
-      3. Parses and validates JSON → VlmNote.
-      4. On JSON parse failure, retries once with temperature=0.1.
-      5. Saves to vlm_dir/vlm_note_{slide_number:03d}.json.
+    """Generate per-slide VLM visual notes and save them to vlm_dir.
 
     Args:
-        llm:          Loaded vLLM LLM instance (from load_vlm).
+        client:       An LLMClient (see lecture_auto.llm.get_llm_client).
         slides:       List of SlideRecord objects.
         rendered_dir: Directory containing rendered slide PNGs.
         vlm_dir:      Directory to write vlm_note_*.json outputs.
 
     Returns:
-        List of validated VlmNote objects (one per slide, in order).
+        Validated VlmNote objects, one per slide, in order.
     """
     notes: list[VlmNote] = []
-
     for slide in slides:
         logger.info(
             "Processing VLM for slide %d/%d (index=%d)",
@@ -295,40 +236,5 @@ def generate_visual_notes(
             len(slides),
             slide.slide_index,
         )
-
-        prompt = build_vlm_prompt(slide, rendered_dir)
-
-        # First attempt
-        sampling_params = SamplingParams(temperature=_TEMPERATURE_FIRST, max_tokens=_MAX_TOKENS)
-        results = llm.generate(prompt, sampling_params)
-        response_text = results[0].outputs[0].text
-
-        note: VlmNote | None = None
-        try:
-            data = _parse_vlm_json(response_text, slide.slide_index)
-            note = VlmNote(**data)
-        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
-            logger.warning(
-                "Slide %d: JSON parse failed (%s), retrying with temperature=%.1f",
-                slide.slide_number,
-                exc,
-                _TEMPERATURE_RETRY,
-            )
-            # Retry with lower temperature
-            retry_params = SamplingParams(temperature=_TEMPERATURE_RETRY, max_tokens=_MAX_TOKENS)
-            retry_results = llm.generate(prompt, retry_params)
-            retry_text = retry_results[0].outputs[0].text
-            data = _parse_vlm_json(retry_text, slide.slide_index)
-            note = VlmNote(**data)
-
-        # Write JSON to vlm_dir
-        out_path = vlm_dir / f"vlm_note_{slide.slide_number:03d}.json"
-        out_path.write_text(
-            json.dumps(note.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        logger.info("Saved VLM note: %s", out_path)
-
-        notes.append(note)
-
+        notes.append(generate_single_note(client, slide, rendered_dir, vlm_dir))
     return notes

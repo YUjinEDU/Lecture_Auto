@@ -7,8 +7,9 @@ import AudioPreview from "../../../../components/lecture/AudioPreview";
 import DownloadPackage from "../../../../components/lecture/DownloadPackage";
 import TTSProgressFooter from "../../../../components/lecture/TTSProgressFooter";
 
-const GPU_API_URL =
-  process.env.NEXT_PUBLIC_GPU_API_URL ?? "http://localhost:8000";
+// Same-origin proxy — the homepage server forwards to GPU_API_URL.
+// See portal/app/api/gpu/[...path]/route.ts.
+const GPU_API_URL = "/api/gpu";
 
 // ---------------------------------------------------------------------------
 // Types

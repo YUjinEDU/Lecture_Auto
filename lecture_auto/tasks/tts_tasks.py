@@ -19,17 +19,17 @@ from lecture_auto.tasks.progress import publish_progress
 
 logger = logging.getLogger(__name__)
 
-_tts_model = None
+_tts_engine = None
 
 
 def _get_tts():
-    """Lazy-load TTS model (singleton per worker process)."""
-    global _tts_model
-    if _tts_model is None:
-        from lecture_auto.pipeline.tts import load_tts
+    """Lazy-load the configured TTS engine (singleton per worker process)."""
+    global _tts_engine
+    if _tts_engine is None:
+        from lecture_auto.tts import get_tts_engine
 
-        _tts_model = load_tts()
-    return _tts_model
+        _tts_engine = get_tts_engine()
+    return _tts_engine
 
 
 @shared_task(
@@ -60,7 +60,7 @@ def synthesize_job_task(self, job_id: str, voice_ref_path: str | None = None) ->
     dict
         ``{"job_id": ..., "total": ..., "skipped": ...}``
     """
-    from lecture_auto.pipeline.tts import merge_audio, synthesize_slide
+    from lecture_auto.pipeline.tts import merge_audio
     from lecture_auto.pipeline.video import assemble_video
     from lecture_auto.schemas.manifest import SlideManifest
     from lecture_auto.storage.jobs import JobPaths
@@ -72,7 +72,7 @@ def synthesize_job_task(self, job_id: str, voice_ref_path: str | None = None) ->
     slides = manifest.slides
     total = len(slides)
     skipped = 0
-    model = _get_tts()
+    engine = _get_tts()
     ref_path = Path(voice_ref_path) if voice_ref_path else None
 
     for i, slide in enumerate(slides):
@@ -97,8 +97,8 @@ def synthesize_job_task(self, job_id: str, voice_ref_path: str | None = None) ->
         text = script_data.get("script", "")
 
         try:
-            synthesize_slide(
-                model, text, wav_path,
+            engine.synthesize_slide(
+                text, wav_path,
                 voice_ref_path=ref_path,
             )
             publish_progress(job_id, "tts", i + 1, total, "done")
@@ -160,7 +160,6 @@ def regenerate_slide_tts_task(
     FileNotFoundError
         If the script file for the given slide does not exist.
     """
-    from lecture_auto.pipeline.tts import synthesize_slide
     from lecture_auto.storage.jobs import JobPaths
 
     job_paths = JobPaths(job_id)
@@ -172,9 +171,9 @@ def regenerate_slide_tts_task(
     text = script_data.get("script", "")
 
     wav_path = job_paths.audio_dir / f"audio_{slide_number:03d}.wav"
-    model = _get_tts()
+    engine = _get_tts()
     ref_path = Path(voice_ref_path) if voice_ref_path else None
 
-    synthesize_slide(model, text, wav_path, voice_ref_path=ref_path)
+    engine.synthesize_slide(text, wav_path, voice_ref_path=ref_path)
 
     return {"job_id": job_id, "slide_number": slide_number, "status": "regenerated"}

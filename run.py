@@ -222,8 +222,9 @@ def main() -> int:
     # Lazy imports — heavy GPU dependencies are only loaded when each stage runs.
     from lecture_auto.pipeline.parser import parse_pptx
     from lecture_auto.pipeline.renderer import render_slides
-    from lecture_auto.pipeline.vlm import load_vlm, generate_visual_notes
+    from lecture_auto.pipeline.vlm import generate_visual_notes
     from lecture_auto.pipeline.script_gen import generate_scripts
+    from lecture_auto.llm import get_llm_client
     from lecture_auto.pipeline.tts import load_tts, synthesize_audio
     from lecture_auto.pipeline.video import assemble_video
     from lecture_auto.schemas.manifest import LectureStyle, SlideManifest
@@ -357,9 +358,9 @@ def main() -> int:
     print_stage_header(3, 6, "VLM Analysis")
     t0 = time.perf_counter()
     try:
-        vlm_model = load_vlm(args.vlm_model)
+        llm_client = get_llm_client()
         vlm_notes = generate_visual_notes(
-            vlm_model, slides, job_paths.rendered_dir, job_paths.vlm_dir
+            llm_client, slides, job_paths.rendered_dir, job_paths.vlm_dir
         )
 
         elapsed = time.perf_counter() - t0
@@ -388,13 +389,12 @@ def main() -> int:
     print_stage_header(4, 6, "Script Generation")
     t0 = time.perf_counter()
     try:
-        scripts = asyncio.run(
-            generate_scripts(
-                slides,
-                [n.model_dump() for n in vlm_notes],
-                manifest,
-                job_paths.scripts_dir,
-            )
+        scripts = generate_scripts(
+            slides,
+            [n.model_dump() for n in vlm_notes],
+            manifest,
+            job_paths.scripts_dir,
+            client=llm_client,
         )
 
         elapsed = time.perf_counter() - t0

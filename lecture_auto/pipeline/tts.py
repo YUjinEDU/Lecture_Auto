@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover
     Qwen3TTSModel = None  # type: ignore[assignment,misc]
 
 _SAMPLE_RATE = 24000
+# Default Qwen3-TTS model; override per-deployment with the TTS_MODEL env var.
 _DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 

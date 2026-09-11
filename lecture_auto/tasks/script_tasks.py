@@ -1,13 +1,12 @@
 """Resumable script generation Celery task with file-based checkpointing.
 
-The task processes each slide individually via `call_claude()` and skips
+The task processes each slide individually via the unified LLM client and skips
 slides that already have a valid script_{NNN}.json file on disk.  This makes
 the task safely resumable after crashes or worker restarts.
 
-Uses cpu_queue since Claude CLI is CPU-bound (subprocess), not GPU.
+Uses cpu_queue since script generation is a network/API call, not GPU work.
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -81,9 +80,9 @@ def generate_scripts_task(self, job_id: str) -> dict:
     Returns:
         Dict with job_id, total slides, and count of skipped slides.
     """
+    from lecture_auto.llm import get_llm_client
     from lecture_auto.pipeline.script_gen import (
         build_script_prompt,
-        call_claude,
         _parse_script_json,
     )
     from lecture_auto.schemas.manifest import SlideManifest
@@ -96,6 +95,7 @@ def generate_scripts_task(self, job_id: str) -> dict:
     slides = manifest.slides
     total = len(slides)
     skipped = 0
+    client = get_llm_client()
 
     target_seconds = (manifest.target_minutes * 60) / manifest.slide_count
 
@@ -130,8 +130,7 @@ def generate_scripts_task(self, job_id: str) -> dict:
                 prev_script=prev_script_text,
             )
 
-            # Call Claude subprocess (async -> sync bridge)
-            raw = asyncio.run(call_claude(prompt))
+            raw = client.complete_text(prompt)
             data = _parse_script_json(raw, slide.slide_index, slide.slide_number)
 
             # Add edit tracking fields
@@ -186,9 +185,9 @@ def regenerate_slide_task(
         ValueError: If the script was edited and force is False.
         FileNotFoundError: If the script file does not exist.
     """
+    from lecture_auto.llm import get_llm_client
     from lecture_auto.pipeline.script_gen import (
         build_script_prompt,
-        call_claude,
         _parse_script_json,
     )
     from lecture_auto.schemas.manifest import SlideManifest
@@ -245,7 +244,8 @@ def regenerate_slide_task(
         prev_script=prev_script_text,
     )
 
-    raw = asyncio.run(call_claude(prompt))
+    client = get_llm_client()
+    raw = client.complete_text(prompt)
     data = _parse_script_json(raw, slide.slide_index, slide.slide_number)
     data["edited"] = False
     data["edited_at"] = None

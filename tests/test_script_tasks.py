@@ -186,8 +186,8 @@ class TestGenerateScriptsTask:
 
         mock_paths = _make_job_paths_mock(tmp_path)
 
-        async def fake_claude(prompt):
-            return _fake_claude_response()
+        mock_client = MagicMock()
+        mock_client.complete_text.return_value = _fake_claude_response()
 
         progress_calls = []
 
@@ -201,7 +201,7 @@ class TestGenerateScriptsTask:
         with patch.object(script_tasks, "publish_progress", side_effect=fake_progress):
             # Patch the lazy imports inside the function
             with patch("lecture_auto.storage.jobs.JobPaths", return_value=mock_paths):
-                with patch("lecture_auto.pipeline.script_gen.call_claude", side_effect=fake_claude):
+                with patch("lecture_auto.llm.get_llm_client", return_value=mock_client):
                     result = script_tasks.generate_scripts_task.__wrapped__(
                         "test-job"
                     )
@@ -253,8 +253,8 @@ class TestGenerateScriptsTask:
         _setup_job_dir(tmp_path, slide_count=1)
         mock_paths = _make_job_paths_mock(tmp_path)
 
-        async def fake_claude(prompt):
-            return _fake_claude_response()
+        mock_client = MagicMock()
+        mock_client.complete_text.return_value = _fake_claude_response()
 
         from lecture_auto.tasks import script_tasks
 
@@ -267,7 +267,7 @@ class TestGenerateScriptsTask:
 
         with patch.object(script_tasks, "publish_progress"):
             with patch("lecture_auto.storage.jobs.JobPaths", return_value=mock_paths):
-                with patch("lecture_auto.pipeline.script_gen.call_claude", side_effect=fake_claude):
+                with patch("lecture_auto.llm.get_llm_client", return_value=mock_client):
                     with patch.object(script_tasks.os, "rename", side_effect=tracking_rename):
                         script_tasks.generate_scripts_task.__wrapped__(
                             "test-job"

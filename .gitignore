@@ -8,3 +8,4 @@ __pycache__/
 *.png
 *.wav
 *.mp4
+.omc/*

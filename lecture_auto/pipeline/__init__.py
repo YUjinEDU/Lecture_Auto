@@ -2,7 +2,7 @@
 
 Usage:
     from lecture_auto.pipeline import parse_pptx, render_slides
-    from lecture_auto.pipeline import load_vlm, generate_visual_notes
+    from lecture_auto.pipeline import generate_visual_notes
     from lecture_auto.pipeline import generate_scripts, load_tts, synthesize_audio
     from lecture_auto.pipeline import assemble_video
 
@@ -16,14 +16,14 @@ from .renderer import render_slides
 
 # GPU-dependent modules: import lazily to avoid hard-fail on CPU-only envs
 try:
-    from .vlm import load_vlm, generate_visual_notes, VlmNote
+    from .vlm import generate_visual_notes, VlmNote
 except ImportError:  # pragma: no cover
-    load_vlm = generate_visual_notes = VlmNote = None  # type: ignore[assignment,misc]
+    generate_visual_notes = VlmNote = None  # type: ignore[assignment,misc]
 
 try:
-    from .script_gen import generate_scripts, SlideScript, call_claude
+    from .script_gen import generate_scripts, SlideScript
 except ImportError:  # pragma: no cover
-    generate_scripts = SlideScript = call_claude = None  # type: ignore[assignment,misc]
+    generate_scripts = SlideScript = None  # type: ignore[assignment,misc]
 
 try:
     from .tts import load_tts, synthesize_audio
@@ -41,12 +41,10 @@ __all__ = [
     "parse_input",
     "extract_tables_fallback",
     "render_slides",
-    "load_vlm",
     "generate_visual_notes",
     "VlmNote",
     "generate_scripts",
     "SlideScript",
-    "call_claude",
     "load_tts",
     "synthesize_audio",
     "assemble_video",

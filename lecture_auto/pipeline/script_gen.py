@@ -1,22 +1,22 @@
 """
-Script generation module — Claude via `claude -p` async subprocess.
+Script generation module — lecture scripts via the unified LLM client.
+
+Provider/transport lives in :mod:`lecture_auto.llm` (OpenAI by default).
 
 Exports:
     SlideScript         — Pydantic schema for per-slide lecture scripts
-    build_script_prompt — Build text prompt for Claude with slide context window
-    call_claude         — Call `claude -p` via asyncio.create_subprocess_exec
+    build_script_prompt — Build the text prompt with the slide context window
     generate_scripts    — Main entry point: produce SlideScript JSON per slide
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from asyncio.subprocess import PIPE
 from pathlib import Path
 
 from pydantic import BaseModel
 
+from lecture_auto.llm import LLMClient, get_llm_client
 from lecture_auto.schemas.manifest import LectureStyle, SlideManifest, SlideRecord
 
 logger = logging.getLogger(__name__)
@@ -167,40 +167,6 @@ def build_script_prompt(
 
 
 # ---------------------------------------------------------------------------
-# Claude subprocess
-# ---------------------------------------------------------------------------
-
-async def call_claude(prompt: str) -> str:
-    """Call `claude -p <prompt>` via asyncio subprocess.
-
-    Args:
-        prompt: The prompt string to pass to claude -p.
-
-    Returns:
-        stdout decoded as UTF-8.
-
-    Raises:
-        RuntimeError: If claude exits with non-zero returncode.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        "claude",
-        "-p",
-        prompt,
-        stdout=PIPE,
-        stderr=PIPE,
-    )
-    stdout_bytes, stderr_bytes = await proc.communicate()
-
-    if proc.returncode != 0:
-        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"claude -p exited with code {proc.returncode}: {stderr_text}"
-        )
-
-    return stdout_bytes.decode("utf-8", errors="replace")
-
-
-# ---------------------------------------------------------------------------
 # JSON parsing
 # ---------------------------------------------------------------------------
 
@@ -231,13 +197,14 @@ def _parse_script_json(text: str, slide_index: int, slide_number: int) -> dict:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-async def generate_scripts(
+def generate_scripts(
     slides: list[SlideRecord],
     vlm_notes: list[dict],
     manifest: SlideManifest,
     scripts_dir: Path,
+    client: LLMClient | None = None,
 ) -> list[SlideScript]:
-    """Generate per-slide lecture scripts via Claude and save to scripts_dir.
+    """Generate per-slide lecture scripts via the LLM client and save to scripts_dir.
 
     Processing is sequential (not parallel) because each slide's script
     depends on the previous slide's script for transition context (SCRIPT-02).
@@ -247,10 +214,14 @@ async def generate_scripts(
         vlm_notes:   List of VlmNote dicts (one per slide, same order).
         manifest:    SlideManifest with style, target_minutes, slide_count etc.
         scripts_dir: Directory to write script_NNN.json outputs.
+        client:      An LLMClient; defaults to lecture_auto.llm.get_llm_client().
 
     Returns:
         List of validated SlideScript objects (one per slide, in order).
     """
+    if client is None:
+        client = get_llm_client()
+
     target_seconds = (manifest.target_minutes * 60) / manifest.slide_count
     logger.info(
         "Generating scripts for %d slides @ %.1f sec/slide",
@@ -282,7 +253,7 @@ async def generate_scripts(
             prev_script=prev_script_text,
         )
 
-        raw_output = await call_claude(prompt)
+        raw_output = client.complete_text(prompt)
         data = _parse_script_json(raw_output, slide.slide_index, slide.slide_number)
         script = SlideScript(**data)
 
