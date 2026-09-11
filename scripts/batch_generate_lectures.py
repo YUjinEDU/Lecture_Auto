@@ -37,6 +37,7 @@ from lecture_auto.pipeline.parser_pdf import parse_pdf
 from lecture_auto.pipeline.raon_tts import (
     TTS_MODEL_ID,
     TTS_SEEDS,
+    TTS_SYNTH_VERSION,
     TTS_TEMPERATURE,
     load_raon_pipeline,
     synthesize_raon_slide,
@@ -54,7 +55,21 @@ logging.basicConfig(
 logger = logging.getLogger("batch_generator")
 
 TARGET_MINUTES = 30.0  # 30분 영상 목표
-REF_VOICE = Path("data/audio_ref/test_variants/ref_combined.wav")
+# ref_combined.wav (47.7s) was never actually a "combined" reference at
+# inference time: PretrainedSpeakerEncoder.forward() front-truncates any
+# speaker_audio to SpeakerEncoderConfig.max_seconds (10.0s) before computing
+# the ECAPA embedding. Verified byte-for-byte: ref_combined.wav's first 10s
+# == ref_phone_norm.wav (correlation 1.0, identical peak/rms) -- the combined
+# file's 37s lecture-mic tail was never used, the embedding always came from
+# this normalized phone clip alone. Point at it directly instead of the
+# misleading 47.7s file; this is a no-op for generated audio (same effective
+# embedding, already proven to work by the batch runs so far), just honest
+# about what's actually driving voice conditioning.
+# NOT tested well: data/audio_ref/comparison/sample_v1_phone_orig.wav (the
+# *un*normalized phone take) -- ~5x lower RMS, produced consistent quality-gate
+# failures across all 3 seeds in a live test. Don't switch to it without
+# re-validating.
+REF_VOICE = Path("data/audio_ref/test_variants/ref_phone_norm.wav")
 
 LECTURES = [
     {
@@ -271,7 +286,7 @@ def process_lecture(
         script_text = sc.get("script", "")
         out_wav = audio_dir / f"slide_{n:03d}.wav"
         cache_key = content_hash(
-            script_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS)
+            script_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION
         )
         if is_cache_valid(out_wav, cache_key):
             logger.info("Slide %d/%d audio cached, skipping...", n, slide_count)

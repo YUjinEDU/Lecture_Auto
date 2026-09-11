@@ -4,10 +4,12 @@ from __future__ import annotations
 import numpy as np
 
 from lecture_auto.pipeline.raon_tts import (
+    TTS_SEEDS,
     _integrated_lufs,
     _longest_silence_seconds,
     _loudness_normalize,
     _passes_quality_gate,
+    _synthesize_segment_with_gate,
     _trim_lead_tail_silence,
     _voiced_ratio,
     split_into_segments,
@@ -102,3 +104,53 @@ def test_loudness_normalize_silence_is_noop():
     sr = 24000
     silence = np.zeros(sr, dtype=np.float32)
     assert np.array_equal(_loudness_normalize(silence, sr), silence)
+
+
+class _FakePipe:
+    """Minimal stand-in for RaonPipeline.tts() -- returns one waveform per call, in order."""
+
+    def __init__(self, waveforms):
+        self.task_params = {"tts": {}, "tts_continuation": {}}
+        self._waveforms = list(waveforms)
+        self.calls = 0
+
+    def tts(self, text, **kwargs):
+        wav = self._waveforms[self.calls]
+        self.calls += 1
+        return wav.tolist(), 24000  # plain list: no .squeeze/.cpu, exercises the numpy.array() fallback path
+
+
+def _speech_then_gap(gap_seconds: float, sr: int = 24000) -> np.ndarray:
+    """tone - silence - tone, so the gap survives lead/tail trimming as internal silence."""
+    tone = _tone(0.3, sr)
+    gap = np.zeros(int(sr * gap_seconds), dtype=np.float32)
+    return np.concatenate([tone, gap, tone])
+
+
+def test_synthesize_segment_with_gate_returns_first_passing_seed():
+    clean = _tone(3.0, 24000)
+    pipe = _FakePipe([clean])  # only one call needed if the first seed passes
+
+    audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
+
+    assert ok is True
+    assert pipe.calls == 1
+    assert len(audio) == len(clean)
+
+
+def test_synthesize_segment_with_gate_keeps_least_bad_not_first_failure():
+    # All three seeds fail (internal gap far exceeds the 2.5s silence limit),
+    # but seed 29's gap is the shortest -- the fallback must prefer it over
+    # seed 17's, which was tried first.
+    waveforms = [
+        _speech_then_gap(4.0),  # seed 17
+        _speech_then_gap(3.0),  # seed 29 -- least bad
+        _speech_then_gap(5.0),  # seed 43
+    ]
+    pipe = _FakePipe(waveforms)
+
+    audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
+
+    assert ok is False
+    assert pipe.calls == len(TTS_SEEDS)
+    assert len(audio) == len(waveforms[1])
