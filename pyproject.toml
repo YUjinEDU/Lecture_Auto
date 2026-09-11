@@ -29,6 +29,30 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+# GPU stack for Raon-Speech-9B (TTS) local inference. Not required to run the
+# test suite or the API/CLI text paths -- only for scripts/batch_generate_lectures.py
+# and the *_mini_test*.py scripts that actually load the model.
+# ponytail: `uv sync` without --all-extras prunes these from .venv (bit us once
+# already, see AGENTS.md). Always run `uv sync --all-extras` on this project.
+gpu = [
+    "torch==2.5.1+cu121",
+    "torchaudio==2.5.1+cu121",
+    "transformers>=4.57.1,<5.0",  # Raon-Speech-9B model card pins <5.0 (dynamic trust_remote_code loading)
+    "accelerate",
+    "speechbrain>=1.1",
+    "scipy",
+    "sentencepiece",
+    "pyloudnorm>=0.2.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchaudio = { index = "pytorch-cu121" }
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
