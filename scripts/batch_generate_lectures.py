@@ -257,6 +257,10 @@ def process_lecture(
                 )
             carry_forward = result.carry_forward
 
+    if tts_pipe is None:
+        logger.info("[5-6/6] --skip-tts: leaving TTS/video assembly out, scripts only.")
+        return scripts_dir
+
     # 5. Synthesize Audio with Raon-Speech-9B (segmented + quality-gated, see raon_tts.py)
     logger.info("[5/6] Synthesizing TTS with Raon-Speech-9B & Professor Voice Cloning...")
     wav_paths: list[Path] = []
