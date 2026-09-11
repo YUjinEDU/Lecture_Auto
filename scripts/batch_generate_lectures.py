@@ -1,34 +1,51 @@
 """Batch lecture video generator for the 5 target lectures.
 
 Runs full end-to-end pipeline:
-1. PDF Parsing & Manifest creation
+1. PDF Parsing
 2. Slide Rendering (PDF -> PNGs)
-3. Script Generation via gpt-5.6-luna with Professor Speaking Style
-4. Voice-cloned TTS Audio Synthesis via Raon-Speech-9B
-5. Video Assembly via ffmpeg -> MP4 (30 minutes each)
+3. Lecture-wide plan (sections, recurring examples, time budget) via gpt-5.6-luna
+4. Section-by-section script generation (4-8 slides per call, continuous story,
+   carry-forward state) via gpt-5.6-luna vision
+5. Voice-cloned TTS Audio Synthesis via Raon-Speech-9B (segmented + quality-gated)
+6. Video Assembly via ffmpeg -> MP4 (30 minutes each)
+
+Every LLM/TTS call is cached by a SHA-256 of its actual inputs (prompt text,
+image bytes, reference voice, model config) via lecture_auto.pipeline.cache --
+not by "does a file with this name already exist", so a prompt or reference
+voice change regenerates exactly the artifacts affected by it, not none of
+them (stale) and not all of them (wasteful).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import os
 import shutil
-import sys
 import time
 from pathlib import Path
 
 from lecture_auto.llm.openai_client import OpenAILLMClient
-from lecture_auto.pipeline.parser_pdf import parse_pdf
-from lecture_auto.pipeline.renderer import render_slides
-from lecture_auto.pipeline.script_gen import (
-    build_script_prompt,
-    _parse_script_json,
-    get_professor_system_prompt,
+from lecture_auto.pipeline.cache import content_hash, is_cache_valid, write_cache_hash
+from lecture_auto.pipeline.lecture_plan import (
+    _PLAN_SYSTEM_PROMPT,
+    build_lecture_plan_prompt,
+    build_section_prompt,
+    generate_lecture_plan,
+    generate_section_scripts,
 )
-from lecture_auto.pipeline.raon_tts import load_raon_pipeline, synthesize_raon_slide
+from lecture_auto.pipeline.parser_pdf import parse_pdf
+from lecture_auto.pipeline.raon_tts import (
+    TTS_MODEL_ID,
+    TTS_SEEDS,
+    TTS_TEMPERATURE,
+    load_raon_pipeline,
+    synthesize_raon_slide,
+)
+from lecture_auto.pipeline.renderer import render_slides
+from lecture_auto.pipeline.script_gen import generate_script_for_slide_vision, get_professor_system_prompt
 from lecture_auto.pipeline.video import assemble_video
-from lecture_auto.schemas.manifest import LectureStyle, SlideManifest
+from lecture_auto.schemas.lecture_plan import CarryForward, LecturePlan, SectionScriptResult
+from lecture_auto.schemas.manifest import LectureStyle
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +96,54 @@ LECTURES = [
 ]
 
 
+def _generate_lecture_plan_cached(
+    llm_client, slides, subject: str, name: str, plan_path: Path
+) -> LecturePlan:
+    prompt_text = build_lecture_plan_prompt(slides, subject, name, TARGET_MINUTES)
+    cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text)
+
+    if is_cache_valid(plan_path, cache_key):
+        logger.info("Lecture plan cached, reusing %s", plan_path)
+        return LecturePlan(**json.loads(plan_path.read_text(encoding="utf-8")))
+
+    logger.info("Generating lecture plan (whole-slide-set analysis)...")
+    plan = generate_lecture_plan(llm_client, slides, subject, name, TARGET_MINUTES)
+    plan_path.write_text(json.dumps(plan.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+    write_cache_hash(plan_path, cache_key)
+    logger.info("Lecture plan: %d sections covering %d slides", len(plan.sections), len(slides))
+    return plan
+
+
+def _generate_section_scripts_cached(
+    llm_client,
+    plan: LecturePlan,
+    section,
+    slides_in_section,
+    png_paths_in_section,
+    carry_forward: CarryForward | None,
+    is_last_section: bool,
+    section_result_path: Path,
+):
+    prompt_text = build_section_prompt(plan, section, slides_in_section, carry_forward, is_last_section)
+    image_bytes = b"".join(p.read_bytes() for p in png_paths_in_section)
+    carry_forward_repr = carry_forward.model_dump_json() if carry_forward else ""
+    cache_key = content_hash(get_professor_system_prompt(), prompt_text, image_bytes, carry_forward_repr)
+
+    if is_cache_valid(section_result_path, cache_key):
+        logger.info("Section %r cached, reusing", section.title)
+        return SectionScriptResult(**json.loads(section_result_path.read_text(encoding="utf-8")))
+
+    logger.info("Generating section %r (%d slides)...", section.title, len(section.slides))
+    result = generate_section_scripts(
+        llm_client, plan, section, slides_in_section, png_paths_in_section, carry_forward, is_last_section
+    )
+    section_result_path.write_text(
+        json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    write_cache_hash(section_result_path, cache_key)
+    return result
+
+
 def process_lecture(
     item: dict,
     llm_client: OpenAILLMClient,
@@ -99,128 +164,123 @@ def process_lecture(
     work_dir = base_work_dir / lec_id
     rendered_dir = work_dir / "rendered"
     scripts_dir = work_dir / "scripts"
+    sections_dir = work_dir / "sections"
     audio_dir = work_dir / "audio"
     video_dir = work_dir / "video"
 
-    for d in (work_dir, rendered_dir, scripts_dir, audio_dir, video_dir, output_dir):
+    for d in (work_dir, rendered_dir, scripts_dir, sections_dir, audio_dir, video_dir, output_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     # 1. Parse PDF
-    logger.info("[1/5] Parsing PDF...")
+    logger.info("[1/6] Parsing PDF...")
     slides = parse_pdf(pdf_path)
     slide_count = len(slides)
-    target_seconds = (TARGET_MINUTES * 60.0) / slide_count
-    logger.info("Parsed %d slides. Target duration: %.1f sec/slide (~30 min total)", slide_count, target_seconds)
+    slide_by_number = {s.slide_number: s for s in slides}
 
     # 2. Render PNGs
-    logger.info("[2/5] Rendering slides to PNG...")
+    logger.info("[2/6] Rendering slides to PNG...")
     png_paths, _ = render_slides(pdf_path, rendered_dir, lec_id)
+    png_by_number = {i + 1: p for i, p in enumerate(png_paths)}
     logger.info("Rendered %d PNG images", len(png_paths))
 
-    # 3. Generate Scripts
-    logger.info("[3/5] Generating Scripts with gpt-5.6-luna (Professor style)...")
-    style = LectureStyle(
-        density="detailed",
-        tone="formal",
-        approach="explanatory",
-        supplement=f"과목명: {item['subject']}, 강의주제: {item['name']}. 강의시간 30분 맞춤.",
-    )
-
-    scripts: list[dict] = []
-    prev_script: str | None = None
+    scripts: dict[int, dict] = {}  # slide_number -> {"target_seconds": ..., "script": ...}
 
     if clone_source_id:
-        # Optimization: Clone body from 03_AI현업_04, only generate slide 1!
-        src_scripts_dir = base_work_dir / clone_source_id / "scripts"
-        logger.info("Cloning body scripts from %s...", src_scripts_dir)
+        # 03/05 share identical body content -- only the cover slide differs.
+        # Reuse the source lecture's plan+scripts wholesale, regenerate slide 1.
+        src_dir = base_work_dir / clone_source_id
+        logger.info("[3-4/6] Cloning plan + body scripts from %s...", src_dir)
 
-        # Slide 1 (Custom opening for 종합설계)
-        system_prompt = get_professor_system_prompt()
-        prompt_1 = build_script_prompt(
-            slide=slides[0],
-            vlm_note=None,
-            style=style,
-            target_seconds=target_seconds,
-            prev_slide=None,
-            prev_script=None,
-            next_slide=slides[1] if slide_count > 1 else None,
+        style = LectureStyle(
+            density="detailed",
+            tone="formal",
+            approach="explanatory",
+            supplement=f"과목명: {item['subject']}, 강의주제: {item['name']}. 강의시간 30분 맞춤.",
         )
-        raw_1 = llm_client.chat([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_1},
-        ])
-        data_1 = _parse_script_json(raw_1, 0, 1)
-        scripts.append(data_1)
-        (scripts_dir / "script_001.json").write_text(json.dumps(data_1, ensure_ascii=False, indent=2), encoding="utf-8")
+        script_1_path = scripts_dir / "script_001.json"
+        prompt_1 = f"과목명 도입부, {item['subject']} 강의로 표지를 설명"
+        cache_key_1 = content_hash(get_professor_system_prompt(), prompt_1, png_by_number[1].read_bytes())
+        if is_cache_valid(script_1_path, cache_key_1):
+            data_1 = json.loads(script_1_path.read_text(encoding="utf-8"))
+        else:
+            data_1 = generate_script_for_slide_vision(
+                client=llm_client,
+                slide=slides[0],
+                png_path=png_by_number[1],
+                style=style,
+                target_seconds=20.0,
+                prev_slide=None,
+                next_slide=slides[1] if slide_count > 1 else None,
+                prev_script=None,
+            )
+            script_1_path.write_text(json.dumps(data_1, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_cache_hash(script_1_path, cache_key_1)
+        scripts[1] = {"target_seconds": data_1.get("target_seconds", 20.0), "script": data_1.get("script", "")}
 
-        # Slides 2..N copied from source
-        for idx in range(1, slide_count):
-            src_file = src_scripts_dir / f"script_{idx+1:03d}.json"
-            dst_file = scripts_dir / f"script_{idx+1:03d}.json"
+        for n in range(2, slide_count + 1):
+            src_file = src_dir / "scripts" / f"script_{n:03d}.json"
+            dst_file = scripts_dir / f"script_{n:03d}.json"
             shutil.copy2(src_file, dst_file)
-            scripts.append(json.loads(dst_file.read_text(encoding="utf-8")))
+            scripts[n] = json.loads(dst_file.read_text(encoding="utf-8"))
         logger.info("Copied %d scripts from source, generated custom slide 1", slide_count - 1)
     else:
-        system_prompt = get_professor_system_prompt()
-        for idx, slide in enumerate(slides):
-            script_file = scripts_dir / f"script_{idx+1:03d}.json"
-            if script_file.exists():
-                logger.info("Slide %d/%d script exists, loading...", idx+1, slide_count)
-                data = json.loads(script_file.read_text(encoding="utf-8"))
-            else:
-                logger.info("Generating script for slide %d/%d...", idx+1, slide_count)
-                prompt = build_script_prompt(
-                    slide=slide,
-                    vlm_note=None,
-                    style=style,
-                    target_seconds=target_seconds,
-                    prev_slide=slides[idx - 1] if idx > 0 else None,
-                    prev_script=prev_script,
-                    next_slide=slides[idx + 1] if idx + 1 < slide_count else None,
+        # 3. Lecture plan
+        logger.info("[3/6] Building lecture plan...")
+        plan_path = work_dir / "lecture_plan.json"
+        plan = _generate_lecture_plan_cached(llm_client, slides, item["subject"], item["name"], plan_path)
+
+        # 4. Section-by-section script generation
+        logger.info("[4/6] Generating scripts section by section...")
+        carry_forward: CarryForward | None = None
+        for idx, section in enumerate(plan.sections):
+            is_last_section = idx == len(plan.sections) - 1
+            slides_in_section = [slide_by_number[n] for n in section.slides]
+            png_paths_in_section = [png_by_number[n] for n in section.slides]
+            section_result_path = sections_dir / f"section_{idx + 1:03d}.json"
+
+            result = _generate_section_scripts_cached(
+                llm_client,
+                plan,
+                section,
+                slides_in_section,
+                png_paths_in_section,
+                carry_forward,
+                is_last_section,
+                section_result_path,
+            )
+            for s in result.slides:
+                scripts[s.slide_number] = {"target_seconds": s.target_seconds, "script": s.script}
+                (scripts_dir / f"script_{s.slide_number:03d}.json").write_text(
+                    json.dumps({"slide_number": s.slide_number, "target_seconds": s.target_seconds, "script": s.script},
+                               ensure_ascii=False, indent=2),
+                    encoding="utf-8",
                 )
-                raw = llm_client.chat([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ])
-                data = _parse_script_json(raw, idx, idx + 1)
-                script_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            carry_forward = result.carry_forward
 
-            scripts.append(data)
-            prev_script = data.get("script", "")
-
-    # 4. Synthesize Audio with Raon-Speech-9B
-    logger.info("[4/5] Synthesizing TTS with Raon-Speech-9B & Professor Voice Cloning...")
+    # 5. Synthesize Audio with Raon-Speech-9B (segmented + quality-gated, see raon_tts.py)
+    logger.info("[5/6] Synthesizing TTS with Raon-Speech-9B & Professor Voice Cloning...")
     wav_paths: list[Path] = []
+    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
 
-    if clone_source_id:
-        src_audio_dir = base_work_dir / clone_source_id / "audio"
-        # Synthesize slide 1
-        wav_1 = audio_dir / "slide_001.wav"
-        if not wav_1.exists():
-            logger.info("Synthesizing customized slide 1 audio for %s...", item["subject"])
-            synthesize_raon_slide(tts_pipe, scripts[0].get("script", ""), wav_1, speaker_audio=REF_VOICE)
-        wav_paths.append(wav_1)
+    for n in range(1, slide_count + 1):
+        sc = scripts[n]
+        script_text = sc.get("script", "")
+        out_wav = audio_dir / f"slide_{n:03d}.wav"
+        cache_key = content_hash(
+            script_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS)
+        )
+        if is_cache_valid(out_wav, cache_key):
+            logger.info("Slide %d/%d audio cached, skipping...", n, slide_count)
+        else:
+            logger.info("Synthesizing slide %d/%d audio (%d chars)...", n, slide_count, len(script_text))
+            synthesize_raon_slide(
+                tts_pipe, script_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds")
+            )
+            write_cache_hash(out_wav, cache_key)
+        wav_paths.append(out_wav)
 
-        # Copy/link remaining audio
-        for idx in range(1, slide_count):
-            src_wav = src_audio_dir / f"slide_{idx+1:03d}.wav"
-            dst_wav = audio_dir / f"slide_{idx+1:03d}.wav"
-            if not dst_wav.exists():
-                shutil.copy2(src_wav, dst_wav)
-            wav_paths.append(dst_wav)
-        logger.info("Audio cloning complete: 1 synthesized + %d reused", slide_count - 1)
-    else:
-        for idx, sc in enumerate(scripts, start=1):
-            out_wav = audio_dir / f"slide_{idx:03d}.wav"
-            if out_wav.exists() and out_wav.stat().st_size > 1000:
-                logger.info("Slide %d/%d audio exists, skipping...", idx, len(scripts))
-            else:
-                logger.info("Synthesizing slide %d/%d audio (%d chars)...", idx, len(scripts), len(sc.get("script", "")))
-                synthesize_raon_slide(tts_pipe, sc.get("script", ""), out_wav, speaker_audio=REF_VOICE)
-            wav_paths.append(out_wav)
-
-    # 5. Assemble Video
-    logger.info("[5/5] Assembling final MP4 video via ffmpeg...")
+    # 6. Assemble Video
+    logger.info("[6/6] Assembling final MP4 video via ffmpeg...")
     assemble_video(png_paths, wav_paths, video_dir, out_mp4, lec_id)
     logger.info("Video successfully created at: %s", out_mp4)
     return out_mp4
@@ -242,7 +302,7 @@ def main():
     tts_pipe = None
     if not args.skip_tts:
         logger.info("Loading Raon-Speech-9B TTS model on cuda:0...")
-        tts_pipe = load_raon_pipeline("KRAFTON/Raon-Speech-9B", device="cuda:0", dtype="bfloat16")
+        tts_pipe = load_raon_pipeline(TTS_MODEL_ID, device="cuda:0", dtype="bfloat16")
         logger.info("Raon-Speech-9B ready!")
 
     selected = LECTURES

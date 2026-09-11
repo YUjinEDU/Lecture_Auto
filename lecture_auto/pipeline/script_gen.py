@@ -10,6 +10,7 @@ Exports:
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from pathlib import Path
@@ -38,14 +39,52 @@ class SlideScript(BaseModel):
 
 
 def get_professor_system_prompt() -> str:
-    """Load the full Luna professor instruction system prompt."""
-    prompt_file = Path(__file__).resolve().parent.parent / "prompts" / "luna_professor_instruction.md"
-    if prompt_file.exists():
-        return prompt_file.read_text(encoding="utf-8")
-    return (
-        "당신은 대학 강단에서 학생들을 대상으로 강의를 진행하는 김영국 교수님 본인입니다. "
-        "구어체와 스토리텔링 비유를 활용하여 실제 육성 강의처럼 생생하고 자연스러운 대본을 작성하십시오."
-    )
+    """Load the Luna professor instruction prompt + the STT-derived style guide.
+
+    ``luna_professor_instruction.md`` (few-shot examples, negative constraints,
+    JSON format) and ``professor_style_guide.md`` (quantitative pacing stats +
+    top phrases from the 32-min real-lecture transcript) are complementary, not
+    duplicates -- both are loaded so the pacing data actually reaches the prompt.
+    """
+    prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
+    instruction_file = prompts_dir / "luna_professor_instruction.md"
+    style_guide_file = prompts_dir / "professor_style_guide.md"
+
+    if instruction_file.exists():
+        parts = [instruction_file.read_text(encoding="utf-8")]
+    else:
+        parts = [
+            "당신은 대학 강단에서 학생들을 대상으로 강의를 진행하는 김영국 교수님 본인입니다. "
+            "구어체와 스토리텔링 비유를 활용하여 실제 육성 강의처럼 생생하고 자연스러운 대본을 작성하십시오."
+        ]
+    if style_guide_file.exists():
+        parts.append("\n---\n\n" + style_guide_file.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+def _extract_slide_title(s: SlideRecord) -> str:
+    for shape in s.shapes:
+        if shape.text_role == "title" and shape.has_text:
+            for para in shape.paragraphs:
+                if para.full_text.strip():
+                    return para.full_text.strip()
+    # Fallback: first text shape
+    for shape in s.shapes:
+        if shape.has_text:
+            for para in shape.paragraphs:
+                if para.full_text.strip():
+                    return para.full_text.strip()
+    return f"Slide {s.slide_number}"
+
+
+def _extract_all_text(s: SlideRecord) -> str:
+    parts: list[str] = []
+    for shape in s.shapes:
+        if shape.has_text:
+            for para in shape.paragraphs:
+                if para.full_text.strip():
+                    parts.append(para.full_text.strip())
+    return "\n".join(parts) if parts else "(내용 없음)"
 
 
 def build_script_prompt(
@@ -74,30 +113,6 @@ def build_script_prompt(
     Returns:
         Formatted string prompt ready to pass to `claude -p`.
     """
-
-    def _extract_slide_title(s: SlideRecord) -> str:
-        for shape in s.shapes:
-            if shape.text_role == "title" and shape.has_text:
-                for para in shape.paragraphs:
-                    if para.full_text.strip():
-                        return para.full_text.strip()
-        # Fallback: first text shape
-        for shape in s.shapes:
-            if shape.has_text:
-                for para in shape.paragraphs:
-                    if para.full_text.strip():
-                        return para.full_text.strip()
-        return f"Slide {s.slide_number}"
-
-    def _extract_all_text(s: SlideRecord) -> str:
-        parts: list[str] = []
-        for shape in s.shapes:
-            if shape.has_text:
-                for para in shape.paragraphs:
-                    if para.full_text.strip():
-                        parts.append(para.full_text.strip())
-        return "\n".join(parts) if parts else "(내용 없음)"
-
     lines: list[str] = []
 
     # System role & Professor Persona
@@ -177,14 +192,114 @@ def build_script_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Vision-based prompt (no VLM-notes stage -- the slide image goes straight
+# into the script-gen call, per the batch generator's direct-vision approach)
+# ---------------------------------------------------------------------------
+
+def build_vision_script_prompt(
+    slide: SlideRecord,
+    style: LectureStyle,
+    target_seconds: float,
+    prev_slide: SlideRecord | None,
+    next_slide: SlideRecord | None,
+    prev_script: str | None,
+) -> str:
+    """Build the text half of a vision-based script prompt.
+
+    Same context (style, prev/next titles, prev script excerpt) as
+    :func:`build_script_prompt`, but omits the current slide's text dump and
+    VLM-notes block -- the caller attaches the slide PNG as an image content
+    part instead, and the model reads the slide directly.
+    """
+    lines: list[str] = []
+
+    lines.append("당신은 실제 대학 강의를 진행하는 교수님의 생생한 강의 대본을 작성하는 전문 AI입니다.")
+    lines.append("첨부된 현재 슬라이드 이미지를 직접 눈으로 보고, 그 안의 도표/그림/텍스트/배치를 반영하여 설명하십시오.")
+    lines.append("system 메시지의 [교수님 고유 강의 발화 스타일]을 반드시 준수하여 실제 육성 강의처럼 자연스럽고 몰입감 있게 작성하세요.")
+    lines.append("")
+
+    lines.append("[강의 설정]")
+    lines.append(f"- 밀도: {style.density}, 어조: {style.tone}, 접근법: {style.approach}")
+    if style.supplement:
+        lines.append(f"- 추가 지침: {style.supplement}")
+    lines.append(f"- 목표 발화 시간: 약 {target_seconds:.0f}초 (분당 300~350음절 기준, 약 {int(target_seconds * 5.5)}자 내외의 충분한 분량)")
+    lines.append("")
+
+    if prev_slide is not None:
+        prev_title = _extract_slide_title(prev_slide)
+        lines.append(f"[이전 슬라이드 제목] {prev_title}")
+        if prev_script:
+            excerpt = prev_script[-_PREV_SCRIPT_CONTEXT_CHARS:]
+            lines.append(f"[이전 스크립트 마지막 부분] ...{excerpt}")
+        lines.append("")
+
+    lines.append(f"[현재 슬라이드 번호] {slide.slide_number}")
+    lines.append("")
+
+    if next_slide is not None:
+        next_title = _extract_slide_title(next_slide)
+        lines.append(f"[다음 슬라이드 제목] {next_title}")
+        lines.append("")
+
+    lines.append("[출력 형식]")
+    lines.append("강의 스크립트를 한국어로 작성하세요. 다음 JSON 형식으로만 출력하세요:")
+    lines.append(
+        '{"slide_index": <int>, "slide_number": <int>, "target_seconds": <float>, '
+        '"script": "<강의 스크립트 텍스트>", '
+        '"keywords": ["<핵심 키워드1>", ...(3-5개)], '
+        '"transition_to_next": "<다음 슬라이드 연결 멘트>"}'
+    )
+    lines.append("유효한 JSON만 출력하세요. 다른 텍스트는 포함하지 마세요.")
+
+    return "\n".join(lines)
+
+
+def generate_script_for_slide_vision(
+    client: LLMClient,
+    slide: SlideRecord,
+    png_path: Path,
+    style: LectureStyle,
+    target_seconds: float,
+    prev_slide: SlideRecord | None,
+    next_slide: SlideRecord | None,
+    prev_script: str | None,
+) -> dict:
+    """Generate one slide's script by sending the slide image straight to the LLM.
+
+    Atomic unit for the batch generator: no separate VLM-notes stage, no
+    pipeline-wide vlm_notes list to keep in sync -- one image in, one script
+    JSON out.
+    """
+    image_b64 = base64.b64encode(Path(png_path).read_bytes()).decode("utf-8")
+    prompt = build_vision_script_prompt(
+        slide=slide,
+        style=style,
+        target_seconds=target_seconds,
+        prev_slide=prev_slide,
+        next_slide=next_slide,
+        prev_script=prev_script,
+    )
+    messages = [
+        {"role": "system", "content": get_professor_system_prompt()},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}", "detail": "high"}},
+                {"type": "text", "text": prompt},
+            ],
+        },
+    ]
+    raw_output = client.chat(messages)
+    return _parse_script_json(raw_output, slide.slide_index, slide.slide_number)
+
+
+# ---------------------------------------------------------------------------
 # JSON parsing
 # ---------------------------------------------------------------------------
 
-def _parse_script_json(text: str, slide_index: int, slide_number: int) -> dict:
-    """Parse JSON from Claude output, handling markdown code fences."""
+def strip_markdown_json_fence(text: str) -> str:
+    """Strip a ```json ... ``` (or bare ```) fence the LLM sometimes wraps JSON in."""
     text = text.strip()
-
-    # Strip markdown code fences if present
     if text.startswith("```"):
         lines = text.splitlines()
         end = len(lines) - 1
@@ -193,8 +308,12 @@ def _parse_script_json(text: str, slide_index: int, slide_number: int) -> dict:
         # Skip the opening fence line
         inner_lines = lines[1 : end + 1]
         text = "\n".join(inner_lines).strip()
+    return text
 
-    data = json.loads(text)
+
+def _parse_script_json(text: str, slide_index: int, slide_number: int) -> dict:
+    """Parse JSON from Claude output, handling markdown code fences."""
+    data = json.loads(strip_markdown_json_fence(text))
 
     # Ensure slide_index and slide_number are present
     data.setdefault("slide_index", slide_index)
