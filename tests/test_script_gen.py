@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 from lecture_auto.pipeline.script_gen import (
     SlideScript,
     build_script_prompt,
+    build_vision_script_prompt,
     generate_scripts,
 )
 from lecture_auto.schemas.manifest import (
@@ -263,6 +264,31 @@ def test_generate_scripts_extracts_json_from_markdown_fence(tmp_path: Path):
 
     assert len(result) == 1
     assert isinstance(result[0], SlideScript)
+
+
+# ---------------------------------------------------------------------------
+# Test: vision prompt drops transition_to_next/keywords, uses the 7 chars/sec
+# formula, and includes the current slide's extracted text alongside the image.
+# ---------------------------------------------------------------------------
+
+def test_build_vision_script_prompt_output_format_and_char_budget():
+    slide = _make_slide(0, ["작은 표 안의 텍스트"])
+    style = _make_style()
+
+    prompt = build_vision_script_prompt(
+        slide=slide,
+        style=style,
+        target_seconds=100.0,
+        prev_slide=None,
+        next_slide=None,
+        prev_script=None,
+    )
+
+    assert "transition_to_next" not in prompt
+    assert "keywords" not in prompt
+    assert "630" in prompt  # round(100*7*0.9)
+    assert "770" in prompt  # round(100*7*1.1)
+    assert "작은 표 안의 텍스트" in prompt
 
 
 # ---------------------------------------------------------------------------

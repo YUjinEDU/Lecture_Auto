@@ -218,11 +218,15 @@ def build_vision_script_prompt(
     lines.append("system 메시지의 [교수님 고유 강의 발화 스타일]을 반드시 준수하여 실제 육성 강의처럼 자연스럽고 몰입감 있게 작성하세요.")
     lines.append("")
 
+    target_chars = round(target_seconds * 7)
     lines.append("[강의 설정]")
     lines.append(f"- 밀도: {style.density}, 어조: {style.tone}, 접근법: {style.approach}")
     if style.supplement:
         lines.append(f"- 추가 지침: {style.supplement}")
-    lines.append(f"- 목표 발화 시간: 약 {target_seconds:.0f}초 (분당 300~350음절 기준, 약 {int(target_seconds * 5.5)}자 내외의 충분한 분량)")
+    lines.append(
+        f"- 목표 발화 시간: 약 {target_seconds:.0f}초 "
+        f"(초당 약 7자 기준, {round(target_chars * 0.9)}~{round(target_chars * 1.1)}자)"
+    )
     lines.append("")
 
     if prev_slide is not None:
@@ -234,6 +238,7 @@ def build_vision_script_prompt(
         lines.append("")
 
     lines.append(f"[현재 슬라이드 번호] {slide.slide_number}")
+    lines.append(f"[현재 슬라이드 추출 텍스트 (작은 글씨/표 등 이미지에서 놓칠 수 있는 내용 보완용)]\n{_extract_all_text(slide)}")
     lines.append("")
 
     if next_slide is not None:
@@ -245,9 +250,7 @@ def build_vision_script_prompt(
     lines.append("강의 스크립트를 한국어로 작성하세요. 다음 JSON 형식으로만 출력하세요:")
     lines.append(
         '{"slide_index": <int>, "slide_number": <int>, "target_seconds": <float>, '
-        '"script": "<강의 스크립트 텍스트>", '
-        '"keywords": ["<핵심 키워드1>", ...(3-5개)], '
-        '"transition_to_next": "<다음 슬라이드 연결 멘트>"}'
+        '"script": "<강의 스크립트 텍스트, 다음 슬라이드로의 자연스러운 전환도 이 문장 안에 포함>"}'
     )
     lines.append("유효한 JSON만 출력하세요. 다른 텍스트는 포함하지 마세요.")
 
