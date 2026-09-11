@@ -37,9 +37,16 @@ class SlideScript(BaseModel):
     transition_to_next: str
 
 
-# ---------------------------------------------------------------------------
-# Prompt construction
-# ---------------------------------------------------------------------------
+def get_professor_system_prompt() -> str:
+    """Load the full Luna professor instruction system prompt."""
+    prompt_file = Path(__file__).resolve().parent.parent / "prompts" / "luna_professor_instruction.md"
+    if prompt_file.exists():
+        return prompt_file.read_text(encoding="utf-8")
+    return (
+        "당신은 대학 강단에서 학생들을 대상으로 강의를 진행하는 김영국 교수님 본인입니다. "
+        "구어체와 스토리텔링 비유를 활용하여 실제 육성 강의처럼 생생하고 자연스러운 대본을 작성하십시오."
+    )
+
 
 def build_script_prompt(
     slide: SlideRecord,
@@ -256,7 +263,12 @@ def generate_scripts(
             prev_script=prev_script_text,
         )
 
-        raw_output = client.complete_text(prompt)
+        system_prompt = get_professor_system_prompt()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        raw_output = client.chat(messages)
         data = _parse_script_json(raw_output, slide.slide_index, slide.slide_number)
         script = SlideScript(**data)
 

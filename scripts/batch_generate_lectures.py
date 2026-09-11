@@ -21,7 +21,11 @@ from pathlib import Path
 from lecture_auto.llm.openai_client import OpenAILLMClient
 from lecture_auto.pipeline.parser_pdf import parse_pdf
 from lecture_auto.pipeline.renderer import render_slides
-from lecture_auto.pipeline.script_gen import build_script_prompt, _parse_script_json
+from lecture_auto.pipeline.script_gen import (
+    build_script_prompt,
+    _parse_script_json,
+    get_professor_system_prompt,
+)
 from lecture_auto.pipeline.raon_tts import load_raon_pipeline, synthesize_raon_slide
 from lecture_auto.pipeline.video import assemble_video
 from lecture_auto.schemas.manifest import LectureStyle, SlideManifest
@@ -131,6 +135,7 @@ def process_lecture(
         logger.info("Cloning body scripts from %s...", src_scripts_dir)
 
         # Slide 1 (Custom opening for 종합설계)
+        system_prompt = get_professor_system_prompt()
         prompt_1 = build_script_prompt(
             slide=slides[0],
             vlm_note=None,
@@ -140,7 +145,10 @@ def process_lecture(
             prev_script=None,
             next_slide=slides[1] if slide_count > 1 else None,
         )
-        raw_1 = llm_client.complete_text(prompt_1)
+        raw_1 = llm_client.chat([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_1},
+        ])
         data_1 = _parse_script_json(raw_1, 0, 1)
         scripts.append(data_1)
         (scripts_dir / "script_001.json").write_text(json.dumps(data_1, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -153,6 +161,7 @@ def process_lecture(
             scripts.append(json.loads(dst_file.read_text(encoding="utf-8")))
         logger.info("Copied %d scripts from source, generated custom slide 1", slide_count - 1)
     else:
+        system_prompt = get_professor_system_prompt()
         for idx, slide in enumerate(slides):
             script_file = scripts_dir / f"script_{idx+1:03d}.json"
             if script_file.exists():
@@ -169,7 +178,10 @@ def process_lecture(
                     prev_script=prev_script,
                     next_slide=slides[idx + 1] if idx + 1 < slide_count else None,
                 )
-                raw = llm_client.complete_text(prompt)
+                raw = llm_client.chat([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ])
                 data = _parse_script_json(raw, idx, idx + 1)
                 script_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
