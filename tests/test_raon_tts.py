@@ -117,6 +117,8 @@ class _FakePipe:
     def tts(self, text, **kwargs):
         wav = self._waveforms[self.calls]
         self.calls += 1
+        if wav is None:
+            raise TypeError("'NoneType' object is not subscriptable")  # mirrors modeling_raon.py's real failure
         return wav.tolist(), 24000  # plain list: no .squeeze/.cpu, exercises the numpy.array() fallback path
 
 
@@ -154,3 +156,28 @@ def test_synthesize_segment_with_gate_keeps_least_bad_not_first_failure():
     assert ok is False
     assert pipe.calls == len(TTS_SEEDS)
     assert len(audio) == len(waveforms[1])
+
+
+def test_synthesize_segment_with_gate_survives_a_raising_seed():
+    # seed 17 raises (the modeling_raon.py 'audio[0] on None' bug that killed
+    # a real batch run), seed 29 produces clean audio -- must not propagate
+    # the exception, must return the working seed's result.
+    waveforms = [None, _tone(3.0, 24000)]
+    pipe = _FakePipe(waveforms)
+
+    audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
+
+    assert ok is True
+    assert pipe.calls == 2
+    assert len(audio) == len(waveforms[1])
+
+
+def test_synthesize_segment_with_gate_all_seeds_raising_degrades_to_silence():
+    pipe = _FakePipe([None, None, None])
+
+    audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
+
+    assert ok is False
+    assert pipe.calls == len(TTS_SEEDS)
+    assert np.all(audio == 0.0)
+    assert len(audio) == int(sr * 3.0)

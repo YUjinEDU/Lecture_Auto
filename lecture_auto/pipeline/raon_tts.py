@@ -288,17 +288,27 @@ def _synthesize_segment_with_gate(
     best_fallback_score = float("inf")  # longest internal silence/babble run, seconds -- lower is better
     for seed in TTS_SEEDS:
         torch.manual_seed(seed)
-        if continuation_ref is not None:
-            prev_wav_path, prev_text = continuation_ref
-            audio_tensor, sr = pipe.tts_continuation(
-                target_text=text,
-                ref_audio=str(prev_wav_path),
-                ref_text=prev_text,
-                speaker_audio=speaker_audio_str,
-            )
-        else:
-            kwargs = {"speaker_audio": speaker_audio_str} if speaker_audio_str else {}
-            audio_tensor, sr = pipe.tts(text, **kwargs)
+        try:
+            if continuation_ref is not None:
+                prev_wav_path, prev_text = continuation_ref
+                audio_tensor, sr = pipe.tts_continuation(
+                    target_text=text,
+                    ref_audio=str(prev_wav_path),
+                    ref_text=prev_text,
+                    speaker_audio=speaker_audio_str,
+                )
+            else:
+                kwargs = {"speaker_audio": speaker_audio_str} if speaker_audio_str else {}
+                audio_tensor, sr = pipe.tts(text, **kwargs)
+        except Exception:
+            # modeling_raon.py's tts_continuation() has a known edge case where
+            # generation produces no audio tokens and the model code does
+            # `audio[0]` on a None result, raising an uncaught TypeError -- this
+            # killed a multi-hour unattended batch run at slide 19/48. A bad
+            # generation on one seed must not take down the whole job; try the
+            # next seed instead.
+            logger.warning("TTS call raised for seed %s (%s): %r", seed, task_key, text[:60], exc_info=True)
+            continue
         trimmed = _trim_lead_tail_silence(_to_numpy(audio_tensor, sr), sr)
         if _passes_quality_gate(trimmed, sr, expected_seconds):
             return trimmed, sr, True
@@ -309,6 +319,15 @@ def _synthesize_segment_with_gate(
         if score < best_fallback_score:
             best_fallback_score = score
             best_fallback = (trimmed, sr)
+
+    if best_fallback is None:
+        # Every seed raised -- no audio was ever produced for this segment.
+        # Degrade to silence rather than crash; this is rare enough (first
+        # observed once in ~150 segments) that losing one segment's worth of
+        # narration is far cheaper than losing hours of an unattended batch.
+        logger.error("All %d attempts raised for segment, using silence: %r", len(TTS_SEEDS), text[:60])
+        silence = np.zeros(int(_SAMPLE_RATE * expected_seconds), dtype=np.float32)
+        return silence, _SAMPLE_RATE, False
 
     logger.warning("Segment failed quality gate after seeds %s: %r", TTS_SEEDS, text[:60])
     return best_fallback[0], best_fallback[1], False
