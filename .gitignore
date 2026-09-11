@@ -8,4 +8,12 @@ __pycache__/
 *.png
 *.wav
 *.mp4
+*.m4a
+*.pdf
 .omc/*
+.env
+output/
+data/work*
+data/audio_ref/
+data/transcripts/
+data/demo_jobs/

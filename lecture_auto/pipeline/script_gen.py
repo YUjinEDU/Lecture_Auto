@@ -93,21 +93,24 @@ def build_script_prompt(
 
     lines: list[str] = []
 
-    # System role
-    lines.append("당신은 한국 대학교 교수님의 강의 스크립트를 작성하는 전문 보조입니다.")
+    # System role & Professor Persona
+    lines.append("당신은 실제 대학 강의를 진행하는 교수님의 생생한 강의 대본을 작성하는 전문 AI입니다.")
+    lines.append("다음 [교수님 고유 강의 발화 스타일]을 반드시 준수하여 실제 육성 강의처럼 자연스럽고 몰입감 있게 작성하세요.")
+    lines.append("")
+    lines.append("[교수님 고유 강의 발화 스타일 (실제 강의 음성 분석 반영)]")
+    lines.append("- 학생 대상 호칭: '여러분', '학생 여러분', 또는 '우리' ('우리가 지난 시간에~', '우리가 한번 살펴보면~')")
+    lines.append("- 자주 사용하는 도입/연결 추임새: '자, 안녕하세요', '자, 그럼 이번 장에서는~', '자, 다음으로 보실 내용은~', '그러니까 우리가~', '그 다음에 이제~', '자, 여기 참고로 비유해서 말씀드리면~'")
+    lines.append("- 자주 사용하는 문장 종결 어미: '~라고 볼 수가 있겠죠?', '~에 해당되는 거겠죠.', '~라는 이야기이고요.', '~할 수가 있습니다.', '~그렇죠? 바로 이런 문제 상황인 거죠.', '~해야 되는 거죠.'")
+    lines.append("- 설명 전개 방식: 슬라이드의 요약 문장을 단순히 읽지 말고, 구체적인 일상 및 현업 사례/비유를 들어가며 학생들에게 질문을 던지듯 흥미진진하게 설명할 것.")
+    lines.append("- 톤앤매너: 학문적 전문성을 갖추면서도 친절하고 권위적이지 않은 구어체.")
     lines.append("")
 
     # Style parameters
-    lines.append(f"[강의 스타일]")
-    lines.append(f"- 밀도(density): {style.density}")
-    lines.append(f"- 어조(tone): {style.tone}")
-    lines.append(f"- 접근법(approach): {style.approach}")
+    lines.append(f"[강의 설정]")
+    lines.append(f"- 밀도: {style.density}, 어조: {style.tone}, 접근법: {style.approach}")
     if style.supplement:
-        lines.append(f"- 보충 지시: {style.supplement}")
-    lines.append("")
-
-    # Target duration
-    lines.append(f"[목표 발화 시간] {target_seconds:.0f}초")
+        lines.append(f"- 추가 지침: {style.supplement}")
+    lines.append(f"- 목표 발화 시간: 약 {target_seconds:.0f}초 (분당 300~350음절 기준, 약 {int(target_seconds * 5.5)}자 내외의 충분한 분량)")
     lines.append("")
 
     # Previous slide context

@@ -111,10 +111,10 @@ def render_slides(
     dpi: int | None = None,
     timeout: int = 120,
 ) -> tuple[list[Path], list[str]]:
-    """Full rendering pipeline: PPTX -> PDF -> PNGs + font issue detection.
+    """Full rendering pipeline: PPTX/PDF -> PNGs + font issue detection.
 
     Args:
-        pptx_path: Path to input PPTX file
+        pptx_path: Path to input PPTX or PDF file
         rendered_dir: Directory for PNG output
         job_id: Job identifier for process isolation
         dpi: PNG resolution (default from env or 150)
@@ -124,6 +124,13 @@ def render_slides(
         Tuple of (list of PNG paths, list of font warning strings)
     """
     rendered_dir.mkdir(parents=True, exist_ok=True)
+    pptx_path = Path(pptx_path)
+
+    if pptx_path.suffix.lower() == ".pdf":
+        logger.info("Direct PDF rendering for %s", pptx_path)
+        png_paths = pdf_to_pngs(pptx_path, rendered_dir, dpi)
+        logger.info("Rendered %d slides to PNG from PDF", len(png_paths))
+        return png_paths, []
 
     # Step 1: PPTX -> PDF
     pdf_path, soffice_stderr = pptx_to_pdf(pptx_path, rendered_dir, job_id, timeout)

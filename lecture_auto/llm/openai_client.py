@@ -12,23 +12,44 @@ from pathlib import Path
 
 from lecture_auto.llm.base import LLMClient
 
-DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
+DEFAULT_TEXT_MODEL = "gpt-5.6-luna"
 DEFAULT_VLM_MODEL = "gpt-5.4-mini"
 
 
 class OpenAILLMClient(LLMClient):
-    """LLM client using the OpenAI Chat Completions API."""
+    """LLM client using the OpenAI Chat Completions API (supports FactChat Gateway)."""
 
     def __init__(
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         text_model: str | None = None,
         vlm_model: str | None = None,
     ) -> None:
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "").strip() or None
-        self.text_model = text_model or os.environ.get(
-            "LLM_SCRIPT_MODEL", DEFAULT_TEXT_MODEL
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv()
+        except Exception:
+            pass
+
+        self._api_key = (
+            api_key
+            or os.environ.get("FACTCHAT_API_KEY", "").strip()
+            or os.environ.get("OPENAI_API_KEY", "").strip()
+            or None
+        )
+        self.base_url = (
+            base_url
+            or os.environ.get("FACTCHAT_BASE_URL", "").strip()
+            or os.environ.get("OPENAI_BASE_URL", "").strip()
+            or None
+        )
+        self.text_model = (
+            text_model
+            or os.environ.get("FACTCHAT_MODEL")
+            or os.environ.get("LLM_SCRIPT_MODEL", DEFAULT_TEXT_MODEL)
         )
         self.vlm_model = vlm_model or os.environ.get(
             "LLM_VLM_MODEL", DEFAULT_VLM_MODEL
@@ -39,11 +60,15 @@ class OpenAILLMClient(LLMClient):
         if self._client is None:
             if not self._api_key:
                 raise RuntimeError(
-                    "OPENAI_API_KEY is not set. Export it before using the LLM client."
+                    "Neither FACTCHAT_API_KEY nor OPENAI_API_KEY is set. "
+                    "Export it before using the LLM client."
                 )
             from openai import OpenAI
 
-            self._client = OpenAI(api_key=self._api_key)
+            kwargs: dict = {"api_key": self._api_key}
+            if self.base_url:
+                kwargs["base_url"] = self.base_url
+            self._client = OpenAI(**kwargs)
         return self._client
 
     def chat(
