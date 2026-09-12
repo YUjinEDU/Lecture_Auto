@@ -191,3 +191,77 @@ def test_generate_section_scripts_parses_response(tmp_path: Path):
     user_content = sent_messages[1]["content"]
     image_parts = [c for c in user_content if c.get("type") == "image_url"]
     assert len(image_parts) == len(section.slides)
+
+
+# ---------------------------------------------------------------------------
+# Budget overshoot: the model reliably writes past the char budget it is given
+# (1.21x median over 48 slides), which is what turned a 28.9-minute plan into
+# ~35 minutes of audio.
+# ---------------------------------------------------------------------------
+
+def _section_result_json(chars_per_slide: list[int], slide_numbers: list[int]) -> str:
+    return json.dumps(
+        {
+            "section_summary": "요약",
+            "carry_forward": {"explained": [], "active_example": "", "next_question": ""},
+            "slides": [
+                {"slide_number": n, "target_seconds": 10.0, "script": "가" * c}
+                for n, c in zip(slide_numbers, chars_per_slide)
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _plan_and_section():
+    plan = LecturePlan(
+        lecture_title="t", total_minutes=30.0, opening_context="o", core_message="c",
+        recurring_examples=[], sections=[{"title": "s", "slides": [1, 2], "minutes": 1.0, "goal": "g"}],
+    )
+    return plan, plan.sections[0]
+
+
+def test_generate_section_scripts_retries_when_over_budget(tmp_path):
+    # 10s * 5.7 = 57 chars allowed per slide, 114 for the section.
+    over = _section_result_json([100, 100], [1, 2])   # 200/114 = 1.75x
+    within = _section_result_json([50, 50], [1, 2])   # 100/114 = 0.88x
+    client = MagicMock()
+    client.chat.side_effect = [over, within]
+
+    plan, section = _plan_and_section()
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    slides = [_make_slide(i, f"t{i}", f"b{i}") for i in (1, 2)]
+
+    result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
+
+    assert client.chat.call_count == 2
+    assert sum(len(s.script) for s in result.slides) == 100
+
+
+def test_generate_section_scripts_keeps_first_attempt_if_retry_is_worse(tmp_path):
+    over = _section_result_json([100, 100], [1, 2])
+    worse = _section_result_json([200, 200], [1, 2])
+    client = MagicMock()
+    client.chat.side_effect = [over, worse]
+
+    plan, section = _plan_and_section()
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    slides = [_make_slide(i, f"t{i}", f"b{i}") for i in (1, 2)]
+
+    result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
+    assert sum(len(s.script) for s in result.slides) == 200  # the first attempt, not the worse retry
+
+
+def test_generate_section_scripts_does_not_retry_when_within_budget(tmp_path):
+    client = MagicMock()
+    client.chat.side_effect = [_section_result_json([50, 50], [1, 2])]
+
+    plan, section = _plan_and_section()
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    slides = [_make_slide(i, f"t{i}", f"b{i}") for i in (1, 2)]
+
+    generate_section_scripts(client, plan, section, slides, [png, png], None, False)
+    assert client.chat.call_count == 1

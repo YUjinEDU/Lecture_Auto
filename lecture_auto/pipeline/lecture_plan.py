@@ -137,8 +137,12 @@ def build_section_prompt(
     slides: list[SlideRecord],
     carry_forward: CarryForward | None,
     is_last_section: bool,
+    correction: str | None = None,
 ) -> str:
     lines: list[str] = []
+    if correction:
+        lines.append(f"[중요 — 재작성 요청] {correction}")
+        lines.append("")
     lines.append("당신은 실제 대학 강의를 진행하는 교수님의 강의 대본을 작성하는 전문 AI입니다.")
     lines.append(
         "아래 섹션에 포함된 여러 슬라이드를 하나로 이어지는 강의로 작성하세요. "
@@ -212,6 +216,24 @@ def build_section_prompt(
     return "\n".join(lines)
 
 
+# The model reliably writes past the character budget it is given: measured
+# 1.21x median over 48 slides (39/48 more than 10% over), and 1.18x on an
+# earlier run with a different budget constant, so it is a stable bias rather
+# than noise. Left uncorrected it turned a 28.9-minute plan into ~35 minutes of
+# audio. One corrective retry that shows the model its own overshoot is enough;
+# a fudge factor on the requested length would work too but silently breaks
+# whenever the model changes.
+_MAX_BUDGET_OVERSHOOT = 1.12
+
+
+def _budget_overshoot(result: SectionScriptResult) -> float:
+    """Ratio of chars actually written to chars the section's budget allows."""
+    allowed = sum(s.target_seconds for s in result.slides) * SPEECH_CHARS_PER_SECOND
+    if allowed <= 0:
+        return 1.0
+    return sum(len(s.script) for s in result.slides) / allowed
+
+
 def generate_section_scripts(
     client: LLMClient,
     plan: LecturePlan,
@@ -226,21 +248,51 @@ def generate_section_scripts(
     ``slides``/``png_paths`` must be the slides belonging to ``section``, in
     ``section.slides`` order -- each slide's image is attached so small text
     and tables the extracted text might miss still reach the model.
-    """
-    prompt_text = build_section_prompt(plan, section, slides, carry_forward, is_last_section)
 
-    content: list[dict] = [{"type": "text", "text": prompt_text}]
+    If the returned scripts run past the section's character budget, one
+    corrective retry is made showing the model its own overshoot. See
+    ``_MAX_BUDGET_OVERSHOOT``.
+    """
+    images: list[dict] = []
     for slide, png_path in zip(slides, png_paths):
         image_b64 = base64.b64encode(Path(png_path).read_bytes()).decode("utf-8")
-        content.append({"type": "text", "text": f"[슬라이드 {slide.slide_number} 이미지]"})
-        content.append(
+        images.append({"type": "text", "text": f"[슬라이드 {slide.slide_number} 이미지]"})
+        images.append(
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}", "detail": "high"}}
         )
 
-    messages = [
-        {"role": "system", "content": get_professor_system_prompt()},
-        {"role": "user", "content": content},
-    ]
-    raw = client.chat(messages)
-    data = json.loads(strip_markdown_json_fence(raw))
-    return SectionScriptResult(**data)
+    def run(correction: str | None) -> SectionScriptResult:
+        prompt_text = build_section_prompt(
+            plan, section, slides, carry_forward, is_last_section, correction=correction
+        )
+        messages = [
+            {"role": "system", "content": get_professor_system_prompt()},
+            {"role": "user", "content": [{"type": "text", "text": prompt_text}, *images]},
+        ]
+        raw = client.chat(messages)
+        return SectionScriptResult(**json.loads(strip_markdown_json_fence(raw)))
+
+    result = run(None)
+    overshoot = _budget_overshoot(result)
+    if overshoot <= _MAX_BUDGET_OVERSHOOT:
+        return result
+
+    written = sum(len(s.script) for s in result.slides)
+    allowed = round(sum(s.target_seconds for s in result.slides) * SPEECH_CHARS_PER_SECOND)
+    logger.warning(
+        "Section %r ran %.2fx over budget (%d chars vs %d allowed) -- retrying once",
+        section.title, overshoot, written, allowed,
+    )
+    retried = run(
+        f"직전 작성본은 이 섹션 전체 {written}자로, 허용치 {allowed}자를 "
+        f"{overshoot:.2f}배 초과했습니다. 슬라이드를 빼거나 내용을 누락하지 말고, "
+        f"각 문장을 더 간결하게 다듬어 전체 {allowed}자 이내로 다시 작성하세요."
+    )
+    retried_overshoot = _budget_overshoot(retried)
+    if retried_overshoot < overshoot:
+        logger.info("Retry improved %.2fx -> %.2fx", overshoot, retried_overshoot)
+        return retried
+    # The retry can come back worse; keeping the better of the two costs
+    # nothing and stops a bad draw from being the one that ships.
+    logger.warning("Retry did not improve (%.2fx) -- keeping the first attempt", retried_overshoot)
+    return result
