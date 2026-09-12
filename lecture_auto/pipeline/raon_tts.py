@@ -467,7 +467,12 @@ def _synthesize_with_splitting(
             pipe, half, speaker_audio, child_ref, depth + 1, state
         )
         child_pieces.extend(got)
-        all_ok = all_ok and child_ok
+        if not child_ok:
+            # The split is only accepted if every child passes, so once one
+            # fails the rest of this subtree is generation we will discard.
+            # At ~45s per attempt that is worth short-circuiting.
+            all_ok = False
+            break
 
     if all_ok:
         return child_pieces, True, child_ref

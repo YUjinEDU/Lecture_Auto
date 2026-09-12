@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project
 
 **Lecture Auto — 강의 자동화 파이프라인**
@@ -8,12 +12,103 @@
 
 ### Constraints
 
-- **GPU 서버**: Qwen3-VL + Qwen3-TTS 동시 구동 가능한 VRAM 필요
+- **GPU 서버**: VLM + TTS 동시 구동 가능한 VRAM 필요
 - **Vercel 타임아웃**: Next.js API Route는 10-60초 제한 → 비동기 패턴 필수
-- **Claude Code**: `claude -p` 파이프 모드로 호출, Max Plan 범위 내 사용
 - **인증**: Supabase Auth professor role만 접근 가능
 - **재현성**: 같은 입력 + 같은 설정이면 동일 파이프라인 재실행 가능해야 함
 - **검수성**: 교수님이 텍스트만 보고 수정 가능한 산출물 형식
+
+### Implementation status vs. this doc's stack tables
+
+The "Recommended Stack" tables below are the original planning doc and don't all match what's
+implemented today:
+
+- **The local-GPU VLM stack (vLLM + Qwen3-VL-8B + transformers + qwen-vl-utils + accelerate)
+  was discarded, not swapped for a pinned alternative.** `lecture_auto/pipeline/vlm.py` now
+  calls the same unified OpenAI client used for script generation (`LLMClient.analyze_image`)
+  — there is no local vision model in the loop at all. The "VLM Layer (Local GPU)" table below
+  is dead; don't reintroduce those deps or plan GPU capacity around them without asking first.
+- Script generation also runs through **OpenAI** (`lecture_auto/llm/openai_client.py`, models
+  `gpt-5.6-luna` / `gpt-5.4-mini`, overridable via `LLM_SCRIPT_MODEL` / `LLM_VLM_MODEL`), not
+  `claude -p`.
+- TTS runs through `pipeline/raon_tts.py` (Raon-Speech) and Qwen3-TTS, with CPU fallbacks
+  (flite, a local Korean synth) in the demo driver (`lecture_auto/demo/synthesis.py`) — see
+  `lecture_auto/tts/` and `pipeline/AGENTS.md`.
+- PPTX parsing has already been supplemented with a PDF parser (`pipeline/parser_pdf.py` +
+  PyMuPDF/pdfplumber), matching the "Phase 3" note in the python-pptx row below.
+
+Treat the tables as historical rationale for *why* a technology was chosen, not as a live
+description of what's wired up — check `lecture_auto/*/AGENTS.md` and the code for current state.
+
+## Commands
+
+```bash
+# Install (uv-managed; lockfile is uv.lock)
+uv sync --extra dev
+
+# Run the whole test suite (config in pyproject.toml, testpaths=["tests"])
+pytest
+# Run one file / one test
+pytest tests/test_script_gen.py
+pytest tests/test_script_gen.py::test_build_prompt_includes_style -v
+
+# Interactive CLI pipeline (local, human-in-the-loop, 6 stages)
+python run.py --pptx path/to/lecture.pptx
+
+# API server (FastAPI) — single worker, GPU is not shared
+uvicorn lecture_auto.api.main:app --workers 1 --reload
+
+# Celery worker — concurrency MUST stay 1 to avoid GPU OOM (see "What NOT to Use")
+celery -A lecture_auto.tasks.celery_app worker --concurrency 1
+
+# Redis (Celery broker/backend + SSE progress pub/sub) must be running locally
+redis-server
+
+# Self-contained demo (no GPU/Redis required, served by the same FastAPI app)
+uvicorn lecture_auto.api.main:app --reload   # then open the demo route it mounts
+
+# Real-model smoke tests (hit OpenAI / GPU — not run in CI)
+python scripts/smoke_e2e.py --stage script   # OPENAI_API_KEY only, no GPU
+python scripts/run_mini_test.py              # 3-slide end-to-end incl. TTS + video
+```
+
+No linter is configured in this repo (no ruff/flake8/eslint config committed) — don't assume
+`ruff check` works despite older docs referencing it.
+
+## Architecture
+
+One shared pipeline core, three independent drivers on top of it:
+
+```
+parse → render → VLM → script → TTS → video      (lecture_auto/pipeline/*.py)
+         ↑                                  ↑
+   run.py (CLI, sync,          lecture_auto/api/ + tasks/ (FastAPI + Celery,
+   [y/n] gates)                 SSE progress, resumable checkpoints)
+                                       ↑
+                         lecture_auto/demo/ + demo_static/
+                         (in-process, CPU-fallback, no GPU/Redis)
+```
+
+- `lecture_auto/pipeline/` — pure, driver-agnostic stage functions (one slide = one atomic
+  unit, e.g. `generate_single_note`, `synthesize_slide`). No orchestration or persistence
+  logic belongs here; that lives in the three drivers above it.
+- `lecture_auto/schemas/` — Pydantic v2 models that are the contract between every layer
+  (and must stay in sync with the TypeScript types under `portal/`).
+- `lecture_auto/storage/` — per-job filesystem path helpers; job artifacts live under
+  `data/work/<id>/{input,parsed,vlm,scripts,audio}` and are regenerated, never hand-edited.
+- `portal/` — Next.js pages/components meant to be **copied into** the lab's existing
+  portal repo (not a standalone app here). All browser calls go through a same-origin
+  `/api/gpu/*` proxy to the internal GPU FastAPI server; the GPU box is never exposed
+  directly — see `portal/AGENTS.md`.
+- `lecture_auto/demo/` exists specifically to run the full flow on one machine with no
+  GPU/Redis, for presentations — it duplicates orchestration (not stage logic) from
+  `tasks/` with CPU fallbacks.
+
+**Documentation map:** almost every directory here has its own `AGENTS.md` (Purpose / Key
+Files / Subdirectories / For AI Agents / Dependencies), generated and kept current as the
+code changes. Start at root `AGENTS.md`, then follow into the relevant subdirectory's
+`AGENTS.md` before making changes — it is more current and more detailed than this file for
+anything below the top-level tech/constraint decisions.
 
 ## Technology Stack
 
@@ -29,7 +124,7 @@
 | pdf2image | 1.17+ | PDF → PNG per-slide, wraps poppler `pdftoppm` | Battle-tested, PIL-compatible output, simple API. |
 | Pillow | 11.x | Image resize / normalisation before VLM | Required PIL backend for pdf2image; also handles VLM pre-processing. |
 | poppler-utils | system | Binary dependency for pdf2image | Best PDF rasteriser on Linux. Install: `apt install poppler-utils`. |
-### VLM Layer (Local GPU)
+### VLM Layer (Local GPU) — ❌ DEPRECATED, discarded in favor of OpenAI vision (see Implementation status above)
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
 | transformers | >=4.57.0 | Load and run Qwen3-VL | Hard requirement from Qwen3-VL model card. Earlier versions do not recognise `qwen3_vl` architecture. |
@@ -135,72 +230,23 @@
 
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+- Pydantic v2 schemas (`lecture_auto/schemas/`) are the I/O contract at every module
+  boundary; change them deliberately and update all producers/consumers together.
+- Atomic JSON writes for any checkpoint/artifact: write to `.tmp` then `os.rename`.
+- Immutable updates via `model_copy(update=...)`, not in-place mutation, on schema objects.
+- Lazy singleton model loading per worker (`_get_vlm`/`_get_tts`-style) so GPU weights load
+  once, not per call.
+- Tests mock every heavy external (OpenAI/VLM/TTS calls, `subprocess` for `soffice`/`ffmpeg`,
+  Redis) — the suite needs no GPU, network, or Redis to run.
 
 ## Architecture
 
-Architecture not yet mapped. Follow existing patterns found in the codebase.
+See the "Architecture" section above (shared pipeline core + three drivers) and the
+per-directory `AGENTS.md` files, which are the maintained source of truth for module-level
+detail.
 
+## Known issues
 
-# context-mode — MANDATORY routing rules
-
-You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
-
-## BLOCKED commands — do NOT attempt these
-
-### curl / wget — BLOCKED
-Any Bash command containing `curl` or `wget` is intercepted and replaced with an error message. Do NOT retry.
-Instead use:
-- `ctx_fetch_and_index(url, source)` to fetch and index web pages
-- `ctx_execute(language: "javascript", code: "const r = await fetch(...)")` to run HTTP calls in sandbox
-
-### Inline HTTP — BLOCKED
-Any Bash command containing `fetch('http`, `requests.get(`, `requests.post(`, `http.get(`, or `http.request(` is intercepted and replaced with an error message. Do NOT retry with Bash.
-Instead use:
-- `ctx_execute(language, code)` to run HTTP calls in sandbox — only stdout enters context
-
-### WebFetch — BLOCKED
-WebFetch calls are denied entirely. The URL is extracted and you are told to use `ctx_fetch_and_index` instead.
-Instead use:
-- `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` to query the indexed content
-
-## REDIRECTED tools — use sandbox equivalents
-
-### Bash (>20 lines output)
-Bash is ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`, and other short-output commands.
-For everything else, use:
-- `ctx_batch_execute(commands, queries)` — run multiple commands + search in ONE call
-- `ctx_execute(language: "shell", code: "...")` — run in sandbox, only stdout enters context
-
-### Read (for analysis)
-If you are reading a file to **Edit** it → Read is correct (Edit needs content in context).
-If you are reading to **analyze, explore, or summarize** → use `ctx_execute_file(path, language, code)` instead. Only your printed summary enters context. The raw file content stays in the sandbox.
-
-### Grep (large results)
-Grep results can flood context. Use `ctx_execute(language: "shell", code: "grep ...")` to run searches in sandbox. Only your printed summary enters context.
-
-## Tool selection hierarchy
-
-1. **GATHER**: `ctx_batch_execute(commands, queries)` — Primary tool. Runs all commands, auto-indexes output, returns search results. ONE call replaces 30+ individual calls.
-2. **FOLLOW-UP**: `ctx_search(queries: ["q1", "q2", ...])` — Query indexed content. Pass ALL questions as array in ONE call.
-3. **PROCESSING**: `ctx_execute(language, code)` | `ctx_execute_file(path, language, code)` — Sandbox execution. Only stdout enters context.
-4. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — Fetch, chunk, index, query. Raw HTML never enters context.
-5. **INDEX**: `ctx_index(content, source)` — Store content in FTS5 knowledge base for later search.
-
-## Subagent routing
-
-When spawning subagents (Agent/Task tool), the routing block is automatically injected into their prompt. Bash-type subagents are upgraded to general-purpose so they have access to MCP tools. You do NOT need to manually instruct subagents about context-mode.
-
-## Output constraints
-
-- Keep responses under 500 words.
-- Write artifacts (code, configs, PRDs) to FILES — never return them as inline text. Return only: file path + 1-line description.
-- When indexing content, use descriptive source labels so others can `ctx_search(source: "label")` later.
-
-## ctx commands
-
-| Command | Action |
-|---------|--------|
-| `ctx stats` | Call the `ctx_stats` MCP tool and display the full output verbatim |
-| `ctx doctor` | Call the `ctx_doctor` MCP tool, run the returned shell command, display as checklist |
-| `ctx upgrade` | Call the `ctx_upgrade` MCP tool, run the returned shell command, display as checklist |
+- `api.txt` at the repo root contains a leaked OpenAI key — do not read/echo it; it needs to
+  be scrubbed from history and rotated (not yet done as of this writing).
+- `=2.0.0` at the repo root is stray `pip install` error output, safe to delete.
