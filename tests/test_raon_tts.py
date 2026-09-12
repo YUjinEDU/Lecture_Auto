@@ -12,7 +12,9 @@ from lecture_auto.pipeline.raon_tts import (
     _synthesize_segment_with_gate,
     _trim_lead_tail_silence,
     _voiced_ratio,
+    split_in_half,
     split_into_segments,
+    synthesize_raon_slide,
 )
 
 
@@ -181,3 +183,98 @@ def test_synthesize_segment_with_gate_all_seeds_raising_degrades_to_silence():
     assert pipe.calls == len(TTS_SEEDS)
     assert np.all(audio == 0.0)
     assert len(audio) == int(sr * 3.0)
+
+
+# ---------------------------------------------------------------------------
+# Lower duration bound: a generation that stops early has no long silence and
+# a healthy voiced ratio, so nothing but a floor catches the lost narration.
+# ---------------------------------------------------------------------------
+
+def test_passes_quality_gate_rejects_truncated_clip():
+    sr = 24000
+    # 27s of clean speech where ~42s was expected -- the real slide_009 failure.
+    truncated = _tone(26.9, sr)
+    assert _passes_quality_gate(truncated, sr, expected_seconds=41.6) is True
+    assert _passes_quality_gate(truncated, sr, expected_seconds=41.6, min_seconds=33.3) is False
+
+
+def test_passes_quality_gate_accepts_clip_at_the_floor():
+    sr = 24000
+    assert _passes_quality_gate(_tone(34.0, sr), sr, expected_seconds=41.6, min_seconds=33.3) is True
+
+
+# ---------------------------------------------------------------------------
+# split_in_half: the escape hatch that makes a retry produce different audio.
+# ---------------------------------------------------------------------------
+
+def test_split_in_half_prefers_sentence_boundary_nearest_the_middle():
+    text = "첫 번째 문장은 이렇게 시작합니다. 두 번째 문장이 이어집니다. 세 번째 문장으로 마무리합니다."
+    halves = split_in_half(text)
+    assert len(halves) == 2
+    # 19/33 chars beats 38/18 -- the join point closest to the midpoint wins.
+    assert halves[0] == "첫 번째 문장은 이렇게 시작합니다."
+    assert halves[1].startswith("두 번째") and halves[1].endswith("마무리합니다.")
+
+
+def test_split_in_half_falls_back_to_clause_boundary_for_one_sentence():
+    text = "이 문장은 마침표가 하나뿐이지만 중간에 쉼표가 있고, 그 뒤로도 설명이 계속 이어지는 긴 문장입니다."
+    halves = split_in_half(text)
+    assert len(halves) == 2
+    assert all(len(h) >= 15 for h in halves)
+
+
+def test_split_in_half_returns_unsplittable_text_unchanged():
+    assert split_in_half("짧은 문장.") == ["짧은 문장."]
+
+
+def test_split_in_half_never_loses_characters():
+    text = "하나입니다. 둘입니다. 셋입니다. 넷입니다."
+    halves = split_in_half(text)
+    assert "".join(halves).replace(" ", "") == text.replace(" ", "")
+
+
+# ---------------------------------------------------------------------------
+# Failure must reach the caller: a cached gate failure is the bug that shipped
+# 29 bad wavs into lecture 01.
+# ---------------------------------------------------------------------------
+
+def test_synthesize_slide_reports_failure_when_segments_cannot_be_saved(tmp_path):
+    # Every call returns audio with a 6s internal gap -> fails the silence gate
+    # at every seed and every split depth.
+    bad = _speech_then_gap(6.0)
+    pipe = _FakePipe([bad] * 200)
+    out = tmp_path / "slide.wav"
+    path, ok = synthesize_raon_slide(pipe, "첫 문장입니다. 두 번째 문장입니다.", out)
+    assert path.exists()
+    assert ok is False
+
+
+def test_synthesize_slide_reports_success_on_clean_audio(tmp_path):
+    pipe = _FakePipe([_tone(5.0)] * 50)
+    out = tmp_path / "slide.wav"
+    _, ok = synthesize_raon_slide(pipe, "첫 문장입니다.", out)
+    assert ok is True
+
+
+def test_synthesize_slide_fails_when_joined_audio_blows_its_budget(tmp_path):
+    # Each segment passes its own gate, but they sum past max_seconds * 1.8 --
+    # the whole-slide check review item 2 asked for.
+    pipe = _FakePipe([_tone(5.0)] * 50)
+    out = tmp_path / "slide.wav"
+    _, ok = synthesize_raon_slide(
+        pipe, "첫 문장입니다. 두 번째 문장입니다. 세 번째 문장입니다.", out, max_seconds=2.0
+    )
+    assert ok is False
+
+
+def test_synthesize_slide_splits_and_retries_a_failing_segment(tmp_path):
+    # First call fails the silence gate on all 3 seeds, the rest are clean:
+    # a plain retry would regenerate identically, so more than len(TTS_SEEDS)
+    # calls proves the split path ran.
+    waveforms = [_speech_then_gap(6.0)] * len(TTS_SEEDS) + [_tone(4.0)] * 50
+    pipe = _FakePipe(waveforms)
+    out = tmp_path / "slide.wav"
+    synthesize_raon_slide(
+        pipe, "첫 번째 문장은 이렇게 시작합니다. 두 번째 문장이 뒤를 이어서 계속됩니다.", out
+    )
+    assert pipe.calls > len(TTS_SEEDS)

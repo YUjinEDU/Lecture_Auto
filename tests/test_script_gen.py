@@ -98,21 +98,22 @@ def _valid_script_response(slide_index: int = 0, slide_number: int = 1) -> str:
 
 
 def _client_returning_per_call(capture: list[str] | None = None) -> MagicMock:
-    """Fake LLMClient: complete_text returns a valid script for each call in order.
+    """Fake LLMClient: chat() returns a valid script for each call in order.
 
-    If ``capture`` is given, each prompt is appended to it.
+    generate_scripts drives the model through chat() with a system+user message
+    pair, not complete_text(); ``capture`` collects the user prompt of each call.
     """
     state = {"i": 0}
 
-    def fake_complete(prompt, **kwargs):
+    def fake_chat(messages, **kwargs):
         if capture is not None:
-            capture.append(prompt)
+            capture.append(messages[-1]["content"])
         idx = state["i"]
         state["i"] += 1
         return _valid_script_response(idx, idx + 1)
 
     client = MagicMock()
-    client.complete_text.side_effect = fake_complete
+    client.chat.side_effect = fake_chat
     return client
 
 
@@ -129,7 +130,7 @@ def test_generate_scripts_returns_slidescript_schema(tmp_path: Path):
     vlm_notes = [{"slide_index": 0, "visual_summary": "Intro diagram"}]
 
     client = MagicMock()
-    client.complete_text.return_value = _valid_script_response(0, 1)
+    client.chat.return_value = _valid_script_response(0, 1)
 
     result = generate_scripts(slides, vlm_notes, manifest, scripts_dir, client=client)
 
@@ -258,7 +259,7 @@ def test_generate_scripts_extracts_json_from_markdown_fence(tmp_path: Path):
 
     fenced = f"```json\n{_valid_script_response(0, 1)}\n```"
     client = MagicMock()
-    client.complete_text.return_value = fenced
+    client.chat.return_value = fenced
 
     result = generate_scripts(slides, vlm_notes, manifest, scripts_dir, client=client)
 
@@ -304,11 +305,11 @@ def test_generate_scripts_defaults_to_factory(tmp_path: Path, monkeypatch):
     vlm_notes = [{"slide_index": 0}]
 
     fake_client = MagicMock()
-    fake_client.complete_text.return_value = _valid_script_response(0, 1)
+    fake_client.chat.return_value = _valid_script_response(0, 1)
 
     import lecture_auto.pipeline.script_gen as sg
     monkeypatch.setattr(sg, "get_llm_client", lambda *a, **k: fake_client)
 
     result = generate_scripts(slides, vlm_notes, manifest, scripts_dir)  # no client
     assert len(result) == 1
-    fake_client.complete_text.assert_called_once()
+    fake_client.chat.assert_called_once()

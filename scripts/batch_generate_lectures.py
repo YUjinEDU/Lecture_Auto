@@ -25,7 +25,12 @@ import time
 from pathlib import Path
 
 from lecture_auto.llm.openai_client import OpenAILLMClient
-from lecture_auto.pipeline.cache import content_hash, is_cache_valid, write_cache_hash
+from lecture_auto.pipeline.cache import (
+    content_hash,
+    is_cache_valid,
+    write_cache_hash,
+    write_text_atomic,
+)
 from lecture_auto.pipeline.lecture_plan import (
     _PLAN_SYSTEM_PROMPT,
     build_lecture_plan_prompt,
@@ -111,11 +116,21 @@ LECTURES = [
 ]
 
 
+def _llm_config_repr(llm_client) -> str:
+    """The generation settings that change an LLM artifact, for the cache key.
+
+    Prompt and images alone are not the full input: swapping the model or the
+    vision model silently reused the previous model's scripts, because neither
+    appeared in the hash.
+    """
+    return f"text={llm_client.text_model};vlm={llm_client.vlm_model}"
+
+
 def _generate_lecture_plan_cached(
     llm_client, slides, subject: str, name: str, plan_path: Path
 ) -> LecturePlan:
     prompt_text = build_lecture_plan_prompt(slides, subject, name, TARGET_MINUTES)
-    cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text)
+    cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text, _llm_config_repr(llm_client))
 
     if is_cache_valid(plan_path, cache_key):
         logger.info("Lecture plan cached, reusing %s", plan_path)
@@ -123,7 +138,7 @@ def _generate_lecture_plan_cached(
 
     logger.info("Generating lecture plan (whole-slide-set analysis)...")
     plan = generate_lecture_plan(llm_client, slides, subject, name, TARGET_MINUTES)
-    plan_path.write_text(json.dumps(plan.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+    write_text_atomic(plan_path, json.dumps(plan.model_dump(), ensure_ascii=False, indent=2))
     write_cache_hash(plan_path, cache_key)
     logger.info("Lecture plan: %d sections covering %d slides", len(plan.sections), len(slides))
     return plan
@@ -142,21 +157,50 @@ def _generate_section_scripts_cached(
     prompt_text = build_section_prompt(plan, section, slides_in_section, carry_forward, is_last_section)
     image_bytes = b"".join(p.read_bytes() for p in png_paths_in_section)
     carry_forward_repr = carry_forward.model_dump_json() if carry_forward else ""
-    cache_key = content_hash(get_professor_system_prompt(), prompt_text, image_bytes, carry_forward_repr)
+    cache_key = content_hash(
+        get_professor_system_prompt(),
+        prompt_text,
+        image_bytes,
+        carry_forward_repr,
+        _llm_config_repr(llm_client),
+    )
 
     if is_cache_valid(section_result_path, cache_key):
         logger.info("Section %r cached, reusing", section.title)
-        return SectionScriptResult(**json.loads(section_result_path.read_text(encoding="utf-8")))
+        result = SectionScriptResult(**json.loads(section_result_path.read_text(encoding="utf-8")))
+        validate_section_result(result, section)
+        return result
 
     logger.info("Generating section %r (%d slides)...", section.title, len(section.slides))
     result = generate_section_scripts(
         llm_client, plan, section, slides_in_section, png_paths_in_section, carry_forward, is_last_section
     )
-    section_result_path.write_text(
-        json.dumps(result.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
+    validate_section_result(result, section)
+    write_text_atomic(
+        section_result_path, json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
     )
     write_cache_hash(section_result_path, cache_key)
     return result
+
+
+def validate_section_result(result: SectionScriptResult, section) -> None:
+    """The LLM must return each of the section's slides exactly once.
+
+    Unchecked, a dropped slide surfaced hours later as a KeyError in the TTS
+    loop, and a duplicated one silently overwrote the first script. Both are
+    cheap to catch here and expensive to discover at slide 40 of 48.
+    """
+    returned = [s.slide_number for s in result.slides]
+    expected = set(section.slides)
+    duplicates = {n for n in returned if returned.count(n) > 1}
+    if duplicates:
+        raise ValueError(f"section {section.title!r} returned slide(s) {sorted(duplicates)} more than once")
+    missing = sorted(expected - set(returned))
+    extra = sorted(set(returned) - expected)
+    if missing or extra:
+        raise ValueError(
+            f"section {section.title!r} slide mismatch: missing={missing}, unexpected={extra}"
+        )
 
 
 def process_lecture(
@@ -265,10 +309,10 @@ def process_lecture(
             )
             for s in result.slides:
                 scripts[s.slide_number] = {"target_seconds": s.target_seconds, "script": s.script}
-                (scripts_dir / f"script_{s.slide_number:03d}.json").write_text(
+                write_text_atomic(
+                    scripts_dir / f"script_{s.slide_number:03d}.json",
                     json.dumps({"slide_number": s.slide_number, "target_seconds": s.target_seconds, "script": s.script},
                                ensure_ascii=False, indent=2),
-                    encoding="utf-8",
                 )
             carry_forward = result.carry_forward
 
@@ -281,6 +325,7 @@ def process_lecture(
     wav_paths: list[Path] = []
     ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
 
+    failed_slides: list[int] = []
     for n in range(1, slide_count + 1):
         sc = scripts[n]
         script_text = sc.get("script", "")
@@ -292,11 +337,27 @@ def process_lecture(
             logger.info("Slide %d/%d audio cached, skipping...", n, slide_count)
         else:
             logger.info("Synthesizing slide %d/%d audio (%d chars)...", n, slide_count, len(script_text))
-            synthesize_raon_slide(
+            _, ok = synthesize_raon_slide(
                 tts_pipe, script_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds")
             )
-            write_cache_hash(out_wav, cache_key)
+            if ok:
+                write_cache_hash(out_wav, cache_key)
+            else:
+                # Deliberately NOT cached. The wav is kept so the video still
+                # assembles and can be listened to, but leaving the sidecar
+                # unwritten is what stops the next run from adopting audio that
+                # failed our own quality gate as a valid artifact.
+                failed_slides.append(n)
+                logger.error("Slide %d audio FAILED quality gate -- not caching", n)
         wav_paths.append(out_wav)
+
+    if failed_slides:
+        logger.error(
+            "%d/%d slides failed the quality gate and were not cached: %s",
+            len(failed_slides), slide_count, failed_slides,
+        )
+    else:
+        logger.info("All %d slides passed the quality gate.", slide_count)
 
     # 6. Assemble Video
     logger.info("[6/6] Assembling final MP4 video via ffmpeg...")

@@ -28,7 +28,7 @@ TTS_TEMPERATURE = 0.85
 # model/temperature/seeds) -- content_hash() callers should include this so a
 # pure code change (e.g. switching segment joins to tts_continuation) forces
 # regeneration instead of silently reusing audio made by the old algorithm.
-TTS_SYNTH_VERSION = "v5-best-of-failures-fallback"
+TTS_SYNTH_VERSION = "v6-split-retry-hard-gate"
 
 
 def load_raon_pipeline(
@@ -134,7 +134,30 @@ _MIN_VOICED_RATIO = 0.50
 _MAX_DURATION_RATIO = 1.8
 _MAX_INTERNAL_SILENCE_S = 2.5
 
+# Lower duration bound: the gate used to only reject clips that ran LONG, so a
+# generation that stopped after the first sentence of a three-sentence segment
+# passed everything -- high voiced ratio, no long silence, short duration --
+# and silently dropped the rest of the narration. Measured on lecture 01's 48
+# slides: clean clips land at ~1.1x their char-derived estimate (real Korean
+# rate is nearer 6.4 chars/s than the 7.0 estimate), while slide 009 spoke 291
+# chars in 26.9s against a 41.6s estimate (0.65x) with a third of its script
+# missing. 0.8 sits well below every clean clip and above that truncation.
+_MIN_DURATION_RATIO = 0.8
+
+# On gate failure, the same seeds regenerate bit-identically -- torch.manual_seed
+# over a fixed TTS_SEEDS is deterministic, so retrying alone loops forever.
+# Splitting the segment changes the text, which changes the draw, and shorter
+# text is empirically what this model finishes cleanly (see the 250-char
+# collapse note above). Two levels takes a 120-char segment down to ~30 chars.
+_MAX_SPLIT_DEPTH = 2
+# ~15 Korean chars is roughly 2.5s of speech -- still a generatable unit, and
+# low enough that a 60-char segment can split twice before hitting the floor.
+_MIN_SPLITTABLE_CHARS = 15
+
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?…])\s+")
+# Clause boundaries used only when a failing segment is a single sentence with
+# no sentence break to split on. Korean connective endings + comma.
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[,،])\s+|(?<=고)\s+|(?<=며)\s+|(?<=만)\s+|(?<=서)\s+")
 
 
 def _to_numpy(audio_tensor, sr_fallback: int = _SAMPLE_RATE) -> np.ndarray:
@@ -170,6 +193,35 @@ def split_into_segments(
     if current:
         segments.append(current)
     return segments
+
+
+def split_in_half(text: str) -> list[str]:
+    """Split a segment near its midpoint, preferring a sentence boundary.
+
+    Returns ``[text]`` unchanged when there is no usable break or the halves
+    would be too short to be worth generating separately. Used only as the
+    escape hatch when every seed fails the quality gate on a segment.
+    """
+    text = text.strip()
+    if len(text) < _MIN_SPLITTABLE_CHARS * 2:
+        return [text]
+
+    for pattern in (_SENTENCE_END_RE, _CLAUSE_SPLIT_RE):
+        parts = [p.strip() for p in pattern.split(text) if p.strip()]
+        if len(parts) < 2:
+            continue
+        # Pick the join point whose left side is closest to half the text.
+        midpoint = len(text) / 2
+        best_i, best_gap = 1, float("inf")
+        for i in range(1, len(parts)):
+            gap = abs(len(" ".join(parts[:i])) - midpoint)
+            if gap < best_gap:
+                best_gap, best_i = gap, i
+        left = " ".join(parts[:best_i])
+        right = " ".join(parts[best_i:])
+        if len(left) >= _MIN_SPLITTABLE_CHARS and len(right) >= _MIN_SPLITTABLE_CHARS:
+            return [left, right]
+    return [text]
 
 
 def _frame_energies(wav: np.ndarray, sr: int, frame_ms: float = 50) -> np.ndarray:
@@ -225,7 +277,9 @@ def _integrated_lufs(wav: np.ndarray, sr: int) -> float:
     return meter.integrated_loudness(wav.astype(np.float64))
 
 
-def _passes_quality_gate(wav: np.ndarray, sr: int, expected_seconds: float) -> bool:
+def _passes_quality_gate(
+    wav: np.ndarray, sr: int, expected_seconds: float, min_seconds: float = 0.0
+) -> bool:
     """Content-quality gate on a segment's raw (pre-normalization) audio.
 
     No absolute loudness floor here: `synthesize_raon_slide` runs a single
@@ -241,6 +295,8 @@ def _passes_quality_gate(wav: np.ndarray, sr: int, expected_seconds: float) -> b
         return False
     duration = len(wav) / sr
     if duration > expected_seconds * _MAX_DURATION_RATIO:
+        return False
+    if duration < min_seconds:
         return False
     if _voiced_ratio(wav, sr) < _MIN_VOICED_RATIO:
         return False
@@ -283,6 +339,10 @@ def _synthesize_segment_with_gate(
     pipe.task_params[task_key]["max_new_tokens"] = max_new_tokens
 
     speaker_audio_str = str(speaker_audio) if speaker_audio is not None and Path(speaker_audio).exists() else None
+    # Floor derived from the text itself, not from the 3.0s-floored
+    # expected_seconds -- a very short trailing segment must not be required
+    # to fill 3 seconds of speech.
+    min_seconds = len(text) / _CHARS_PER_SECOND * _MIN_DURATION_RATIO
 
     best_fallback: tuple[np.ndarray, int] | None = None
     best_fallback_score = float("inf")  # longest internal silence/babble run, seconds -- lower is better
@@ -310,12 +370,17 @@ def _synthesize_segment_with_gate(
             logger.warning("TTS call raised for seed %s (%s): %r", seed, task_key, text[:60], exc_info=True)
             continue
         trimmed = _trim_lead_tail_silence(_to_numpy(audio_tensor, sr), sr)
-        if _passes_quality_gate(trimmed, sr, expected_seconds):
+        if _passes_quality_gate(trimmed, sr, expected_seconds, min_seconds):
             return trimmed, sr, True
         # Keep the least-bad failed attempt as fallback, not just the first
         # one tried -- an early seed's babble shouldn't beat a later seed's
-        # near-miss just because it went first.
-        score = _longest_silence_seconds(trimmed, sr)
+        # near-miss just because it went first. Score penalises truncation as
+        # well as silence: ranking on silence alone would crown a clip that
+        # stopped after one sentence (no silence, no content) over a complete
+        # one with a single long pause, and losing narration is the worse of
+        # the two failures.
+        shortfall = max(0.0, min_seconds - len(trimmed) / sr)
+        score = _longest_silence_seconds(trimmed, sr) + shortfall
         if score < best_fallback_score:
             best_fallback_score = score
             best_fallback = (trimmed, sr)
@@ -349,9 +414,20 @@ def synthesize_raon_slide(
     independently, retried on a different seed if it fails, then joined with a
     short pause and loudness-normalized once as a whole.
 
-    ``max_seconds`` is currently unused for the overall cap (each segment
-    sizes its own generation budget from its char count) but is still
-    accepted for call-site compatibility.
+    When every seed fails the gate on a segment, the segment is split near its
+    midpoint and the halves are retried (up to ``_MAX_SPLIT_DEPTH``) -- fixed
+    seeds mean a plain retry regenerates the identical bad audio, so the text
+    has to change for the draw to change.
+
+    ``max_seconds`` is the slide's own script budget (``target_seconds``). The
+    joined result is checked against it: per-segment gating alone let a slide
+    accumulate many individually-tolerable overruns into a 2x-long clip.
+
+    Returns ``(output_path, ok)``. ``ok`` is False when any segment failed its
+    gate after splitting, or the joined slide blew its duration budget. The
+    audio is still written either way -- an unattended multi-hour batch must
+    not die over one bad slide -- but callers MUST NOT cache a False result,
+    or the next run adopts the damaged audio as a valid artifact.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -361,7 +437,7 @@ def synthesize_raon_slide(
         logger.debug("Empty text for slide -- generating 1s silence at %s", output_path)
         silence = np.zeros(int(_SAMPLE_RATE * 1.0), dtype=np.float32)
         sf.write(str(output_path), silence, _SAMPLE_RATE)
-        return output_path
+        return output_path, True
 
     segments = split_into_segments(text)
     pause = np.zeros(int(_SAMPLE_RATE * _PAUSE_MS / 1000), dtype=np.float32)
@@ -369,35 +445,63 @@ def synthesize_raon_slide(
     pieces: list[np.ndarray] = []
     sr = _SAMPLE_RATE
     failures = 0
+    generated = 0
     with tempfile.TemporaryDirectory(prefix="raon_seg_") as tmp_dir:
         tmp_dir_path = Path(tmp_dir)
         continuation_ref: tuple[Path, str] | None = None
-        for i, segment in enumerate(segments):
+        pending: list[tuple[str, int]] = [(seg, 0) for seg in reversed(segments)]
+
+        while pending:
+            segment, depth = pending.pop()
             expected_seconds = max(len(segment) / _CHARS_PER_SECOND, 3.0)
             audio, sr, ok = _synthesize_segment_with_gate(
                 pipe, segment, speaker_audio, expected_seconds, continuation_ref=continuation_ref
             )
+
+            if not ok and depth < _MAX_SPLIT_DEPTH:
+                halves = split_in_half(segment)
+                if len(halves) == 2:
+                    logger.info(
+                        "Segment failed at depth %d, splitting %d chars -> %d + %d and retrying",
+                        depth, len(segment), len(halves[0]), len(halves[1]),
+                    )
+                    pending.extend((h, depth + 1) for h in reversed(halves))
+                    continue
+
             if not ok:
                 failures += 1
             if pieces:
                 pieces.append(pause)
             pieces.append(audio)
+            generated += 1
 
-            # This segment's own audio becomes the prosody reference for the
-            # next one (tts_continuation needs a file path, not an array).
-            seg_path = tmp_dir_path / f"seg_{i:03d}.wav"
-            sf.write(str(seg_path), audio, sr)
-            continuation_ref = (seg_path, segment)
+            # Only a segment that passed its gate becomes the prosody reference
+            # for the next one. Prefilling tts_continuation with silence or with
+            # a collapsed generation propagates that collapse forward; holding
+            # the last good reference keeps the voice steady instead.
+            if ok:
+                seg_path = tmp_dir_path / f"seg_{generated:03d}.wav"
+                sf.write(str(seg_path), audio, sr)
+                continuation_ref = (seg_path, segment)
 
         joined = np.concatenate(pieces) if pieces else np.zeros(int(sr * 1.0), dtype=np.float32)
 
     normalized = _loudness_normalize(joined, sr)
     sf.write(str(output_path), normalized, sr)
+
+    duration = len(normalized) / sr
+    over_budget = max_seconds is not None and duration > max_seconds * _MAX_DURATION_RATIO
+    if over_budget:
+        logger.warning(
+            "Slide audio %s ran %.1fs against a %.1fs budget (>%.1fx) -- marking failed",
+            output_path.name, duration, max_seconds, _MAX_DURATION_RATIO,
+        )
+    ok = failures == 0 and not over_budget
     logger.info(
-        "Saved slide audio: %s (%.2fs, %d segments, %d failed gate)",
-        output_path.name, len(normalized) / sr, len(segments), failures,
+        "Saved slide audio: %s (%.2fs, %d segments, %d failed gate, ok=%s)",
+        output_path.name, duration, generated, failures, ok,
     )
-    return output_path
+    return output_path, ok
 
 
 def synthesize_raon_audio(
@@ -415,7 +519,12 @@ def synthesize_raon_audio(
         text = slide.get("script", "")
         out_path = audio_dir / f"slide_{i:03d}.wav"
         logger.info("Synthesizing slide %d/%d (%d chars)...", i, len(scripts), len(text))
-        synthesize_raon_slide(pipe, text, out_path, speaker_audio=speaker_audio)
+        _, ok = synthesize_raon_slide(
+            pipe, text, out_path, speaker_audio=speaker_audio,
+            max_seconds=slide.get("target_seconds"),
+        )
+        if not ok:
+            logger.warning("Slide %d audio failed quality gate", i)
         wav_paths.append(out_path)
 
     logger.info("Synthesized %d slide audios in %s", len(wav_paths), audio_dir)

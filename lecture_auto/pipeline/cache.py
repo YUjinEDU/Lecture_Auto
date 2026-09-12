@@ -9,6 +9,7 @@ compare against a sidecar hash file written alongside it.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 
@@ -26,12 +27,34 @@ def cache_path_for(artifact_path: Path) -> Path:
 
 
 def is_cache_valid(artifact_path: Path, expected_hash: str) -> bool:
-    """True if artifact_path exists and its sidecar hash matches expected_hash."""
+    """True if artifact_path exists, is non-empty, and its sidecar hash matches.
+
+    The hash proves the *inputs* are unchanged; it says nothing about whether
+    the artifact itself was written completely. Writing the sidecar only after
+    the artifact (see ``write_cache_hash``) is what makes a zero-byte or
+    half-written artifact fail this check rather than be served as valid.
+    """
     hash_path = cache_path_for(artifact_path)
     if not artifact_path.exists() or not hash_path.exists():
+        return False
+    if artifact_path.stat().st_size == 0:
         return False
     return hash_path.read_text(encoding="utf-8").strip() == expected_hash
 
 
 def write_cache_hash(artifact_path: Path, hash_value: str) -> None:
-    cache_path_for(artifact_path).write_text(hash_value, encoding="utf-8")
+    """Write the sidecar hash. Call only AFTER the artifact is fully written."""
+    write_text_atomic(cache_path_for(artifact_path), hash_value)
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write via a .tmp sibling then rename, per the project's artifact rule.
+
+    A plain write that dies midway leaves a truncated file that still exists
+    and still has a matching sidecar, which the cache would then accept.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
