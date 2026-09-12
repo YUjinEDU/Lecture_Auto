@@ -209,6 +209,7 @@ def process_lecture(
     tts_pipe,
     base_work_dir: Path,
     output_dir: Path,
+    shard: tuple[int, int] = (0, 1),
 ) -> Path:
     lec_id = item["id"]
     pdf_path = item["pdf"].resolve()
@@ -326,8 +327,15 @@ def process_lecture(
     ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
 
     failed_slides: list[int] = []
+    shard_index, shard_count = shard
     for n in range(1, slide_count + 1):
         sc = scripts[n]
+        if (n - 1) % shard_count != shard_index:
+            # Another process on another GPU owns this slide. Slides are fully
+            # independent -- tts_continuation only ever references a segment
+            # from the same slide -- so splitting them costs no quality.
+            wav_paths.append(audio_dir / f"slide_{n:03d}.wav")
+            continue
         script_text = sc.get("script", "")
         out_wav = audio_dir / f"slide_{n:03d}.wav"
         cache_key = content_hash(
@@ -359,6 +367,14 @@ def process_lecture(
     else:
         logger.info("All %d slides passed the quality gate.", slide_count)
 
+    missing = [p.name for p in wav_paths if not p.exists()]
+    if missing:
+        logger.info(
+            "[6/6] Skipping video: %d slides belong to another shard (%s...)",
+            len(missing), missing[0],
+        )
+        return out_mp4
+
     # 6. Assemble Video
     logger.info("[6/6] Assembling final MP4 video via ffmpeg...")
     assemble_video(png_paths, wav_paths, video_dir, out_mp4, lec_id)
@@ -370,6 +386,13 @@ def main():
     parser = argparse.ArgumentParser(description="Batch lecture video generation")
     parser.add_argument("--only", type=str, default=None, help="Run only specific lecture id or index (1-5)")
     parser.add_argument("--skip-tts", action="store_true", help="Skip TTS synthesis (test script/render only)")
+    parser.add_argument("--gpu", type=int, default=0, help="CUDA device index for the TTS model")
+    parser.add_argument(
+        "--shard", type=str, default="0/1",
+        help="Take only every Nth slide, as i/N. Run one process per GPU "
+             "(--gpu 0 --shard 0/2 and --gpu 1 --shard 1/2), then once more "
+             "unsharded to assemble the video from the cached audio.",
+    )
     args = parser.parse_args()
 
     base_work = Path("data/work_batch")
@@ -381,8 +404,8 @@ def main():
 
     tts_pipe = None
     if not args.skip_tts:
-        logger.info("Loading Raon-Speech-9B TTS model on cuda:0...")
-        tts_pipe = load_raon_pipeline(TTS_MODEL_ID, device="cuda:0", dtype="bfloat16")
+        logger.info("Loading Raon-Speech-9B TTS model on cuda:%d...", args.gpu)
+        tts_pipe = load_raon_pipeline(TTS_MODEL_ID, device=f"cuda:{args.gpu}", dtype="bfloat16")
         logger.info("Raon-Speech-9B ready!")
 
     selected = LECTURES
@@ -393,12 +416,19 @@ def main():
         else:
             selected = [lec for lec in LECTURES if args.only in lec["id"]]
 
+    shard_index, shard_count = (int(x) for x in args.shard.split("/"))
+    if not 0 <= shard_index < shard_count:
+        parser.error(f"--shard {args.shard}: index must be in 0..{shard_count - 1}")
+    shard = (shard_index, shard_count)
+    if shard_count > 1:
+        logger.info("Shard %d of %d on cuda:%d", shard_index, shard_count, args.gpu)
+
     logger.info("Lectures to generate: %d", len(selected))
     results = []
 
     for lec in selected:
         t0 = time.time()
-        mp4_path = process_lecture(lec, llm_client, tts_pipe, base_work, output_dir)
+        mp4_path = process_lecture(lec, llm_client, tts_pipe, base_work, output_dir, shard)
         elapsed = time.time() - t0
         results.append((lec["id"], mp4_path, elapsed))
 
