@@ -9,6 +9,7 @@ from lecture_auto.pipeline.raon_tts import (
     _longest_silence_seconds,
     _loudness_normalize,
     _passes_quality_gate,
+    _slide_gate_failures,
     _synthesize_segment_with_gate,
     _trim_lead_tail_silence,
     _voiced_ratio,
@@ -285,3 +286,40 @@ def test_synthesize_slide_splits_and_retries_a_failing_segment(tmp_path):
         pipe, "첫 번째 문장은 이렇게 시작합니다. 두 번째 문장이 뒤를 이어서 계속됩니다.", out
     )
     assert pipe.calls > len(TTS_SEEDS)
+
+
+def test_quiet_segment_passes_alone_but_sinks_the_slide(tmp_path):
+    """The v8 regression: slides 018/019/031 shipped with ~20s of mumbling.
+
+    Each segment's gate measures energy against that segment's OWN 95th
+    percentile, so a uniformly quiet generation looks perfectly voiced to
+    itself and reports ok. Only against the slide's real speech does it read
+    as the silence a listener hears. The slide gate has to catch what every
+    segment gate missed.
+    """
+    sr = 24000
+    loud = _tone(6.0, sr, amp=0.3)
+    quiet = _tone(6.0, sr, amp=0.01)  # 30x quieter: audible alone, silence in context
+
+    # Alone, the quiet clip is fully voiced -- this is the blind spot itself.
+    assert _voiced_ratio(quiet, sr) == 1.0
+    assert _passes_quality_gate(quiet, sr, expected_seconds=6.0)
+
+    # Joined with real speech, it is silence, and the slide gate says so.
+    joined = np.concatenate([loud, quiet, loud])
+    reasons = _slide_gate_failures(joined, sr, char_count=int(18 * 5.7), max_seconds=20.0)
+    assert any(r.startswith("silence") for r in reasons), reasons
+
+
+def test_slide_gate_accepts_ordinary_speech():
+    sr = 24000
+    wav = np.concatenate([_tone(10.0, sr), np.zeros(int(sr * 1.0), dtype=np.float32), _tone(10.0, sr)])
+    assert _slide_gate_failures(wav, sr, char_count=int(21 * 5.7), max_seconds=25.0) == []
+
+
+def test_slide_gate_flags_truncation_and_overrun():
+    sr = 24000
+    short = _tone(5.0, sr)
+    assert any(r.startswith("short") for r in _slide_gate_failures(short, sr, int(30 * 5.7), 30.0))
+    long = _tone(70.0, sr)
+    assert any(r.startswith("long") for r in _slide_gate_failures(long, sr, int(70 * 5.7), 30.0))

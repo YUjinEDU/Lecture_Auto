@@ -319,6 +319,34 @@ def _passes_quality_gate(
     return _longest_silence_seconds(wav, sr) <= _MAX_INTERNAL_SILENCE_S
 
 
+def _slide_gate_failures(
+    wav: np.ndarray, sr: int, char_count: int, max_seconds: float | None
+) -> list[str]:
+    """Gate the joined slide, naming every reason it should not be cached.
+
+    Separate from `_passes_quality_gate` because it answers a different
+    question. That one ranks candidate generations for one segment; this one
+    decides whether the artifact is fit to ship. Run on the joined wav, the
+    relative energy threshold is set by the slide's real speech, so a segment
+    that is only quiet next to its neighbours finally shows up as the silence
+    a listener would hear.
+    """
+    reasons = []
+    duration = len(wav) / sr
+    expected = char_count / _CHARS_PER_SECOND
+    if max_seconds is not None and duration > max_seconds * _MAX_DURATION_RATIO:
+        reasons.append(f"long({duration:.0f}s>{max_seconds:.0f}s)")
+    if duration < expected * _MIN_DURATION_RATIO:
+        reasons.append(f"short({duration:.0f}s<{expected * _MIN_DURATION_RATIO:.0f}s)")
+    voiced = _voiced_ratio(wav, sr)
+    if voiced < _MIN_VOICED_RATIO:
+        reasons.append(f"voiced({voiced:.2f})")
+    silence = _longest_silence_seconds(wav, sr)
+    if silence > _MAX_INTERNAL_SILENCE_S:
+        reasons.append(f"silence({silence:.1f}s)")
+    return reasons
+
+
 def _loudness_normalize(wav: np.ndarray, sr: int, target_lufs: float = _TARGET_LUFS) -> np.ndarray:
     loudness = _integrated_lufs(wav, sr)
     if not np.isfinite(loudness):
@@ -562,16 +590,20 @@ def synthesize_raon_slide(
     sf.write(str(output_path), normalized, sr)
 
     duration = len(normalized) / sr
-    over_budget = max_seconds is not None and duration > max_seconds * _MAX_DURATION_RATIO
-    if over_budget:
-        logger.warning(
-            "Slide audio %s ran %.1fs against a %.1fs budget (>%.1fx) -- marking failed",
-            output_path.name, duration, max_seconds, _MAX_DURATION_RATIO,
-        )
-    ok = failures == 0 and not over_budget
+    reasons = _slide_gate_failures(normalized, sr, len(text), max_seconds)
+    # Segment failures are advisory: the per-segment gate picks the best of the
+    # seeds, but it cannot decide whether the slide is usable. Its threshold is
+    # relative to each segment's own 95th percentile, so a uniformly quiet
+    # segment always passes -- it is only quiet compared to its neighbours. That
+    # is how slides 018/019/031 shipped with 17-20s of near-inaudible mumbling
+    # while every segment reported ok. Only the joined wav can see it.
+    if failures:
+        reasons.append(f"{failures}-failed-segments")
+    ok = not reasons
     logger.info(
-        "Saved slide audio: %s (%.2fs, %d segments, %d failed gate, ok=%s)",
+        "Saved slide audio: %s (%.2fs, %d segments, %d failed gate, ok=%s%s)",
         output_path.name, duration, generated, failures, ok,
+        "" if ok else f", rejected: {','.join(reasons)}",
     )
     return output_path, ok
 

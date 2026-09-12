@@ -18,16 +18,14 @@ from pathlib import Path
 
 import soundfile as sf
 
-from lecture_auto.pipeline.cache import content_hash, is_cache_valid, write_cache_hash
+from lecture_auto.pipeline.cache import cache_path_for, content_hash, is_cache_valid, write_cache_hash
 from lecture_auto.pipeline.raon_tts import (
-    _CHARS_PER_SECOND,
-    _MAX_DURATION_RATIO,
-    _MIN_DURATION_RATIO,
     TTS_MODEL_ID,
     TTS_SEEDS,
     TTS_SYNTH_VERSION,
     TTS_TEMPERATURE,
     _longest_silence_seconds,
+    _slide_gate_failures,
     _voiced_ratio,
 )
 
@@ -37,13 +35,12 @@ REF_VOICE = Path("data/audio_ref/test_variants/ref_phone_norm.wav")
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--voiced", type=float, default=0.50)
-    ap.add_argument("--maxsil", type=float, default=2.5)
-    ap.add_argument("--accept", action="store_true", help="cache slides that pass the given thresholds")
+    ap.add_argument("--reconcile", action="store_true",
+                    help="cache slides that now pass, evict those that now fail")
     args = ap.parse_args()
 
     ref_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
-    rows, accepted = [], 0
+    rows, accepted, evicted = [], 0, 0
 
     for wav_path in sorted((LEC / "audio").glob("slide_*.wav")):
         n = int(wav_path.stem.split("_")[1])
@@ -53,24 +50,23 @@ def main() -> int:
         dur = len(wav) / sr
         voiced, sil = _voiced_ratio(wav, sr), _longest_silence_seconds(wav, sr)
 
-        expected = len(script) / _CHARS_PER_SECOND
-        reasons = []
-        if voiced < args.voiced:
-            reasons.append("voiced")
-        if sil > args.maxsil:
-            reasons.append("silence")
-        if dur < expected * _MIN_DURATION_RATIO:
-            reasons.append("short")
-        if dur > target * _MAX_DURATION_RATIO:
-            reasons.append("long")
+        reasons = _slide_gate_failures(wav, sr, len(script), target)
 
         key = content_hash(
             script, ref_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION
         )
         cached = is_cache_valid(wav_path, key)
-        if args.accept and not reasons and not cached:
-            write_cache_hash(wav_path, key)
-            accepted += 1
+        if args.reconcile:
+            if not reasons and not cached:
+                write_cache_hash(wav_path, key)
+                accepted += 1
+            elif reasons and cached:
+                # Cached under the old segment-only rule, which could not see
+                # silence that is only silence relative to the slide's own
+                # speech. Evicting is what forces re-synthesis; leaving it would
+                # let the next run adopt audio this gate rejects.
+                cache_path_for(wav_path).unlink()
+                evicted += 1
         rows.append((n, len(script), target, dur, voiced, sil, cached, reasons))
 
     print(f"\n{'sl':>3} {'chars':>5} {'targ':>6} {'dur':>6} {'voiced':>6} {'maxsil':>6} {'cached':>6}  rejects")
@@ -81,12 +77,12 @@ def main() -> int:
         )
 
     bad = [r for r in rows if r[-1]]
-    print(f"\nvoiced>={args.voiced} maxsil<={args.maxsil}: {len(rows)-len(bad)}/{len(rows)} pass")
+    print(f"\nslide gate: {len(rows)-len(bad)}/{len(rows)} pass")
     for label, idx, hi in (("voiced", 4, False), ("maxsil", 5, True)):
         vals = sorted((r[idx] for r in rows), reverse=not hi)
         print(f"  {label} deciles: " + " ".join(f"{v:.2f}" for v in vals[:: max(len(vals) // 10, 1)]))
-    if args.accept:
-        print(f"\ncached {accepted} newly-passing slides (no re-synthesis needed)")
+    if args.reconcile:
+        print(f"\ncached {accepted} newly-passing slides, evicted {evicted} stale passes")
     return 0
 
 
