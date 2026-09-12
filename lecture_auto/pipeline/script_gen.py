@@ -137,17 +137,6 @@ def build_script_prompt(
     lines.append("- 설명 전개 방식: 슬라이드의 요약 문장을 단순히 읽지 말고, 구체적인 일상 및 현업 사례/비유를 들어가며 학생들에게 질문을 던지듯 흥미진진하게 설명할 것.")
     lines.append("- 톤앤매너: 학문적 전문성을 갖추면서도 친절하고 권위적이지 않은 구어체.")
     lines.append("")
-    # The qualitative style block above was already here and the model ignored
-    # it: measured against the professor's own 32-minute transcript, the output
-    # used '죠' endings at 1.05 per 1000 characters against his 5.43, and formal
-    # '합니다/습니다' at 9.84 against his 1.94. Counts are what it follows.
-    lines.append("[말투 빈도 목표 — 반드시 지킬 것]")
-    lines.append("- '~죠', '~겠죠', '~거죠' 종결: 문장 4~5개마다 최소 1번. 전체의 20% 이상.")
-    lines.append("- 단락을 시작할 때는 '자,', '그래서', '이제', '그러면' 중 하나로 열 것.")
-    lines.append("- '합니다', '습니다'로만 끝나는 문장이 3개 연속되지 않게 할 것.")
-    lines.append("- '우리가'를 사용해 학생을 끌어들일 것: 슬라이드당 최소 1번.")
-    lines.append("- 위는 상한이 아니라 하한입니다. 문어체로 매끄럽게 쓰는 것보다 실제 말하는 것처럼 쓰는 쪽을 택하세요.")
-    lines.append("")
 
     # Style parameters
     lines.append("[강의 설정]")

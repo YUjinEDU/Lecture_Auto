@@ -170,6 +170,18 @@ def build_section_prompt(
             lines.append(f"- 이번 섹션에서 답해야 할 질문: {carry_forward.next_question}")
         lines.append("")
 
+    # Frequency floors, not adjectives. The professor's own 32-minute transcript
+    # runs 5.43 '죠' endings and 4.02 '그래서' per 1000 characters; asking for a
+    # "구어체, 친근한" tone in prose produced 1.05 and 0.38, and 9.84 formal
+    # '합니다/습니다' against his 1.94. He chose sounding like himself over
+    # hitting exactly 30 minutes, so these are minimums and the budget gives way.
+    lines.append("[말투 빈도 목표 — 반드시 지킬 것]")
+    lines.append("- '~죠', '~겠죠', '~거죠', '~그렇죠' 종결: 문장 4~5개마다 최소 1번 (전체 문장의 20% 이상).")
+    lines.append("- 각 슬라이드의 script는 '자,', '그래서', '이제', '그러면' 중 하나로 시작할 것.")
+    lines.append("- '합니다' 또는 '습니다'로 끝나는 문장을 3개 연속 쓰지 말 것.")
+    lines.append("- '우리가'로 학생을 끌어들일 것: 슬라이드마다 최소 1번.")
+    lines.append("- 이것은 상한이 아니라 하한입니다. 매끄러운 문어체보다 실제 말하는 듯한 구어체를 택하세요.")
+    lines.append("")
     lines.append("[섹션 작성 원칙]")
     lines.append("- 섹션의 첫 슬라이드에서만 주제를 도입한다. 중간 슬라이드는 인사나 새 도입 없이 바로 설명을 잇는다.")
     lines.append("- 슬라이드 사이 전환이 필요하면 그 슬라이드의 script 문장 안에 자연스럽게 포함한다 (별도 필드로 만들지 않는다).")
