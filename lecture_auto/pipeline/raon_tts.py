@@ -544,8 +544,14 @@ def _synthesize_with_splitting(
     continuation_ref: tuple[Path, str] | None,
     depth: int,
     state: _SplitState,
-) -> tuple[list[tuple[np.ndarray, int]], bool, tuple[Path, str] | None]:
+) -> tuple[list[tuple[str, np.ndarray, int]], bool, tuple[Path, str] | None]:
     """Synthesize one segment, splitting and retrying only if that actually helps.
+
+    Each returned piece carries the text it was actually generated from, which
+    is the *half* after a split, not the parent. Returning audio alone let the
+    caller label both halves with the whole parent text; redrawing one half
+    then synthesized the parent and dropped it into the half's slot, so the
+    slide read the second half twice.
 
     Returns ``(pieces, ok, continuation_ref)``.
 
@@ -566,20 +572,20 @@ def _synthesize_with_splitting(
         # Only a passing segment becomes the prosody reference for the next
         # one. Prefilling tts_continuation with a collapsed generation
         # propagates that collapse forward.
-        return [(audio, sr)], True, state.save_ref(audio, sr, text)
+        return [(text, audio, sr)], True, state.save_ref(audio, sr, text)
 
     # Below this a split is not worth attempting: the halves are too short to
     # be judged reliably and each one still costs a full set of draws.
     splittable = len(text) > _MIN_SPLIT_WORTH_CHARS
     halves = split_in_half(text) if depth < _MAX_SPLIT_DEPTH and splittable else [text]
     if len(halves) != 2:
-        return [(audio, sr)], False, continuation_ref
+        return [(text, audio, sr)], False, continuation_ref
 
     logger.info(
         "Segment failed at depth %d, splitting %d chars -> %d + %d and retrying",
         depth, len(text), len(halves[0]), len(halves[1]),
     )
-    child_pieces: list[tuple[np.ndarray, int]] = []
+    child_pieces: list[tuple[str, np.ndarray, int]] = []
     child_ref = continuation_ref
     all_ok = True
     for half in halves:
@@ -600,7 +606,7 @@ def _synthesize_with_splitting(
         "Split of %d chars did not produce clean halves -- keeping the parent's best attempt",
         len(text),
     )
-    return [(audio, sr)], False, continuation_ref
+    return [(text, audio, sr)], False, continuation_ref
 
 
 def synthesize_raon_slide(
@@ -663,7 +669,7 @@ def synthesize_raon_slide(
             )
             if not ok:
                 failures += 1
-            for audio, seg_sr in seg_pieces:
+            for piece_text, audio, seg_sr in seg_pieces:
                 if pieces:
                     pieces.append(pause)
                 pieces.append(audio)
@@ -673,7 +679,10 @@ def synthesize_raon_slide(
                 # in _synthesize_segment_with_gate; real generations are never
                 # digitally silent. That substitution drops a whole sentence of
                 # narration, so it fails the slide however the joined wav reads.
-                seg_spans.append((segment, len(pieces) - 1))
+                # piece_text, not segment: after a split these are halves, and
+                # labelling them with the parent is what made a redraw of one
+                # half re-speak the whole thing.
+                seg_spans.append((piece_text, len(pieces) - 1))
                 if audio.size and not np.any(audio):
                     substituted += 1
 

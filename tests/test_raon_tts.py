@@ -432,3 +432,35 @@ def test_dead_stretch_inside_a_half_good_segment_is_redrawn():
 
     assert _voiced_ratio(half_good, sr, reference=reference) >= _MIN_VOICED_RATIO
     assert _longest_silence_seconds(half_good, sr, reference=reference) > _MAX_INTERNAL_SILENCE_S
+
+
+def test_split_children_carry_their_own_text_not_the_parents():
+    """A redraw after a split must re-speak the half, never the whole segment.
+
+    _synthesize_with_splitting used to return audio without text, so the caller
+    labelled both halves with the parent. Redrawing the first half then
+    synthesized the parent into the first half's slot and the slide said the
+    second half twice.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from lecture_auto.pipeline.raon_tts import _SplitState, _synthesize_with_splitting
+
+    sr = 24000
+    attempts = len(plan_attempts(has_continuation=False))
+    parent = "첫 번째 문장은 이렇게 길게 시작해서 충분한 분량을 확보합니다. 두 번째 문장도 마찬가지로 넉넉한 길이를 갖도록 이어서 작성합니다."
+    # Whole segment fails every draw, then both halves come back clean.
+    # 7s clears the halves' own duration floor (35 chars / 5.7 * 0.7 = 4.3s).
+    pipe = _FakePipe([_speech_then_gap(6.0, sr)] * attempts + [_tone(7.0, sr)] * 40)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pieces, ok, _ = _synthesize_with_splitting(
+            pipe, parent, None, None, depth=0, state=_SplitState(_Path(tmp))
+        )
+
+    assert ok, "both halves are clean, so the split should have been accepted"
+    assert len(pieces) == 2, f"expected the two halves, got {len(pieces)}"
+    texts = [t for t, _, _ in pieces]
+    assert all(t != parent for t in texts), "a half is labelled with the whole parent text"
+    assert "".join(texts).replace(" ", "") == parent.replace(" ", "")
