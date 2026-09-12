@@ -50,9 +50,16 @@ from lecture_auto.pipeline.raon_tts import (
     synthesize_raon_slide,
 )
 from lecture_auto.pipeline.renderer import render_slides
-from lecture_auto.pipeline.script_gen import generate_script_for_slide_vision, get_professor_system_prompt
+from lecture_auto.pipeline.script_gen import (
+    generate_script_for_slide_vision,
+    get_professor_system_prompt,
+)
 from lecture_auto.pipeline.video import assemble_video
-from lecture_auto.schemas.lecture_plan import CarryForward, LecturePlan, SectionScriptResult
+from lecture_auto.schemas.lecture_plan import (
+    CarryForward,
+    LecturePlan,
+    SectionScriptResult,
+)
 from lecture_auto.schemas.manifest import LectureStyle
 
 logging.basicConfig(
@@ -408,13 +415,22 @@ def process_lecture(
     else:
         logger.info("All %d slides passed the quality gate.", slide_count)
 
-    missing = [p.name for p in wav_paths if not p.exists()]
-    if missing:
-        logger.info(
-            "[6/6] Skipping video: %d slides belong to another shard (%s...)",
-            len(missing), missing[0],
-        )
+    if shard_count > 1:
+        # Never assemble from inside a shard. Checking that the peer's wavs
+        # merely exist is not enough -- a previous run leaves stale wavs on
+        # disk, so shard 1 happily encoded a video from shard 0's old audio
+        # while shard 0 was still regenerating it. Run the tool once more
+        # without --shard to assemble; everything is cached by then.
+        logger.info("[6/6] Sharded run -- re-run without --shard to assemble the video.")
         return out_mp4
+
+    stale = [p.name for p, n in zip(wav_paths, range(1, slide_count + 1)) if n in failed_slides]
+    if stale:
+        logger.error(
+            "[6/6] Assembling a DRAFT: %d slides failed the quality gate (%s). "
+            "Fix or re-run those before treating this MP4 as final.",
+            len(stale), ", ".join(str(n) for n in failed_slides),
+        )
 
     # 6. Assemble Video
     logger.info("[6/6] Assembling final MP4 video via ffmpeg...")

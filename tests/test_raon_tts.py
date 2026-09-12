@@ -5,12 +5,14 @@ import numpy as np
 import soundfile as sf
 
 from lecture_auto.pipeline.raon_tts import (
+    _MIN_VOICED_RATIO,
     TTS_SEEDS,
     _integrated_lufs,
     _longest_silence_seconds,
     _loudness_normalize,
     _passes_quality_gate,
     _slide_gate_failures,
+    _speech_reference,
     _synthesize_segment_with_gate,
     _trim_lead_tail_silence,
     _voiced_ratio,
@@ -144,7 +146,7 @@ def test_synthesize_segment_with_gate_returns_first_passing_seed():
     clean = _tone(3.0, 24000)
     pipe = _FakePipe([clean])  # only one call needed if the first seed passes
 
-    audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
+    audio, _sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
 
     assert ok is True
     assert pipe.calls == 1
@@ -161,7 +163,7 @@ def test_synthesize_segment_with_gate_keeps_least_bad_not_first_failure():
     ]
     pipe = _FakePipe(waveforms)
 
-    audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
+    audio, _sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
 
     assert ok is False
     assert pipe.calls == len(TTS_SEEDS)
@@ -175,7 +177,7 @@ def test_synthesize_segment_with_gate_survives_a_raising_seed():
     waveforms = [None, _tone(3.0, 24000)]
     pipe = _FakePipe(waveforms)
 
-    audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
+    audio, _sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
 
     assert ok is True
     assert pipe.calls == 2
@@ -347,8 +349,37 @@ def test_marginal_segment_does_not_sink_an_otherwise_good_slide(tmp_path):
 
 def test_silence_substitution_always_fails_the_slide(tmp_path):
     """All seeds raising drops a sentence outright -- never cacheable."""
-    sr = 24000
     pipe = _FakePipe([None] * len(TTS_SEEDS) * 8)
     out = tmp_path / "slide.wav"
     _, ok = synthesize_raon_slide(pipe, "한 문장짜리 짧은 대사입니다.", out, max_seconds=30.0)
     assert not ok
+
+
+def test_quiet_segment_is_redrawn_against_the_slide_level(tmp_path):
+    """The 018/019/038 root cause: a quiet segment never consumed a retry.
+
+    Judged against itself it is fully voiced, so its gate passed, so no seed
+    after the first was ever tried -- adding seeds changed nothing and the
+    slide came back byte-identical. The second pass re-judges it against the
+    slide's real speech and redraws it.
+    """
+    sr = 24000
+    loud, quiet = _tone(9.0, sr, amp=0.3), _tone(9.0, sr, amp=0.005)
+    # First pass: segment 2 comes out quiet. Redraw returns a loud take.
+    pipe = _FakePipe([loud, quiet, loud] + [loud] * 12)
+    out = tmp_path / "slide.wav"
+    text = "첫 번째 문장입니다. " * 3 + "두 번째 문장입니다. " * 3 + "세 번째 문장입니다. " * 3
+    synthesize_raon_slide(pipe, text, out, max_seconds=90.0)
+
+    wav, got_sr = sf.read(str(out))
+    ref = _speech_reference(wav, got_sr)
+    assert _voiced_ratio(wav, got_sr, reference=ref) >= _MIN_VOICED_RATIO
+    assert pipe.calls > 3, "the quiet segment must have been redrawn, not accepted"
+
+
+def test_speech_reference_makes_a_quiet_clip_read_as_silence():
+    sr = 24000
+    loud, quiet = _tone(5.0, sr, amp=0.3), _tone(5.0, sr, amp=0.005)
+    assert _voiced_ratio(quiet, sr) == 1.0  # judged against itself
+    ref = _speech_reference(np.concatenate([loud, quiet]), sr)
+    assert _voiced_ratio(quiet, sr, reference=ref) == 0.0  # judged against real speech

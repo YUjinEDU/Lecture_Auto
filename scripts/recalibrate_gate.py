@@ -7,8 +7,8 @@ distribution so the thresholds can be set from it rather than inherited.
 Synthesis is deterministic over fixed seeds, so a slide that would now pass does
 not need re-synthesizing -- `--accept` just writes the cache sidecar for it.
 
-    uv run python scripts/recalibrate_gate.py
-    uv run python scripts/recalibrate_gate.py --voiced 0.45 --maxsil 3.5 --accept
+    uv run python scripts/recalibrate_gate.py              # report only
+    uv run python scripts/recalibrate_gate.py --reconcile   # cache passes, evict failures
 """
 from __future__ import annotations
 
@@ -18,7 +18,12 @@ from pathlib import Path
 
 import soundfile as sf
 
-from lecture_auto.pipeline.cache import cache_path_for, content_hash, is_cache_valid, write_cache_hash
+from lecture_auto.pipeline.cache import (
+    cache_path_for,
+    content_hash,
+    is_cache_valid,
+    write_cache_hash,
+)
 from lecture_auto.pipeline.raon_tts import (
     TTS_MODEL_ID,
     TTS_SEEDS,
@@ -73,7 +78,7 @@ def main() -> int:
     for n, chars, target, dur, voiced, sil, cached, reasons in rows:
         print(
             f"{n:3d} {chars:5d} {target:6.1f} {dur:6.1f} {voiced:6.2f} {sil:6.1f} "
-            f"{str(cached):>6}  {','.join(reasons) or '-'}"
+            f"{cached!s:>6}  {','.join(reasons) or '-'}"
         )
 
     bad = [r for r in rows if r[-1]]

@@ -10,6 +10,7 @@ import logging
 import re
 import tempfile
 from pathlib import Path
+
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
@@ -28,7 +29,7 @@ TTS_TEMPERATURE = 0.85
 # model/temperature/seeds) -- content_hash() callers should include this so a
 # pure code change (e.g. switching segment joins to tts_continuation) forces
 # regeneration instead of silently reusing audio made by the old algorithm.
-TTS_SYNTH_VERSION = "v8-rate-5v7"
+TTS_SYNTH_VERSION = "v9-slide-gate"
 
 
 def load_raon_pipeline(
@@ -41,7 +42,6 @@ def load_raon_pipeline(
     from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
     logger.info("Loading RaonPipeline from %s on %s (%s)", model_id, device, dtype)
-    torch_dtype = getattr(torch, dtype) if hasattr(torch, dtype) else torch.bfloat16
 
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     RaonPipeline = get_class_from_dynamic_module(
@@ -265,21 +265,37 @@ def _frame_energies(wav: np.ndarray, sr: int, frame_ms: float = 50) -> np.ndarra
 _RELATIVE_VOICED_THRESHOLD = 0.25
 
 
-def _voiced_ratio(wav: np.ndarray, sr: int, frame_ms: float = 50) -> float:
+def _speech_reference(wav: np.ndarray, sr: int, frame_ms: float = 50) -> float:
+    """The 90th-percentile frame energy a clip should be judged against.
+
+    Passing this from the whole slide into a single segment's check is what
+    makes the segment gate able to see a uniformly quiet generation. Judged
+    against itself, such a segment is fully voiced; judged against the slide's
+    real speech, it is the dead air a listener hears.
+    """
+    energies = _frame_energies(wav, sr, frame_ms)
+    return float(np.percentile(energies, 90)) if len(energies) else 0.0
+
+
+def _voiced_ratio(
+    wav: np.ndarray, sr: int, frame_ms: float = 50, reference: float | None = None
+) -> float:
     energies = _frame_energies(wav, sr, frame_ms)
     if len(energies) == 0:
         return 0.0
-    p_speech = np.percentile(energies, 90)
+    p_speech = float(np.percentile(energies, 90)) if reference is None else reference
     if p_speech < 1e-6:
         return 0.0
     return float(np.mean(energies >= _RELATIVE_VOICED_THRESHOLD * p_speech))
 
 
-def _longest_silence_seconds(wav: np.ndarray, sr: int, frame_ms: float = 50) -> float:
+def _longest_silence_seconds(
+    wav: np.ndarray, sr: int, frame_ms: float = 50, reference: float | None = None
+) -> float:
     energies = _frame_energies(wav, sr, frame_ms)
     if len(energies) == 0:
         return 0.0
-    p_speech = np.percentile(energies, 90)
+    p_speech = float(np.percentile(energies, 90)) if reference is None else reference
     if p_speech < 1e-6:
         return len(wav) / sr
     silent = energies < _RELATIVE_VOICED_THRESHOLD * p_speech
@@ -299,7 +315,11 @@ def _integrated_lufs(wav: np.ndarray, sr: int) -> float:
 
 
 def _passes_quality_gate(
-    wav: np.ndarray, sr: int, expected_seconds: float, min_seconds: float = 0.0
+    wav: np.ndarray,
+    sr: int,
+    expected_seconds: float,
+    min_seconds: float = 0.0,
+    energy_reference: float | None = None,
 ) -> bool:
     """Content-quality gate on a segment's raw (pre-normalization) audio.
 
@@ -319,9 +339,9 @@ def _passes_quality_gate(
         return False
     if duration < min_seconds:
         return False
-    if _voiced_ratio(wav, sr) < _MIN_VOICED_RATIO:
+    if _voiced_ratio(wav, sr, reference=energy_reference) < _MIN_VOICED_RATIO:
         return False
-    return _longest_silence_seconds(wav, sr) <= _MAX_INTERNAL_SILENCE_S
+    return _longest_silence_seconds(wav, sr, reference=energy_reference) <= _MAX_INTERNAL_SILENCE_S
 
 
 def _slide_gate_failures(
@@ -369,6 +389,7 @@ def _synthesize_segment_with_gate(
     speaker_audio: Path | str | None,
     expected_seconds: float,
     continuation_ref: tuple[Path, str] | None = None,
+    energy_reference: float | None = None,
 ) -> tuple[np.ndarray, int, bool]:
     """Synthesize one short segment, retrying with a different seed on gate failure.
 
@@ -419,7 +440,7 @@ def _synthesize_segment_with_gate(
             logger.warning("TTS call raised for seed %s (%s): %r", seed, task_key, text[:60], exc_info=True)
             continue
         trimmed = _trim_lead_tail_silence(_to_numpy(audio_tensor, sr), sr)
-        if _passes_quality_gate(trimmed, sr, expected_seconds, min_seconds):
+        if _passes_quality_gate(trimmed, sr, expected_seconds, min_seconds, energy_reference):
             return trimmed, sr, True
         # Keep the least-bad failed attempt as fallback, not just the first
         # one tried -- an early seed's babble shouldn't beat a later seed's
@@ -429,7 +450,7 @@ def _synthesize_segment_with_gate(
         # one with a single long pause, and losing narration is the worse of
         # the two failures.
         shortfall = max(0.0, min_seconds - len(trimmed) / sr)
-        score = _longest_silence_seconds(trimmed, sr) + shortfall
+        score = _longest_silence_seconds(trimmed, sr, reference=energy_reference) + shortfall
         if score < best_fallback_score:
             best_fallback_score = score
             best_fallback = (trimmed, sr)
@@ -569,6 +590,7 @@ def synthesize_raon_slide(
     pause = np.zeros(int(_SAMPLE_RATE * _PAUSE_MS / 1000), dtype=np.float32)
 
     pieces: list[np.ndarray] = []
+    seg_spans: list[tuple[str, int]] = []  # (text, index into pieces)
     sr = _SAMPLE_RATE
     failures = 0
     generated = 0
@@ -593,10 +615,38 @@ def synthesize_raon_slide(
                 # in _synthesize_segment_with_gate; real generations are never
                 # digitally silent. That substitution drops a whole sentence of
                 # narration, so it fails the slide however the joined wav reads.
+                seg_spans.append((segment, len(pieces) - 1))
                 if audio.size and not np.any(audio):
                     substituted += 1
 
         joined = np.concatenate(pieces) if pieces else np.zeros(int(sr * 1.0), dtype=np.float32)
+
+        # Second pass. A segment's own gate compares it against itself, so a
+        # uniformly quiet generation always passes and never consumes a retry
+        # -- that is why slides 018/019/038 came back byte-identical no matter
+        # how many seeds were added. Now that the whole slide exists, re-judge
+        # each segment against the slide's real speech level and redraw the
+        # ones that are only quiet next to their neighbours.
+        reference = _speech_reference(joined, sr)
+        if reference > 1e-6:
+            for seg_text, idx in seg_spans:
+                piece = pieces[idx]
+                if _voiced_ratio(piece, sr, reference=reference) >= _MIN_VOICED_RATIO:
+                    continue
+                logger.warning(
+                    "Segment is quiet against the slide (%.2f voiced) -- redrawing: %r",
+                    _voiced_ratio(piece, sr, reference=reference), seg_text[:60],
+                )
+                redraw, redraw_sr, ok = _synthesize_segment_with_gate(
+                    pipe, seg_text, speaker_audio,
+                    max(len(seg_text) / _CHARS_PER_SECOND, 3.0),
+                    energy_reference=reference,
+                )
+                if ok:
+                    pieces[idx] = redraw
+                    sr = redraw_sr
+                    failures = max(0, failures - 1)
+            joined = np.concatenate(pieces)
 
     normalized = _loudness_normalize(joined, sr)
     sf.write(str(output_path), normalized, sr)
