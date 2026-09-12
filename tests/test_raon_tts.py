@@ -123,6 +123,13 @@ class _FakePipe:
             raise TypeError("'NoneType' object is not subscriptable")  # mirrors modeling_raon.py's real failure
         return wav.tolist(), 24000  # plain list: no .squeeze/.cpu, exercises the numpy.array() fallback path
 
+    def tts_continuation(self, target_text, ref_audio, ref_text, **kwargs):
+        # Segments after the first go through this, not tts(). Without it the
+        # fake raises AttributeError, every seed is swallowed by the retry
+        # handler, and a "clean audio" test would silently exercise only the
+        # all-seeds-failed path.
+        return self.tts(target_text)
+
 
 def _speech_then_gap(gap_seconds: float, sr: int = 24000) -> np.ndarray:
     """tone - silence - tone, so the gap survives lead/tail trimming as internal silence."""
