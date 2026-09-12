@@ -7,6 +7,7 @@ Supports:
 from __future__ import annotations
 
 import logging
+import math
 import re
 import tempfile
 from pathlib import Path
@@ -29,7 +30,7 @@ TTS_TEMPERATURE = 0.85
 # model/temperature/seeds) -- content_hash() callers should include this so a
 # pure code change (e.g. switching segment joins to tts_continuation) forces
 # regeneration instead of silently reusing audio made by the old algorithm.
-TTS_SYNTH_VERSION = "v9-slide-gate"
+TTS_SYNTH_VERSION = "v10-token-budget"
 
 
 def load_raon_pipeline(
@@ -117,8 +118,15 @@ def _trim_lead_tail_silence(wav: np.ndarray, sr: int = _SAMPLE_RATE) -> np.ndarr
 
 
 _CODEC_FRAME_RATE = 12.5  # Mimi codec, verified in modeling_raon.py
-_MIN_MAX_NEW_TOKENS = 300  # ~24s floor, room for a short slide + margin
-_MAX_MAX_NEW_TOKENS = 1536  # ~123s ceiling; see ponytail note below
+# The cap has to scale with the text. A flat 300-token floor is ~24s of audio,
+# which for a 19-char segment (3.3s of speech) is 7x more room than it needs --
+# and a generation that has collapsed spends the whole allowance babbling. The
+# floor only ever mattered before the text was segmented; no segment needs 24s.
+# Ceiling sized off the longest segment split_into_segments actually emits
+# (147 chars measured on lecture 04, needing ~492 tokens), not off a round
+# number: too low silently truncates real narration, which is the worse failure.
+_MIN_MAX_NEW_TOKENS = 64  # ~5.1s, enough for the shortest split fragment
+_MAX_MAX_NEW_TOKENS = 640  # ~51s, comfortably over the longest real segment
 
 # A single pipe.tts() call over a whole 250+ char slide script is what was
 # collapsing into long silent runs / runaway babble (measured: up to 82%
@@ -174,10 +182,21 @@ _MIN_DURATION_RATIO = 0.7
 # Splitting the segment changes the text, which changes the draw, and shorter
 # text is empirically what this model finishes cleanly (see the 250-char
 # collapse note above). Two levels takes a 120-char segment down to ~30 chars.
-_MAX_SPLIT_DEPTH = 2
+# One level, not two. Each level multiplies generations: a failing 120-char
+# segment costs 4 draws, then 4 per half, and at depth 2 another 4 per quarter
+# -- 28 generations for one segment, which is where the batch's time went.
+# Depth 2 also produces ~30-char fragments whose own gate is the least reliable,
+# so the extra level was buying retries that mostly failed anyway.
+_MAX_SPLIT_DEPTH = 1
 # ~15 Korean chars is roughly 2.5s of speech -- still a generatable unit, and
 # low enough that a 60-char segment can split twice before hitting the floor.
 _MIN_SPLITTABLE_CHARS = 15
+# Splitting an already-short segment adds draws without adding much of a
+# different draw; failures below this are better reported than retried. Set at
+# the normal segment floor, not higher: a 74-char two-sentence segment splits
+# cleanly at its sentence boundary into two usable halves, and depth 1 has
+# already capped the cost multiplication that made splitting expensive.
+_MIN_SPLIT_WORTH_CHARS = _SEGMENT_MIN_CHARS
 
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?…])\s+")
 # Clause boundaries used only when a failing segment is a single sentence with
@@ -387,6 +406,20 @@ def _loudness_normalize(wav: np.ndarray, sr: int, target_lufs: float = _TARGET_L
     return normalized.astype(np.float32)
 
 
+def plan_attempts(has_continuation: bool) -> list[tuple[int, bool]]:
+    """The (seed, use_continuation) draws to try, in order, for one segment.
+
+    Two continuation draws, then plain tts. When tts_continuation fails on a
+    (text, prefill) pair it fails on every seed -- a batch's crashes repeated
+    identically across all of them, and plain tts() has never raised once.
+    Spending the remaining draws on continuation is the most expensive thing
+    this module can do and it has never once paid off.
+    """
+    if has_continuation:
+        return [(seed, True) for seed in TTS_SEEDS[:2]] + [(seed, False) for seed in TTS_SEEDS[:2]]
+    return [(seed, False) for seed in TTS_SEEDS[:4]]
+
+
 def _synthesize_segment_with_gate(
     pipe,
     text: str,
@@ -406,11 +439,18 @@ def _synthesize_segment_with_gate(
     a copy of the prefilled reference -- correlation ~0 between the two).
     When ``None`` (first segment of a slide), falls back to plain ``tts()``.
     """
-    task_key = "tts_continuation" if continuation_ref is not None else "tts"
+    # +8 tokens of slack for the audio-end marker so a clip that is exactly
+    # long enough is not cut off mid-word by its own budget.
     max_new_tokens = int(
-        min(max(expected_seconds * _CODEC_FRAME_RATE * 1.4, _MIN_MAX_NEW_TOKENS), _MAX_MAX_NEW_TOKENS)
+        min(
+            max(math.ceil(expected_seconds * _CODEC_FRAME_RATE * 1.5) + 8, _MIN_MAX_NEW_TOKENS),
+            _MAX_MAX_NEW_TOKENS,
+        )
     )
-    pipe.task_params[task_key]["max_new_tokens"] = max_new_tokens
+    # Both task entries: a segment that starts on tts_continuation can fall back
+    # to plain tts mid-loop, and the cap has to follow it there.
+    for key in ("tts", "tts_continuation"):
+        pipe.task_params[key]["max_new_tokens"] = max_new_tokens
 
     speaker_audio_str = str(speaker_audio) if speaker_audio is not None and Path(speaker_audio).exists() else None
     # Floor derived from the text itself, not from the 3.0s-floored
@@ -420,10 +460,18 @@ def _synthesize_segment_with_gate(
 
     best_fallback: tuple[np.ndarray, int] | None = None
     best_fallback_score = float("inf")  # longest internal silence/babble run, seconds -- lower is better
-    for seed in TTS_SEEDS:
+    # Spend two seeds on continuation, then stop asking it. When
+    # tts_continuation fails on a (text, prefill) pair it fails on every seed --
+    # all three of a batch's crashes repeated identically across seeds, and
+    # plain tts() has never once raised. Three more continuation draws is the
+    # single most expensive thing this function can do and it has never paid.
+    # Dropping the prefill costs only the join smoothness on that one segment.
+    attempts = plan_attempts(continuation_ref is not None)
+
+    for seed, use_continuation in attempts:
         torch.manual_seed(seed)
         try:
-            if continuation_ref is not None:
+            if use_continuation and continuation_ref is not None:
                 prev_wav_path, prev_text = continuation_ref
                 audio_tensor, sr = pipe.tts_continuation(
                     target_text=text,
@@ -441,7 +489,10 @@ def _synthesize_segment_with_gate(
             # killed a multi-hour unattended batch run at slide 19/48. A bad
             # generation on one seed must not take down the whole job; try the
             # next seed instead.
-            logger.warning("TTS call raised for seed %s (%s): %r", seed, task_key, text[:60], exc_info=True)
+            logger.warning(
+                "TTS call raised for seed %s (%s): %r",
+                seed, "tts_continuation" if use_continuation else "tts", text[:60], exc_info=True,
+            )
             continue
         trimmed = _trim_lead_tail_silence(_to_numpy(audio_tensor, sr), sr)
         if _passes_quality_gate(trimmed, sr, expected_seconds, min_seconds, energy_reference):
@@ -464,11 +515,11 @@ def _synthesize_segment_with_gate(
         # Degrade to silence rather than crash; this is rare enough (first
         # observed once in ~150 segments) that losing one segment's worth of
         # narration is far cheaper than losing hours of an unattended batch.
-        logger.error("All %d attempts raised for segment, using silence: %r", len(TTS_SEEDS), text[:60])
+        logger.error("All %d attempts raised for segment, using silence: %r", len(attempts), text[:60])
         silence = np.zeros(int(_SAMPLE_RATE * expected_seconds), dtype=np.float32)
         return silence, _SAMPLE_RATE, False
 
-    logger.warning("Segment failed quality gate after seeds %s: %r", TTS_SEEDS, text[:60])
+    logger.warning("Segment failed quality gate after %d attempts: %r", len(attempts), text[:60])
     return best_fallback[0], best_fallback[1], False
 
 
@@ -517,7 +568,10 @@ def _synthesize_with_splitting(
         # propagates that collapse forward.
         return [(audio, sr)], True, state.save_ref(audio, sr, text)
 
-    halves = split_in_half(text) if depth < _MAX_SPLIT_DEPTH else [text]
+    # Below this a split is not worth attempting: the halves are too short to
+    # be judged reliably and each one still costs a full set of draws.
+    splittable = len(text) > _MIN_SPLIT_WORTH_CHARS
+    halves = split_in_half(text) if depth < _MAX_SPLIT_DEPTH and splittable else [text]
     if len(halves) != 2:
         return [(audio, sr)], False, continuation_ref
 

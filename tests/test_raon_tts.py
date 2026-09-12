@@ -16,6 +16,7 @@ from lecture_auto.pipeline.raon_tts import (
     _synthesize_segment_with_gate,
     _trim_lead_tail_silence,
     _voiced_ratio,
+    plan_attempts,
     split_in_half,
     split_into_segments,
     synthesize_raon_slide,
@@ -159,14 +160,14 @@ def test_synthesize_segment_with_gate_keeps_least_bad_not_first_failure():
     # the first, which was tried first. Sized off TTS_SEEDS so adding a seed
     # does not silently turn this into an index error.
     waveforms = [_speech_then_gap(4.0), _speech_then_gap(3.0)] + [
-        _speech_then_gap(5.0) for _ in range(len(TTS_SEEDS) - 2)
+        _speech_then_gap(5.0) for _ in range(len(plan_attempts(has_continuation=False)) - 2)
     ]
     pipe = _FakePipe(waveforms)
 
     audio, _sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
 
     assert ok is False
-    assert pipe.calls == len(TTS_SEEDS)
+    assert pipe.calls == len(plan_attempts(has_continuation=False))
     assert len(audio) == len(waveforms[1])
 
 
@@ -185,12 +186,12 @@ def test_synthesize_segment_with_gate_survives_a_raising_seed():
 
 
 def test_synthesize_segment_with_gate_all_seeds_raising_degrades_to_silence():
-    pipe = _FakePipe([None] * len(TTS_SEEDS))
+    pipe = _FakePipe([None] * len(plan_attempts(has_continuation=False)))
 
     audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
 
     assert ok is False
-    assert pipe.calls == len(TTS_SEEDS)
+    assert pipe.calls == len(plan_attempts(has_continuation=False))
     assert np.all(audio == 0.0)
     assert len(audio) == int(sr * 3.0)
 
@@ -278,16 +279,22 @@ def test_synthesize_slide_fails_when_joined_audio_blows_its_budget(tmp_path):
 
 
 def test_synthesize_slide_splits_and_retries_a_failing_segment(tmp_path):
-    # First call fails the silence gate on all 3 seeds, the rest are clean:
-    # a plain retry would regenerate identically, so more than len(TTS_SEEDS)
-    # calls proves the split path ran.
-    waveforms = [_speech_then_gap(6.0)] * len(TTS_SEEDS) + [_tone(4.0)] * 50
+    # Every draw of the whole segment fails the silence gate, and seeding is
+    # deterministic, so exceeding one round of draws is what proves the split
+    # path ran. The text is sized past _MIN_SPLIT_WORTH_CHARS on purpose: below
+    # that a split only yields fragments the gate reads least reliably, and
+    # test_short_segments_are_not_split_further pins that side of the rule.
+    attempts = len(plan_attempts(has_continuation=False))
+    waveforms = [_speech_then_gap(6.0)] * attempts + [_tone(4.0)] * 50
     pipe = _FakePipe(waveforms)
     out = tmp_path / "slide.wav"
     synthesize_raon_slide(
-        pipe, "첫 번째 문장은 이렇게 시작합니다. 두 번째 문장이 뒤를 이어서 계속됩니다.", out
+        pipe,
+        "첫 번째 문장은 이렇게 길게 시작해서 충분한 분량을 확보합니다. "
+        "두 번째 문장도 마찬가지로 넉넉한 길이를 갖도록 이어서 작성합니다.",
+        out,
     )
-    assert pipe.calls > len(TTS_SEEDS)
+    assert pipe.calls > attempts
 
 
 def test_quiet_segment_passes_alone_but_sinks_the_slide(tmp_path):
@@ -383,3 +390,29 @@ def test_speech_reference_makes_a_quiet_clip_read_as_silence():
     assert _voiced_ratio(quiet, sr) == 1.0  # judged against itself
     ref = _speech_reference(np.concatenate([loud, quiet]), sr)
     assert _voiced_ratio(quiet, sr, reference=ref) == 0.0  # judged against real speech
+
+
+def test_continuation_gives_up_after_two_seeds_and_falls_back_to_plain_tts():
+    """tts_continuation fails identically on every seed; plain tts never has.
+
+    Spending all the draws on continuation was the most expensive thing this
+    module did. Two, then switch.
+    """
+    attempts = plan_attempts(has_continuation=True)
+    assert [use for _, use in attempts] == [True, True, False, False]
+    assert len(attempts) < len(TTS_SEEDS) + 2  # strictly cheaper than every seed twice
+
+
+def test_short_segments_are_not_split_further(tmp_path):
+    """A failing short segment is reported, not recursively redrawn.
+
+    Each split level multiplies generations, and the fragments it produces are
+    the ones the gate judges least reliably.
+    """
+    sr = 24000
+    bad = _speech_then_gap(6.0, sr)   # fails the gate however often it is drawn
+    pipe = _FakePipe([bad] * 64)
+    out = tmp_path / "slide.wav"
+    synthesize_raon_slide(pipe, "짧은 문장 하나입니다.", out, max_seconds=10.0)
+    # One segment, one round of draws, no split: bounded by the attempt plan.
+    assert pipe.calls <= len(plan_attempts(has_continuation=False))
