@@ -18,6 +18,7 @@ them (stale) and not all of them (wasteful).
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import shutil
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from lecture_auto.llm.openai_client import OpenAILLMClient
 from lecture_auto.pipeline.cache import (
+    cache_path_for,
     content_hash,
     is_cache_valid,
     write_cache_hash,
@@ -203,6 +205,23 @@ def validate_section_result(result: SectionScriptResult, section) -> None:
         )
 
 
+
+def _hand_edited(script_path: Path) -> dict | None:
+    """Return the on-disk script if a human changed it, else None.
+
+    The sidecar records the hash of what this script last wrote. Matching means
+    we still own the file and may overwrite it with fresh LLM output; differing
+    means someone edited it since. A file with no sidecar predates this check,
+    so it is treated as ours rather than silently frozen forever.
+    """
+    if not script_path.exists() or not cache_path_for(script_path).exists():
+        return None
+    current = script_path.read_text(encoding="utf-8")
+    if is_cache_valid(script_path, content_hash(current)):
+        return None
+    return json.loads(current)
+
+
 def process_lecture(
     item: dict,
     llm_client: OpenAILLMClient,
@@ -230,6 +249,14 @@ def process_lecture(
 
     for d in (work_dir, rendered_dir, scripts_dir, sections_dir, audio_dir, video_dir, output_dir):
         d.mkdir(parents=True, exist_ok=True)
+
+    # Stages 1-4 write PNGs and script JSON that every shard then reads. Hold
+    # an exclusive lock across them: without it a second shard starting at the
+    # same moment reads a slide PNG mid-write and the VLM rejects it as
+    # "Invalid base64 image_url". The loser of the race waits, then finds
+    # everything cached and falls through in seconds.
+    prep_lock = (work_dir / ".prep.lock").open("w")
+    fcntl.flock(prep_lock, fcntl.LOCK_EX)
 
     # 1. Parse PDF
     logger.info("[1/6] Parsing PDF...")
@@ -309,13 +336,27 @@ def process_lecture(
                 section_result_path,
             )
             for s in result.slides:
-                scripts[s.slide_number] = {"target_seconds": s.target_seconds, "script": s.script}
-                write_text_atomic(
-                    scripts_dir / f"script_{s.slide_number:03d}.json",
-                    json.dumps({"slide_number": s.slide_number, "target_seconds": s.target_seconds, "script": s.script},
-                               ensure_ascii=False, indent=2),
+                script_path = scripts_dir / f"script_{s.slide_number:03d}.json"
+                generated = json.dumps(
+                    {"slide_number": s.slide_number, "target_seconds": s.target_seconds, "script": s.script},
+                    ensure_ascii=False, indent=2,
                 )
+                edited = _hand_edited(script_path)
+                if edited is not None:
+                    # Someone edited this slide's script by hand. Keep it: the
+                    # point of per-slide regeneration is that a correction
+                    # survives the next run, and only this slide's audio needs
+                    # redoing (the script text is in the TTS cache key).
+                    logger.info("Slide %d script was edited by hand -- keeping it", s.slide_number)
+                    scripts[s.slide_number] = edited
+                    continue
+                scripts[s.slide_number] = {"target_seconds": s.target_seconds, "script": s.script}
+                write_text_atomic(script_path, generated)
+                write_cache_hash(script_path, content_hash(generated))
             carry_forward = result.carry_forward
+
+    fcntl.flock(prep_lock, fcntl.LOCK_UN)
+    prep_lock.close()
 
     if tts_pipe is None:
         logger.info("[5-6/6] --skip-tts: leaving TTS/video assembly out, scripts only.")
