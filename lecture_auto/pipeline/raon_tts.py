@@ -28,7 +28,7 @@ TTS_TEMPERATURE = 0.85
 # model/temperature/seeds) -- content_hash() callers should include this so a
 # pure code change (e.g. switching segment joins to tts_continuation) forces
 # regeneration instead of silently reusing audio made by the old algorithm.
-TTS_SYNTH_VERSION = "v6-split-retry-hard-gate"
+TTS_SYNTH_VERSION = "v7-split-only-if-clean"
 
 
 def load_raon_pipeline(
@@ -95,11 +95,19 @@ def transcribe_audio(
 
 
 def _trim_lead_tail_silence(wav: np.ndarray, sr: int = _SAMPLE_RATE) -> np.ndarray:
-    """Trim excessive lead/tail silence, keeping a small natural pad."""
+    """Trim excessive lead/tail silence, keeping a small natural pad.
+
+    The cutoff is relative to the clip's own loud frames, matching how the
+    quality gate classifies silence. A fixed absolute threshold (0.005) left
+    quiet babble at 0.008 in place: too quiet to be trimmed, but still
+    "silence" to the gate, so two joined fragments contributed their untrimmed
+    edges plus the join pause as one long contiguous silent run.
+    """
     if len(wav) == 0:
         return wav
 
-    threshold = 0.005
+    peak_ref = np.percentile(np.abs(wav), 95)
+    threshold = max(0.005, float(peak_ref) * _RELATIVE_VOICED_THRESHOLD)
     active = np.where(np.abs(wav) > threshold)[0]
     if len(active) == 0:
         return wav
@@ -398,6 +406,78 @@ def _synthesize_segment_with_gate(
     return best_fallback[0], best_fallback[1], False
 
 
+class _SplitState:
+    """Scratch dir + counter for the temp wavs tts_continuation needs as prefill."""
+
+    def __init__(self, tmp_dir: Path):
+        self.tmp_dir = tmp_dir
+        self.n = 0
+
+    def save_ref(self, audio: np.ndarray, sr: int, text: str) -> tuple[Path, str]:
+        self.n += 1
+        path = self.tmp_dir / f"seg_{self.n:04d}.wav"
+        sf.write(str(path), audio, sr)
+        return path, text
+
+
+def _synthesize_with_splitting(
+    pipe,
+    text: str,
+    speaker_audio: Path | str | None,
+    continuation_ref: tuple[Path, str] | None,
+    depth: int,
+    state: _SplitState,
+) -> tuple[list[tuple[np.ndarray, int]], bool, tuple[Path, str] | None]:
+    """Synthesize one segment, splitting and retrying only if that actually helps.
+
+    Returns ``(pieces, ok, continuation_ref)``.
+
+    The split is accepted only when *every* child passes its gate. Appending
+    failed children unconditionally multiplied the damage instead of repairing
+    it: one segment failing at depth 0 became two failing children, then four
+    leaves, and all four least-bad fallbacks were concatenated -- measured on
+    slide 009, 26.9s of bad audio became 66.3s of it. Falling back to the
+    parent's own single best attempt caps a failure at exactly what it cost
+    before splitting existed, while keeping the full benefit when a split does
+    produce clean children.
+    """
+    expected_seconds = max(len(text) / _CHARS_PER_SECOND, 3.0)
+    audio, sr, ok = _synthesize_segment_with_gate(
+        pipe, text, speaker_audio, expected_seconds, continuation_ref=continuation_ref
+    )
+    if ok:
+        # Only a passing segment becomes the prosody reference for the next
+        # one. Prefilling tts_continuation with a collapsed generation
+        # propagates that collapse forward.
+        return [(audio, sr)], True, state.save_ref(audio, sr, text)
+
+    halves = split_in_half(text) if depth < _MAX_SPLIT_DEPTH else [text]
+    if len(halves) != 2:
+        return [(audio, sr)], False, continuation_ref
+
+    logger.info(
+        "Segment failed at depth %d, splitting %d chars -> %d + %d and retrying",
+        depth, len(text), len(halves[0]), len(halves[1]),
+    )
+    child_pieces: list[tuple[np.ndarray, int]] = []
+    child_ref = continuation_ref
+    all_ok = True
+    for half in halves:
+        got, child_ok, child_ref = _synthesize_with_splitting(
+            pipe, half, speaker_audio, child_ref, depth + 1, state
+        )
+        child_pieces.extend(got)
+        all_ok = all_ok and child_ok
+
+    if all_ok:
+        return child_pieces, True, child_ref
+    logger.warning(
+        "Split of %d chars did not produce clean halves -- keeping the parent's best attempt",
+        len(text),
+    )
+    return [(audio, sr)], False, continuation_ref
+
+
 def synthesize_raon_slide(
     pipe,
     text: str,
@@ -447,42 +527,21 @@ def synthesize_raon_slide(
     failures = 0
     generated = 0
     with tempfile.TemporaryDirectory(prefix="raon_seg_") as tmp_dir:
-        tmp_dir_path = Path(tmp_dir)
+        state = _SplitState(Path(tmp_dir))
         continuation_ref: tuple[Path, str] | None = None
-        pending: list[tuple[str, int]] = [(seg, 0) for seg in reversed(segments)]
 
-        while pending:
-            segment, depth = pending.pop()
-            expected_seconds = max(len(segment) / _CHARS_PER_SECOND, 3.0)
-            audio, sr, ok = _synthesize_segment_with_gate(
-                pipe, segment, speaker_audio, expected_seconds, continuation_ref=continuation_ref
+        for segment in segments:
+            seg_pieces, ok, continuation_ref = _synthesize_with_splitting(
+                pipe, segment, speaker_audio, continuation_ref, depth=0, state=state
             )
-
-            if not ok and depth < _MAX_SPLIT_DEPTH:
-                halves = split_in_half(segment)
-                if len(halves) == 2:
-                    logger.info(
-                        "Segment failed at depth %d, splitting %d chars -> %d + %d and retrying",
-                        depth, len(segment), len(halves[0]), len(halves[1]),
-                    )
-                    pending.extend((h, depth + 1) for h in reversed(halves))
-                    continue
-
             if not ok:
                 failures += 1
-            if pieces:
-                pieces.append(pause)
-            pieces.append(audio)
-            generated += 1
-
-            # Only a segment that passed its gate becomes the prosody reference
-            # for the next one. Prefilling tts_continuation with silence or with
-            # a collapsed generation propagates that collapse forward; holding
-            # the last good reference keeps the voice steady instead.
-            if ok:
-                seg_path = tmp_dir_path / f"seg_{generated:03d}.wav"
-                sf.write(str(seg_path), audio, sr)
-                continuation_ref = (seg_path, segment)
+            for audio, seg_sr in seg_pieces:
+                if pieces:
+                    pieces.append(pause)
+                pieces.append(audio)
+                sr = seg_sr
+                generated += 1
 
         joined = np.concatenate(pieces) if pieces else np.zeros(int(sr * 1.0), dtype=np.float32)
 
