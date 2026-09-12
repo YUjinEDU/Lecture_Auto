@@ -83,7 +83,9 @@ TARGET_MINUTES = 30.0  # 30분 영상 목표
 # *un*normalized phone take) -- ~5x lower RMS, produced consistent quality-gate
 # failures across all 3 seeds in a live test. Don't switch to it without
 # re-validating.
-REF_VOICE = Path("data/audio_ref/test_variants/ref_phone_norm.wav")
+# Built by scripts/build_voice_reference.py from 1859-1868s of the 2025
+# lecture recording; reference_v1.wav.json records the exact provenance.
+REF_VOICE = Path("data/audio_ref/reference_v1.wav")
 
 LECTURES = [
     {

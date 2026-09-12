@@ -1,0 +1,12 @@
+{
+  "source": "/home/dbsdosdb/workspace/Lecture_Auto/data/audio_ref/professor_past_lecture_2025.wav",
+  "source_sha256": "792fe507f66eb0185127096dfb8ffca540603f2bab4bbde7018e231cd72361c5",
+  "start_seconds": 1859.0,
+  "end_seconds": 1868.0,
+  "processing": "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse,silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse,loudnorm=I=-23:TP=-2:LRA=7",
+  "sample_rate": 24000,
+  "channels": 1,
+  "duration_seconds": 8.728875,
+  "ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "output_sha256": "d83b03ad2e9af32cc4da9ddc6f20bd2920962ffe3c3799e2218a59a633c2d4fd"
+}

@@ -144,14 +144,18 @@ _PAUSE_MS = 200
 TTS_SEEDS = (17, 29, 43, 61, 79)
 _TARGET_LUFS = -20.0
 
-# Quality gate thresholds, calibrated against 18 real generations (120-350
-# char Korean text) manually classified good/bad by inspecting energy traces:
-# good clips had voiced_ratio 0.56-0.64 and longest_silence <=1.85s; bad
-# clips (long true-silence or quiet babble) had voiced_ratio <=0.35 and
-# longest_silence >=4.6s. Thresholds sit in the gap between those clusters.
-_MIN_VOICED_RATIO = 0.50
+# Calibrated against all 48 lecture-01 slides with the professor's own listening
+# labels, replacing an earlier guess made from 18 clips and energy traces alone.
+# He judged slides 006/013/038 (voiced 0.48-0.52, silence 1.2-2.5s) perfectly
+# usable, and 009/018/019/034/041/043/047 clearly broken. The bad ones separate
+# on voiced ratio (0.18-0.43) except 047, which speaks fine but stops dead for
+# 7.5s. So the pair of thresholds below is what splits his two piles exactly:
+# 41 of 48 pass, all three he liked included, none of the seven he rejected.
+# The good/bad gap on voiced ratio is narrow -- 0.48 good against 0.43 bad --
+# so re-derive these from listening labels rather than nudging them by feel.
+_MIN_VOICED_RATIO = 0.45
 _MAX_DURATION_RATIO = 1.8
-_MAX_INTERNAL_SILENCE_S = 2.5
+_MAX_INTERNAL_SILENCE_S = 3.5
 
 # Lower duration bound: the gate used to only reject clips that ran LONG, so a
 # generation that stopped after the first sentence of a three-sentence segment
