@@ -6,10 +6,13 @@ Supports:
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import re
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -406,6 +409,24 @@ def _loudness_normalize(wav: np.ndarray, sr: int, target_lufs: float = _TARGET_L
     return normalized.astype(np.float32)
 
 
+# Set RAON_TRACE to a path to record one JSON line per generation call. Off by
+# default: this is diagnostic instrumentation, not something a batch should pay
+# for. Records only what the call actually reports -- there is deliberately no
+# token count here, because the pipeline returns a waveform and inferring
+# tokens from its duration would be a guess dressed up as a measurement.
+_TRACE_PATH = os.environ.get("RAON_TRACE")
+
+
+def _trace(**fields) -> None:
+    if not _TRACE_PATH:
+        return
+    try:
+        with open(_TRACE_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(fields, ensure_ascii=False) + "\n")
+    except OSError:  # tracing must never take down a batch
+        logger.debug("trace write failed", exc_info=True)
+
+
 def plan_attempts(has_continuation: bool) -> list[tuple[int, bool]]:
     """The (seed, use_continuation) draws to try, in order, for one segment.
 
@@ -427,6 +448,7 @@ def _synthesize_segment_with_gate(
     expected_seconds: float,
     continuation_ref: tuple[Path, str] | None = None,
     energy_reference: float | None = None,
+    depth: int = 0,
 ) -> tuple[np.ndarray, int, bool]:
     """Synthesize one short segment, retrying with a different seed on gate failure.
 
@@ -470,6 +492,7 @@ def _synthesize_segment_with_gate(
 
     for seed, use_continuation in attempts:
         torch.manual_seed(seed)
+        started = time.monotonic()
         try:
             if use_continuation and continuation_ref is not None:
                 prev_wav_path, prev_text = continuation_ref
@@ -493,9 +516,21 @@ def _synthesize_segment_with_gate(
                 "TTS call raised for seed %s (%s): %r",
                 seed, "tts_continuation" if use_continuation else "tts", text[:60], exc_info=True,
             )
+            _trace(
+                event="attempt", call="tts_continuation" if use_continuation else "tts",
+                seed=seed, depth=depth, chars=len(text), max_new_tokens=max_new_tokens,
+                seconds=round(time.monotonic() - started, 2), outcome="raised",
+            )
             continue
         trimmed = _trim_lead_tail_silence(_to_numpy(audio_tensor, sr), sr)
-        if _passes_quality_gate(trimmed, sr, expected_seconds, min_seconds, energy_reference):
+        passed = _passes_quality_gate(trimmed, sr, expected_seconds, min_seconds, energy_reference)
+        _trace(
+            event="attempt", call="tts_continuation" if use_continuation else "tts",
+            seed=seed, depth=depth, chars=len(text), max_new_tokens=max_new_tokens,
+            seconds=round(time.monotonic() - started, 2),
+            out_seconds=round(len(trimmed) / sr, 2), outcome="pass" if passed else "gate_fail",
+        )
+        if passed:
             return trimmed, sr, True
         # Keep the least-bad failed attempt as fallback, not just the first
         # one tried -- an early seed's babble shouldn't beat a later seed's
@@ -566,7 +601,7 @@ def _synthesize_with_splitting(
     """
     expected_seconds = max(len(text) / _CHARS_PER_SECOND, 3.0)
     audio, sr, ok = _synthesize_segment_with_gate(
-        pipe, text, speaker_audio, expected_seconds, continuation_ref=continuation_ref
+        pipe, text, speaker_audio, expected_seconds, continuation_ref=continuation_ref, depth=depth
     )
     if ok:
         # Only a passing segment becomes the prosody reference for the next
@@ -659,6 +694,10 @@ def synthesize_raon_slide(
     failures = 0
     generated = 0
     substituted = 0
+    redraws = 0
+    redraws_adopted = 0
+    redraw_seconds = 0.0
+    slide_started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="raon_seg_") as tmp_dir:
         state = _SplitState(Path(tmp_dir))
         continuation_ref: tuple[Path, str] | None = None
@@ -711,12 +750,21 @@ def synthesize_raon_slide(
                     "Segment is poor against the slide (%.2f voiced, %.1fs gap) -- redrawing: %r",
                     quiet, gap, seg_text[:60],
                 )
+                redraw_started = time.monotonic()
                 redraw, redraw_sr, ok = _synthesize_segment_with_gate(
                     pipe, seg_text, speaker_audio,
                     max(len(seg_text) / _CHARS_PER_SECOND, 3.0),
                     energy_reference=reference,
                 )
+                _trace(
+                    event="redraw", slide=output_path.name, chars=len(seg_text),
+                    seconds=round(time.monotonic() - redraw_started, 2),
+                    voiced_before=round(quiet, 2), gap_before=round(gap, 1), adopted=ok,
+                )
+                redraws += 1
+                redraw_seconds += time.monotonic() - redraw_started
                 if ok:
+                    redraws_adopted += 1
                     pieces[idx] = redraw
                     sr = redraw_sr
                     failures = max(0, failures - 1)
@@ -736,10 +784,21 @@ def synthesize_raon_slide(
     if substituted:
         reasons.append(f"{substituted}-silent-substitutions")
     ok = not reasons
+    # Spell out the retries. "0 failed gate" only means no segment ended on a
+    # fallback; it says nothing about how many draws were spent getting there,
+    # and reading it as "no retries" is what hid where the time was going.
     logger.info(
-        "Saved slide audio: %s (%.2fs, %d segments, %d failed gate, ok=%s%s)",
-        output_path.name, duration, generated, failures, ok,
+        "Saved slide audio: %s (%.2fs in %.0fs, %d segments, %d ended on fallback, "
+        "%d redraws %d adopted costing %.0fs, ok=%s%s)",
+        output_path.name, duration, time.monotonic() - slide_started, generated,
+        failures, redraws, redraws_adopted, redraw_seconds, ok,
         "" if ok else f", rejected: {','.join(reasons)}",
+    )
+    _trace(
+        event="slide", slide=output_path.name, chars=len(text), segments=generated,
+        seconds=round(time.monotonic() - slide_started, 1), duration=round(duration, 1),
+        fallbacks=failures, redraws=redraws, redraws_adopted=redraws_adopted,
+        redraw_seconds=round(redraw_seconds, 1), ok=ok, rejected=reasons,
     )
     return output_path, ok
 

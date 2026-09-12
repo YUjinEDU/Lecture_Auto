@@ -464,3 +464,39 @@ def test_split_children_carry_their_own_text_not_the_parents():
     texts = [t for t, _, _ in pieces]
     assert all(t != parent for t in texts), "a half is labelled with the whole parent text"
     assert "".join(texts).replace(" ", "") == parent.replace(" ", "")
+
+
+def test_trace_records_every_attempt_and_redraw(tmp_path, monkeypatch):
+    """The summary line hid retries: '0 failed gate' says nothing about cost.
+
+    Tracing has to show each draw that was spent, not just where the segment
+    landed, and has to say whether a redraw was actually adopted.
+    """
+    import importlib
+    import json as _json
+
+    trace = tmp_path / "trace.jsonl"
+    monkeypatch.setenv("RAON_TRACE", str(trace))
+    mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
+    try:
+        sr = 24000
+        pipe = _FakePipe([_speech_then_gap(6.0, sr)] * 2 + [_tone(7.0, sr)] * 40)
+        mod._synthesize_segment_with_gate(pipe, "짧은 문장 하나입니다.", None, expected_seconds=5.0)
+
+        rows = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+        assert len(rows) >= 2, "each draw must be recorded, not just the last"
+        assert [r["outcome"] for r in rows][:2] == ["gate_fail", "gate_fail"]
+        assert all("max_new_tokens" in r and "seconds" in r for r in rows)
+        # No invented token counts: the pipeline returns a waveform, not usage.
+        assert all("tokens_generated" not in r for r in rows)
+    finally:
+        monkeypatch.delenv("RAON_TRACE", raising=False)
+        importlib.reload(mod)
+
+
+def test_trace_is_off_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("RAON_TRACE", raising=False)
+    import importlib
+    mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
+    assert mod._TRACE_PATH is None
+    mod._trace(event="attempt")  # must be a no-op, not an error
