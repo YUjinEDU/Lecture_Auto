@@ -222,9 +222,9 @@ def _plan_and_section():
 
 
 def test_generate_section_scripts_retries_when_over_budget(tmp_path):
-    # 10s * 5.7 = 57 chars allowed per slide, 114 for the section.
-    over = _section_result_json([100, 100], [1, 2])   # 200/114 = 1.75x
-    within = _section_result_json([50, 50], [1, 2])   # 100/114 = 0.88x
+    # Budget is the SECTION PLAN's 1.0 min: 60s * 5.7 = 342 chars.
+    over = _section_result_json([250, 250], [1, 2])   # 500/342 = 1.46x
+    within = _section_result_json([170, 170], [1, 2]) # 340/342 = 0.99x
     client = MagicMock()
     client.chat.side_effect = [over, within]
 
@@ -236,12 +236,13 @@ def test_generate_section_scripts_retries_when_over_budget(tmp_path):
     result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
 
     assert client.chat.call_count == 2
-    assert sum(len(s.script) for s in result.slides) == 100
+    assert sum(len(s.script) for s in result.slides) == 340
 
 
 def test_generate_section_scripts_keeps_first_attempt_if_retry_is_worse(tmp_path):
-    over = _section_result_json([100, 100], [1, 2])
-    worse = _section_result_json([200, 200], [1, 2])
+    # 1.46x vs an over-cut 0.29x: the retry is further from 1.0, so it loses.
+    over = _section_result_json([250, 250], [1, 2])   # 1.46x
+    worse = _section_result_json([50, 50], [1, 2])    # 0.29x
     client = MagicMock()
     client.chat.side_effect = [over, worse]
 
@@ -251,12 +252,12 @@ def test_generate_section_scripts_keeps_first_attempt_if_retry_is_worse(tmp_path
     slides = [_make_slide(i, f"t{i}", f"b{i}") for i in (1, 2)]
 
     result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
-    assert sum(len(s.script) for s in result.slides) == 200  # the first attempt, not the worse retry
+    assert sum(len(s.script) for s in result.slides) == 500  # the first attempt, not the over-cut retry
 
 
 def test_generate_section_scripts_does_not_retry_when_within_budget(tmp_path):
     client = MagicMock()
-    client.chat.side_effect = [_section_result_json([50, 50], [1, 2])]
+    client.chat.side_effect = [_section_result_json([170, 170], [1, 2])]  # 0.99x
 
     plan, section = _plan_and_section()
     png = tmp_path / "s.png"
@@ -265,3 +266,22 @@ def test_generate_section_scripts_does_not_retry_when_within_budget(tmp_path):
 
     generate_section_scripts(client, plan, section, slides, [png, png], None, False)
     assert client.chat.call_count == 1
+
+
+def test_budget_is_measured_against_the_plan_not_the_models_own_target_seconds(tmp_path):
+    # The model hands itself 10s/slide where the plan allots 1.0 min for the
+    # section. Measured against its own numbers 114 chars looks perfect; against
+    # the plan's 342 it is 0.33x and must trigger a retry.
+    starved = _section_result_json([57, 57], [1, 2])
+    full = _section_result_json([170, 170], [1, 2])
+    client = MagicMock()
+    client.chat.side_effect = [starved, full]
+
+    plan, section = _plan_and_section()
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    slides = [_make_slide(i, f"t{i}", f"b{i}") for i in (1, 2)]
+
+    result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
+    assert client.chat.call_count == 2
+    assert sum(len(s.script) for s in result.slides) == 340

@@ -216,19 +216,29 @@ def build_section_prompt(
     return "\n".join(lines)
 
 
-# The model reliably writes past the character budget it is given: measured
-# 1.21x median over 48 slides (39/48 more than 10% over), and 1.18x on an
-# earlier run with a different budget constant, so it is a stable bias rather
-# than noise. Left uncorrected it turned a 28.9-minute plan into ~35 minutes of
-# audio. One corrective retry that shows the model its own overshoot is enough;
-# a fudge factor on the requested length would work too but silently breaks
-# whenever the model changes.
-_MAX_BUDGET_OVERSHOOT = 1.12
+# The model does not hit the character budget it is given in either direction:
+# left alone it writes 1.2-1.8x too much (measured 1.21x median over 48 slides,
+# 39/48 more than 10% over), and told to cut it overshoots the cut, landing at
+# 0.51-0.89x. So the window is two-sided and the retry is given a range to land
+# in rather than a ceiling to stay under -- "이내로" (within) is what biased it
+# downward. Whichever of the two attempts sits closest to 1.0 is kept.
+_BUDGET_WINDOW = (0.90, 1.12)
 
 
-def _budget_overshoot(result: SectionScriptResult) -> float:
-    """Ratio of chars actually written to chars the section's budget allows."""
-    allowed = sum(s.target_seconds for s in result.slides) * SPEECH_CHARS_PER_SECOND
+def _section_budget_chars(section: LectureSection) -> float:
+    """Chars the section's *planned* minutes allow.
+
+    Deliberately NOT sum(target_seconds) from the model's own reply: it hands
+    itself a smaller budget than the plan allocates (1580s assigned against
+    1800s planned on lecture 01), so measuring against its own numbers lets it
+    quietly shrink the lecture. The plan is the authority on time.
+    """
+    return section.minutes * 60.0 * SPEECH_CHARS_PER_SECOND
+
+
+def _budget_ratio(result: SectionScriptResult, section: LectureSection) -> float:
+    """Ratio of chars actually written to chars the section's plan allows."""
+    allowed = _section_budget_chars(section)
     if allowed <= 0:
         return 1.0
     return sum(len(s.script) for s in result.slides) / allowed
@@ -273,26 +283,30 @@ def generate_section_scripts(
         return SectionScriptResult(**json.loads(strip_markdown_json_fence(raw)))
 
     result = run(None)
-    overshoot = _budget_overshoot(result)
-    if overshoot <= _MAX_BUDGET_OVERSHOOT:
+    ratio = _budget_ratio(result, section)
+    lo, hi = _BUDGET_WINDOW
+    if lo <= ratio <= hi:
         return result
 
     written = sum(len(s.script) for s in result.slides)
-    allowed = round(sum(s.target_seconds for s in result.slides) * SPEECH_CHARS_PER_SECOND)
+    allowed = _section_budget_chars(section)
     logger.warning(
-        "Section %r ran %.2fx over budget (%d chars vs %d allowed) -- retrying once",
-        section.title, overshoot, written, allowed,
+        "Section %r is %.2fx of its budget (%d chars vs %d planned) -- retrying once",
+        section.title, ratio, written, round(allowed),
     )
+    direction = "초과했습니다" if ratio > 1 else "미달했습니다"
     retried = run(
-        f"직전 작성본은 이 섹션 전체 {written}자로, 허용치 {allowed}자를 "
-        f"{overshoot:.2f}배 초과했습니다. 슬라이드를 빼거나 내용을 누락하지 말고, "
-        f"각 문장을 더 간결하게 다듬어 전체 {allowed}자 이내로 다시 작성하세요."
+        f"직전 작성본은 이 섹션 전체 {written}자로, 계획된 분량 {round(allowed)}자를 "
+        f"{ratio:.2f}배로 {direction}. 슬라이드를 빼거나 내용을 누락하지 말고, "
+        f"전체 글자 수가 {round(allowed * 0.95)}자에서 {round(allowed * 1.05)}자 사이에 "
+        f"들어오도록 다시 작성하세요. 이 범위보다 짧게 쓰지 마세요."
     )
-    retried_overshoot = _budget_overshoot(retried)
-    if retried_overshoot < overshoot:
-        logger.info("Retry improved %.2fx -> %.2fx", overshoot, retried_overshoot)
+    retried_ratio = _budget_ratio(retried, section)
+    # Closest to 1.0 wins, not simply "smaller": a retry that cuts to 0.51x is
+    # further from the plan than the 1.29x it replaced, and undershooting loses
+    # lecture content just as overshooting inflates runtime.
+    if abs(retried_ratio - 1.0) < abs(ratio - 1.0):
+        logger.info("Retry improved %.2fx -> %.2fx", ratio, retried_ratio)
         return retried
-    # The retry can come back worse; keeping the better of the two costs
-    # nothing and stops a bad draw from being the one that ships.
-    logger.warning("Retry did not improve (%.2fx) -- keeping the first attempt", retried_overshoot)
+    logger.warning("Retry (%.2fx) is no closer to budget -- keeping the first attempt", retried_ratio)
     return result
