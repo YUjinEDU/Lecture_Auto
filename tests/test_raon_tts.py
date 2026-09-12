@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+import soundfile as sf
 
 from lecture_auto.pipeline.raon_tts import (
     TTS_SEEDS,
@@ -151,13 +152,12 @@ def test_synthesize_segment_with_gate_returns_first_passing_seed():
 
 
 def test_synthesize_segment_with_gate_keeps_least_bad_not_first_failure():
-    # All three seeds fail (internal gap far exceeds the 2.5s silence limit),
-    # but seed 29's gap is the shortest -- the fallback must prefer it over
-    # seed 17's, which was tried first.
-    waveforms = [
-        _speech_then_gap(4.0),  # seed 17
-        _speech_then_gap(3.0),  # seed 29 -- least bad
-        _speech_then_gap(5.0),  # seed 43
+    # Every seed fails (internal gap far exceeds the 2.5s silence limit), but
+    # the second one's gap is the shortest -- the fallback must prefer it over
+    # the first, which was tried first. Sized off TTS_SEEDS so adding a seed
+    # does not silently turn this into an index error.
+    waveforms = [_speech_then_gap(4.0), _speech_then_gap(3.0)] + [
+        _speech_then_gap(5.0) for _ in range(len(TTS_SEEDS) - 2)
     ]
     pipe = _FakePipe(waveforms)
 
@@ -183,7 +183,7 @@ def test_synthesize_segment_with_gate_survives_a_raising_seed():
 
 
 def test_synthesize_segment_with_gate_all_seeds_raising_degrades_to_silence():
-    pipe = _FakePipe([None, None, None])
+    pipe = _FakePipe([None] * len(TTS_SEEDS))
 
     audio, sr, ok = _synthesize_segment_with_gate(pipe, "테스트 문장입니다.", None, expected_seconds=3.0)
 
@@ -323,3 +323,32 @@ def test_slide_gate_flags_truncation_and_overrun():
     assert any(r.startswith("short") for r in _slide_gate_failures(short, sr, int(30 * 5.7), 30.0))
     long = _tone(70.0, sr)
     assert any(r.startswith("long") for r in _slide_gate_failures(long, sr, int(70 * 5.7), 30.0))
+
+
+def test_marginal_segment_does_not_sink_an_otherwise_good_slide(tmp_path):
+    """Slides 010/002: joined audio clean, rejected because one segment was marginal.
+
+    The segment gate exists to rank seeds, not to judge the artifact. Only the
+    joined wav decides -- otherwise a slide a listener would accept is thrown
+    away for a defect that concatenation already absorbed.
+    """
+    sr = 24000
+    # Second segment is short enough to fail its own duration floor, but the
+    # joined slide is continuous speech with no long gap.
+    pipe = _FakePipe([_tone(8.0, sr), _tone(0.4, sr), _tone(8.0, sr)] * len(TTS_SEEDS) * 4)
+    out = tmp_path / "slide.wav"
+    _, ok = synthesize_raon_slide(
+        pipe, "첫 문장입니다. 두 번째 문장입니다. 세 번째 문장입니다.", out, max_seconds=30.0
+    )
+    wav, got_sr = sf.read(str(out))
+    assert _slide_gate_failures(wav, got_sr, char_count=len("첫 문장입니다. 두 번째 문장입니다. 세 번째 문장입니다."), max_seconds=30.0) == []
+    assert ok, "joined audio passes every check; a marginal segment must not veto it"
+
+
+def test_silence_substitution_always_fails_the_slide(tmp_path):
+    """All seeds raising drops a sentence outright -- never cacheable."""
+    sr = 24000
+    pipe = _FakePipe([None] * len(TTS_SEEDS) * 8)
+    out = tmp_path / "slide.wav"
+    _, ok = synthesize_raon_slide(pipe, "한 문장짜리 짧은 대사입니다.", out, max_seconds=30.0)
+    assert not ok

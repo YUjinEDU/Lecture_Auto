@@ -136,7 +136,12 @@ _SEGMENT_MAX_CHARS = 120
 # mismatch either loosens the gate or makes every clean clip look overlong.
 _CHARS_PER_SECOND = 5.7
 _PAUSE_MS = 200
-TTS_SEEDS = (17, 29, 43)
+# Order matters and the first three must not move: they are what the shipped
+# lecture-01 audio was drawn from, so a slide that passed on one of them
+# regenerates byte-identically and its cache stays honest. The extra two exist
+# because a re-run is otherwise pointless -- seeding is deterministic, so a
+# failing slide redrawn from the same three fails identically forever.
+TTS_SEEDS = (17, 29, 43, 61, 79)
 _TARGET_LUFS = -20.0
 
 # Quality gate thresholds, calibrated against 18 real generations (120-350
@@ -567,6 +572,7 @@ def synthesize_raon_slide(
     sr = _SAMPLE_RATE
     failures = 0
     generated = 0
+    substituted = 0
     with tempfile.TemporaryDirectory(prefix="raon_seg_") as tmp_dir:
         state = _SplitState(Path(tmp_dir))
         continuation_ref: tuple[Path, str] | None = None
@@ -583,6 +589,12 @@ def synthesize_raon_slide(
                 pieces.append(audio)
                 sr = seg_sr
                 generated += 1
+                # Exactly-zero audio only comes from the all-seeds-raised path
+                # in _synthesize_segment_with_gate; real generations are never
+                # digitally silent. That substitution drops a whole sentence of
+                # narration, so it fails the slide however the joined wav reads.
+                if audio.size and not np.any(audio):
+                    substituted += 1
 
         joined = np.concatenate(pieces) if pieces else np.zeros(int(sr * 1.0), dtype=np.float32)
 
@@ -597,8 +609,8 @@ def synthesize_raon_slide(
     # segment always passes -- it is only quiet compared to its neighbours. That
     # is how slides 018/019/031 shipped with 17-20s of near-inaudible mumbling
     # while every segment reported ok. Only the joined wav can see it.
-    if failures:
-        reasons.append(f"{failures}-failed-segments")
+    if substituted:
+        reasons.append(f"{substituted}-silent-substitutions")
     ok = not reasons
     logger.info(
         "Saved slide audio: %s (%.2fs, %d segments, %d failed gate, ok=%s%s)",
