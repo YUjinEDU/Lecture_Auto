@@ -689,11 +689,18 @@ def synthesize_raon_slide(
         if reference > 1e-6:
             for seg_text, idx in seg_spans:
                 piece = pieces[idx]
-                if _voiced_ratio(piece, sr, reference=reference) >= _MIN_VOICED_RATIO:
+                quiet = _voiced_ratio(piece, sr, reference=reference)
+                gap = _longest_silence_seconds(piece, sr, reference=reference)
+                # Both checks, not just the ratio. Slide 018 of lecture 04 held
+                # a 19.6s and a 25.1s dead stretch, but each sat inside a
+                # segment whose other half was real speech -- the ratio came
+                # out near 0.5 and passed while the gap went unseen. One
+                # segment was redrawn and the two worst were left alone.
+                if quiet >= _MIN_VOICED_RATIO and gap <= _MAX_INTERNAL_SILENCE_S:
                     continue
                 logger.warning(
-                    "Segment is quiet against the slide (%.2f voiced) -- redrawing: %r",
-                    _voiced_ratio(piece, sr, reference=reference), seg_text[:60],
+                    "Segment is poor against the slide (%.2f voiced, %.1fs gap) -- redrawing: %r",
+                    quiet, gap, seg_text[:60],
                 )
                 redraw, redraw_sr, ok = _synthesize_segment_with_gate(
                     pipe, seg_text, speaker_audio,

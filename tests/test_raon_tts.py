@@ -5,6 +5,7 @@ import numpy as np
 import soundfile as sf
 
 from lecture_auto.pipeline.raon_tts import (
+    _MAX_INTERNAL_SILENCE_S,
     _MIN_VOICED_RATIO,
     TTS_SEEDS,
     _integrated_lufs,
@@ -416,3 +417,18 @@ def test_short_segments_are_not_split_further(tmp_path):
     synthesize_raon_slide(pipe, "짧은 문장 하나입니다.", out, max_seconds=10.0)
     # One segment, one round of draws, no split: bounded by the attempt plan.
     assert pipe.calls <= len(plan_attempts(has_continuation=False))
+
+
+def test_dead_stretch_inside_a_half_good_segment_is_redrawn():
+    """Slide 018 of lecture 04: one redraw fired, the two worst gaps were missed.
+
+    A segment that is half real speech and half dead air scores about 0.5
+    voiced -- over the threshold -- so the ratio alone never saw it. The gap is
+    what gives it away.
+    """
+    sr = 24000
+    half_good = np.concatenate([_tone(20.0, sr, amp=0.3), _tone(20.0, sr, amp=0.004)])
+    reference = _speech_reference(half_good, sr)
+
+    assert _voiced_ratio(half_good, sr, reference=reference) >= _MIN_VOICED_RATIO
+    assert _longest_silence_seconds(half_good, sr, reference=reference) > _MAX_INTERNAL_SILENCE_S
