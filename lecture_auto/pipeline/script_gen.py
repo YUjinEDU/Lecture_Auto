@@ -22,6 +22,15 @@ from lecture_auto.schemas.manifest import LectureStyle, SlideManifest, SlideReco
 
 logger = logging.getLogger(__name__)
 
+# Measured rendering rate of Raon-Speech-9B on this professor's cloned voice,
+# NOT how fast the professor himself talks (he runs 6.46 chars/s over his 32min
+# recording). Only the TTS rate determines video length: two gate-passing v7
+# generations came out at 5.52 and 5.84 chars/s. The previous 7.0 is why 48
+# slides budgeted to exactly 30.0 minutes rendered as 42.2 minutes of audio.
+# Keep in sync with _CHARS_PER_SECOND in pipeline/raon_tts.py, which sizes the
+# quality gate's duration window around the same rate.
+SPEECH_CHARS_PER_SECOND = 5.7
+
 _PREV_SCRIPT_CONTEXT_CHARS = 100
 
 
@@ -132,7 +141,10 @@ def build_script_prompt(
     lines.append(f"- 밀도: {style.density}, 어조: {style.tone}, 접근법: {style.approach}")
     if style.supplement:
         lines.append(f"- 추가 지침: {style.supplement}")
-    lines.append(f"- 목표 발화 시간: 약 {target_seconds:.0f}초 (분당 300~350음절 기준, 약 {int(target_seconds * 5.5)}자 내외의 충분한 분량)")
+    lines.append(
+        f"- 목표 발화 시간: 약 {target_seconds:.0f}초 "
+        f"(초당 약 {SPEECH_CHARS_PER_SECOND}자 기준, 약 {int(target_seconds * SPEECH_CHARS_PER_SECOND)}자 내외)"
+    )
     lines.append("")
 
     # Previous slide context
@@ -218,14 +230,14 @@ def build_vision_script_prompt(
     lines.append("system 메시지의 [교수님 고유 강의 발화 스타일]을 반드시 준수하여 실제 육성 강의처럼 자연스럽고 몰입감 있게 작성하세요.")
     lines.append("")
 
-    target_chars = round(target_seconds * 7)
+    target_chars = round(target_seconds * SPEECH_CHARS_PER_SECOND)
     lines.append("[강의 설정]")
     lines.append(f"- 밀도: {style.density}, 어조: {style.tone}, 접근법: {style.approach}")
     if style.supplement:
         lines.append(f"- 추가 지침: {style.supplement}")
     lines.append(
         f"- 목표 발화 시간: 약 {target_seconds:.0f}초 "
-        f"(초당 약 7자 기준, {round(target_chars * 0.9)}~{round(target_chars * 1.1)}자)"
+        f"(초당 약 {SPEECH_CHARS_PER_SECOND}자 기준, {round(target_chars * 0.9)}~{round(target_chars * 1.1)}자)"
     )
     lines.append("")
 

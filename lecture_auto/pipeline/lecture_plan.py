@@ -21,6 +21,7 @@ from pathlib import Path
 
 from lecture_auto.llm import LLMClient
 from lecture_auto.pipeline.script_gen import (
+    SPEECH_CHARS_PER_SECOND,
     _extract_all_text,
     _extract_slide_title,
     get_professor_system_prompt,
@@ -173,7 +174,8 @@ def build_section_prompt(
         "표지/섹션 제목 10~20초, 반복/요약 슬라이드 15~25초, 일반 개념 30~45초, 핵심 도표·사례 50~90초."
     )
     lines.append(
-        "- 각 슬라이드 script의 글자 수는 target_seconds * 7자(초당 약 7자)를 기준으로 ±10% 이내로 작성한다. "
+        "- 각 슬라이드 script의 글자 수는 target_seconds * "
+        f"{SPEECH_CHARS_PER_SECOND}자(초당 약 {SPEECH_CHARS_PER_SECOND}자)를 기준으로 ±10% 이내로 작성한다. "
         "시간을 채우려고 같은 말을 반복하거나 억지로 늘리지 않는다."
     )
     if is_last_section:

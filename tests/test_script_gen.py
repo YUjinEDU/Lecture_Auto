@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from lecture_auto.pipeline.script_gen import (
+    SPEECH_CHARS_PER_SECOND,
     SlideScript,
     build_script_prompt,
     build_vision_script_prompt,
@@ -287,8 +288,12 @@ def test_build_vision_script_prompt_output_format_and_char_budget():
 
     assert "transition_to_next" not in prompt
     assert "keywords" not in prompt
-    assert "630" in prompt  # round(100*7*0.9)
-    assert "770" in prompt  # round(100*7*1.1)
+    # Derived from the constant, not hardcoded: the rate is a calibration knob
+    # (7.0 -> 5.7 once the model's real rendering rate was measured) and a test
+    # that pins the old number just breaks when the knob is legitimately turned.
+    budget = 100.0 * SPEECH_CHARS_PER_SECOND
+    assert str(round(budget * 0.9)) in prompt
+    assert str(round(budget * 1.1)) in prompt
     assert "작은 표 안의 텍스트" in prompt
 
 

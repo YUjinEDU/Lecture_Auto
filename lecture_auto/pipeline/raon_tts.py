@@ -28,7 +28,7 @@ TTS_TEMPERATURE = 0.85
 # model/temperature/seeds) -- content_hash() callers should include this so a
 # pure code change (e.g. switching segment joins to tts_continuation) forces
 # regeneration instead of silently reusing audio made by the old algorithm.
-TTS_SYNTH_VERSION = "v7-split-only-if-clean"
+TTS_SYNTH_VERSION = "v8-rate-5v7"
 
 
 def load_raon_pipeline(
@@ -128,7 +128,13 @@ _MAX_MAX_NEW_TOKENS = 1536  # ~123s ceiling; see ponytail note below
 # its sentence and stop.
 _SEGMENT_MIN_CHARS = 60
 _SEGMENT_MAX_CHARS = 120
-_CHARS_PER_SECOND = 7.0  # Korean speech rate, per professor_style_guide.md (~420 chars/min)
+# Measured rendering rate of THIS model on the cloned voice -- two gate-passing
+# v7 generations came out at 5.52 and 5.84 chars/s. Not the professor's own rate
+# (6.46 chars/s over his 32min recording); only the TTS rate sets video length.
+# Must stay in sync with SPEECH_CHARS_PER_SECOND in script_gen.py: the scripts
+# are budgeted at this rate and the gate's duration window is sized by it, so a
+# mismatch either loosens the gate or makes every clean clip look overlong.
+_CHARS_PER_SECOND = 5.7
 _PAUSE_MS = 200
 TTS_SEEDS = (17, 29, 43)
 _TARGET_LUFS = -20.0
@@ -145,12 +151,14 @@ _MAX_INTERNAL_SILENCE_S = 2.5
 # Lower duration bound: the gate used to only reject clips that ran LONG, so a
 # generation that stopped after the first sentence of a three-sentence segment
 # passed everything -- high voiced ratio, no long silence, short duration --
-# and silently dropped the rest of the narration. Measured on lecture 01's 48
-# slides: clean clips land at ~1.1x their char-derived estimate (real Korean
-# rate is nearer 6.4 chars/s than the 7.0 estimate), while slide 009 spoke 291
-# chars in 26.9s against a 41.6s estimate (0.65x) with a third of its script
-# missing. 0.8 sits well below every clean clip and above that truncation.
-_MIN_DURATION_RATIO = 0.8
+# and silently dropped the rest of the narration. Slide 009 spoke 291 chars in
+# 26.9s against its estimate -- 0.52x at the calibrated 5.7 chars/s -- with a
+# third of its script missing. Back-tested across all 48 v5 wavs: 0.7 catches
+# that truncation, while 0.8 also rejected 3 clean clips (slides 6/14/32 at
+# 0.75-0.79, voiced 0.66-0.68, silence ~1s) that are simply fast. Every other
+# clip below 0.8 independently fails the voiced-ratio or silence check, so the
+# looser floor loses no true catch and costs 3 fewer wasted split-retries.
+_MIN_DURATION_RATIO = 0.7
 
 # On gate failure, the same seeds regenerate bit-identically -- torch.manual_seed
 # over a fixed TTS_SEEDS is deterministic, so retrying alone loops forever.
