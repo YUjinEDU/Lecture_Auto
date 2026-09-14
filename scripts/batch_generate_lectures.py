@@ -238,6 +238,7 @@ def process_lecture(
     base_work_dir: Path,
     output_dir: Path,
     shard: tuple[int, int] = (0, 1),
+    target_slides: set[int] | None = None,
 ) -> Path:
     lec_id = item["id"]
     pdf_path = item["pdf"].resolve()
@@ -380,18 +381,24 @@ def process_lecture(
     shard_index, shard_count = shard
     for n in range(1, slide_count + 1):
         sc = scripts[n]
+        out_wav = audio_dir / f"slide_{n:03d}.wav"
         if (n - 1) % shard_count != shard_index:
             # Another process on another GPU owns this slide. Slides are fully
             # independent -- tts_continuation only ever references a segment
             # from the same slide -- so splitting them costs no quality.
-            wav_paths.append(audio_dir / f"slide_{n:03d}.wav")
+            wav_paths.append(out_wav)
             continue
+        if target_slides is not None and n not in target_slides and out_wav.exists():
+            logger.info("Slide %d/%d not in target slides, keeping existing audio", n, slide_count)
+            wav_paths.append(out_wav)
+            continue
+
         script_text = sc.get("script", "")
-        out_wav = audio_dir / f"slide_{n:03d}.wav"
         cache_key = content_hash(
             script_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION
         )
-        if is_cache_valid(out_wav, cache_key):
+        force_regen = target_slides is not None and n in target_slides
+        if not force_regen and is_cache_valid(out_wav, cache_key):
             logger.info("Slide %d/%d audio cached, skipping...", n, slide_count)
         else:
             logger.info("Synthesizing slide %d/%d audio (%d chars)...", n, slide_count, len(script_text))
@@ -441,9 +448,30 @@ def process_lecture(
     return out_mp4
 
 
+def _parse_slides_arg(arg: str | None) -> set[int] | None:
+    if not arg:
+        return None
+    slides: set[int] = set()
+    for part in arg.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            slides.update(range(int(start), int(end) + 1))
+        else:
+            slides.add(int(part))
+    return slides
+
+
 def main():
     parser = argparse.ArgumentParser(description="Batch lecture video generation")
     parser.add_argument("--only", type=str, default=None, help="Run only specific lecture id or index (1-5)")
+    parser.add_argument(
+        "--slides", type=str, default=None,
+        help="Comma-separated list of slide numbers to selectively regenerate (e.g. '23,41,48' or '23-25'). "
+             "Other slides keep their existing audio.",
+    )
     parser.add_argument("--skip-tts", action="store_true", help="Skip TTS synthesis (test script/render only)")
     parser.add_argument("--gpu", type=int, default=0, help="CUDA device index for the TTS model")
     parser.add_argument(
@@ -482,12 +510,18 @@ def main():
     if shard_count > 1:
         logger.info("Shard %d of %d on cuda:%d", shard_index, shard_count, args.gpu)
 
+    target_slides = _parse_slides_arg(args.slides)
+    if target_slides:
+        logger.info("Target slides to selectively regenerate: %s", sorted(target_slides))
+
     logger.info("Lectures to generate: %d", len(selected))
     results = []
 
     for lec in selected:
         t0 = time.time()
-        mp4_path = process_lecture(lec, llm_client, tts_pipe, base_work, output_dir, shard)
+        mp4_path = process_lecture(
+            lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides
+        )
         elapsed = time.time() - t0
         results.append((lec["id"], mp4_path, elapsed))
 

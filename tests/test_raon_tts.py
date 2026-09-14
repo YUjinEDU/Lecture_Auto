@@ -557,3 +557,34 @@ def test_slide_gate_catches_duration_overrun_over_1_35():
     failures = _slide_gate_failures(clip_28s, sr, char_count=int(20 * 5.7), max_seconds=20.0)
     assert any(f.startswith("long") for f in failures), failures
 
+
+def test_check_transcription_fidelity_catches_repetition_and_discrepancy(tmp_path):
+    from unittest.mock import MagicMock
+
+    from lecture_auto.pipeline.raon_tts import check_transcription_fidelity
+
+    fake_pipe = MagicMock()
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+
+    # 1. Word repetition: "그렇죠 그렇죠 그렇죠"
+    fake_pipe.stt.return_value = "우리가 문제를 해결해야 하는데 그렇죠 그렇죠 그렇죠 계속해서 진행합니다."
+    reasons = check_transcription_fidelity(fake_pipe, audio_path, "우리가 문제를 해결해야 합니다.")
+    assert any("stt_repetition" in r for r in reasons)
+
+    # 2. Phrase loop: "우리가 배운 우리가 배운"
+    fake_pipe.stt.return_value = "이것은 우리가 배운 우리가 배운 핵심 개념입니다."
+    reasons = check_transcription_fidelity(fake_pipe, audio_path, "이것은 우리가 배운 핵심 개념입니다.")
+    assert any("stt_phrase_loop" in r for r in reasons)
+
+    # 3. Short discrepancy (dropped half text)
+    fake_pipe.stt.return_value = "앞부분만 조금 읽고 멈춤"
+    reasons = check_transcription_fidelity(fake_pipe, audio_path, "이 문장은 전체적으로 아주 길게 작성된 스크립트로서 끝까지 다 읽어야 합니다.")
+    assert any("stt_short" in r for r in reasons)
+
+    # 4. Clean fidelity
+    script = "자 다음으로 보실 내용은 디자인씽킹의 핵심 원리입니다."
+    fake_pipe.stt.return_value = "자 다음으로 보실 내용은 디자인씽킹의 핵심 원리입니다."
+    assert check_transcription_fidelity(fake_pipe, audio_path, script) == []
+
+

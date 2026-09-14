@@ -98,6 +98,50 @@ def transcribe_audio(
     return text
 
 
+def check_transcription_fidelity(
+    pipe,
+    audio_path: str | Path,
+    expected_text: str,
+) -> list[str]:
+    """Check synthesized audio against script using Raon-Speech-9B STT.
+
+    Detects:
+    1. Repetition loops (hallucination babble / word repetition).
+    2. Severe truncation or runaway length discrepancy in transcribed text.
+    """
+    reasons: list[str] = []
+    try:
+        transcribed = transcribe_audio(pipe, audio_path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("STT transcription failed during fidelity check: %s", e)
+        return []
+
+    trans_clean = re.sub(r"\s+", " ", transcribed).strip()
+    exp_clean = re.sub(r"\s+", " ", expected_text).strip()
+    if not trans_clean or not exp_clean:
+        return reasons
+
+    # 1. Repetition loop detection (same word or 2-word phrase repeated consecutively)
+    words = trans_clean.split()
+    if len(words) >= 3:
+        for i in range(len(words) - 2):
+            if words[i] == words[i + 1] == words[i + 2]:
+                reasons.append(f"stt_repetition({words[i]!r}*3)")
+                break
+            if i + 3 < len(words) and words[i : i + 2] == words[i + 2 : i + 4]:
+                reasons.append(f"stt_phrase_loop({' '.join(words[i:i+2])!r})")
+                break
+
+    # 2. Transcribed length discrepancy (< 55% or > 160% of expected characters)
+    ratio = len(trans_clean) / max(len(exp_clean), 1)
+    if ratio < 0.55:
+        reasons.append(f"stt_short({ratio:.2f})")
+    elif ratio > 1.60:
+        reasons.append(f"stt_long({ratio:.2f})")
+
+    return reasons
+
+
 def _trim_lead_tail_silence(wav: np.ndarray, sr: int = _SAMPLE_RATE) -> np.ndarray:
     """Trim excessive lead/tail silence, keeping a small natural pad.
 
@@ -461,7 +505,12 @@ def plan_attempts(has_continuation: bool) -> list[tuple[int, bool]]:
     this module can do and it has never once paid off.
     """
     if has_continuation:
-        return [(seed, True) for seed in TTS_SEEDS[:2]] + [(seed, False) for seed in TTS_SEEDS[:2]]
+        return [
+            (TTS_SEEDS[0], True),
+            (TTS_SEEDS[1], True),
+            (TTS_SEEDS[2], False),
+            (TTS_SEEDS[3], False),
+        ]
     return [(seed, False) for seed in TTS_SEEDS[:4]]
 
 
@@ -674,7 +723,8 @@ def synthesize_raon_slide(
     output_path: Path,
     speaker_audio: Path | str | None = None,
     max_seconds: float | None = None,
-) -> Path:
+    verify_stt: bool = False,
+) -> tuple[Path, bool]:
     """Synthesize a slide's script as short, quality-gated segments.
 
     A single pipe.tts() call over a whole slide script (250+ chars) is what
@@ -807,6 +857,9 @@ def synthesize_raon_slide(
     # while every segment reported ok. Only the joined wav can see it.
     if substituted:
         reasons.append(f"{substituted}-silent-substitutions")
+    if (verify_stt or os.environ.get("RAON_VERIFY_STT") == "1") and hasattr(pipe, "stt"):
+        stt_reasons = check_transcription_fidelity(pipe, output_path, text)
+        reasons.extend(stt_reasons)
     ok = not reasons
     # Spell out the retries. "0 failed gate" only means no segment ended on a
     # fallback; it says nothing about how many draws were spent getting there,
