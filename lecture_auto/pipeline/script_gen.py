@@ -147,6 +147,10 @@ def build_script_prompt(
         f"- 목표 발화 시간: 약 {target_seconds:.0f}초 "
         f"(초당 약 {SPEECH_CHARS_PER_SECOND}자 기준, 약 {int(target_seconds * SPEECH_CHARS_PER_SECOND)}자 내외)"
     )
+    lines.append(
+        "- 문장 호흡 원칙: 음성 합성 안정성을 위해 1문장당 70~90자 내외(또는 40~50자 단문 2개)로 작성하세요. "
+        "100자 이상의 긴 만연체나 30자 미만의 단편 문장을 피하고 자연스럽고 또렷한 호흡을 유지하세요."
+    )
     lines.append("")
 
     # Previous slide context
@@ -240,6 +244,10 @@ def build_vision_script_prompt(
     lines.append(
         f"- 목표 발화 시간: 약 {target_seconds:.0f}초 "
         f"(초당 약 {SPEECH_CHARS_PER_SECOND}자 기준, {round(target_chars * 0.9)}~{round(target_chars * 1.1)}자)"
+    )
+    lines.append(
+        "- 문장 호흡 원칙: 음성 합성 안정성을 위해 1문장당 70~90자 내외(또는 40~50자 단문 2개)로 작성하세요. "
+        "100자 이상의 긴 만연체나 30자 미만의 단편 문장을 피하고 자연스럽고 또렷한 호흡을 유지하세요."
     )
     lines.append("")
 

@@ -33,7 +33,7 @@ TTS_TEMPERATURE = 0.85
 # model/temperature/seeds) -- content_hash() callers should include this so a
 # pure code change (e.g. switching segment joins to tts_continuation) forces
 # regeneration instead of silently reusing audio made by the old algorithm.
-TTS_SYNTH_VERSION = "v10-token-budget"
+TTS_SYNTH_VERSION = "v11-sweetspot-80-100"
 
 
 def load_raon_pipeline(
@@ -137,8 +137,11 @@ _MAX_MAX_NEW_TOKENS = 640  # ~51s, comfortably over the longest real segment
 # 1-2 sentence segments, gating each one, and retrying with a different seed
 # on failure keeps every clip short enough for the model to actually finish
 # its sentence and stop.
-_SEGMENT_MIN_CHARS = 60
-_SEGMENT_MAX_CHARS = 120
+# Segmenting sweet spot calibrated from real batches (60-80 chars fails 36%
+# mostly by truncation, 100-130 chars fails 35% by runaway babble/hallucination,
+# while 80-100 chars achieves optimal 15% failure rate).
+_SEGMENT_MIN_CHARS = 75
+_SEGMENT_MAX_CHARS = 105
 # Measured rendering rate of THIS model on the cloned voice -- two gate-passing
 # v7 generations came out at 5.52 and 5.84 chars/s. Not the professor's own rate
 # (6.46 chars/s over his 32min recording); only the TTS rate sets video length.
@@ -155,30 +158,19 @@ _PAUSE_MS = 200
 TTS_SEEDS = (17, 29, 43, 61, 79)
 _TARGET_LUFS = -20.0
 
-# Calibrated against all 48 lecture-01 slides with the professor's own listening
-# labels, replacing an earlier guess made from 18 clips and energy traces alone.
-# He judged slides 006/013/038 (voiced 0.48-0.52, silence 1.2-2.5s) perfectly
-# usable, and 009/018/019/034/041/043/047 clearly broken. The bad ones separate
-# on voiced ratio (0.18-0.43) except 047, which speaks fine but stops dead for
-# 7.5s. So the pair of thresholds below is what splits his two piles exactly:
-# 41 of 48 pass, all three he liked included, none of the seven he rejected.
-# The good/bad gap on voiced ratio is narrow -- 0.48 good against 0.43 bad --
-# so re-derive these from listening labels rather than nudging them by feel.
+# Calibrated quality gate thresholds:
+# Voiced ratio 0.45, max internal silence tightened to 2.8s (catches slide 023's
+# 3.8s and slide 048's 5.0s dead air), max duration ratio tightened from 1.8 to
+# 1.35 (catches babble/stretching hallucination in overlong segments), and min
+# duration ratio raised from 0.70 to 0.78 (catches truncation/early stop in slide 041).
 _MIN_VOICED_RATIO = 0.45
-_MAX_DURATION_RATIO = 1.8
-_MAX_INTERNAL_SILENCE_S = 3.5
+_MAX_DURATION_RATIO = 1.35
+_MAX_INTERNAL_SILENCE_S = 2.8
 
-# Lower duration bound: the gate used to only reject clips that ran LONG, so a
-# generation that stopped after the first sentence of a three-sentence segment
-# passed everything -- high voiced ratio, no long silence, short duration --
-# and silently dropped the rest of the narration. Slide 009 spoke 291 chars in
-# 26.9s against its estimate -- 0.52x at the calibrated 5.7 chars/s -- with a
-# third of its script missing. Back-tested across all 48 v5 wavs: 0.7 catches
-# that truncation, while 0.8 also rejected 3 clean clips (slides 6/14/32 at
-# 0.75-0.79, voiced 0.66-0.68, silence ~1s) that are simply fast. Every other
-# clip below 0.8 independently fails the voiced-ratio or silence check, so the
-# looser floor loses no true catch and costs 3 fewer wasted split-retries.
-_MIN_DURATION_RATIO = 0.7
+# Lower duration bound: catches lost narration when generation terminates early.
+# 0.78 catches truncation (such as slide 041 stopping ~26% short) while allowing
+# naturally fast delivery.
+_MIN_DURATION_RATIO = 0.78
 
 # On gate failure, the same seeds regenerate bit-identically -- torch.manual_seed
 # over a fixed TTS_SEEDS is deterministic, so retrying alone loops forever.
@@ -199,7 +191,7 @@ _MIN_SPLITTABLE_CHARS = 15
 # the normal segment floor, not higher: a 74-char two-sentence segment splits
 # cleanly at its sentence boundary into two usable halves, and depth 1 has
 # already capped the cost multiplication that made splitting expensive.
-_MIN_SPLIT_WORTH_CHARS = _SEGMENT_MIN_CHARS
+_MIN_SPLIT_WORTH_CHARS = 60
 
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?…])\s+")
 # Clause boundaries used only when a failing segment is a single sentence with
@@ -213,18 +205,50 @@ def _to_numpy(audio_tensor, sr_fallback: int = _SAMPLE_RATE) -> np.ndarray:
     return np.array(audio_tensor, dtype=np.float32)
 
 
+def _split_long_sentence(text: str, max_chars: int = _SEGMENT_MAX_CHARS) -> list[str]:
+    """Split a single sentence longer than max_chars at clause boundaries."""
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text]
+    parts = [p.strip() for p in _CLAUSE_SPLIT_RE.split(text) if p.strip()]
+    if len(parts) < 2:
+        return [text]
+    pieces: list[str] = []
+    curr = ""
+    for p in parts:
+        if not curr:
+            curr = p
+            continue
+        cand = f"{curr} {p}"
+        if len(cand) <= max_chars:
+            curr = cand
+        else:
+            pieces.append(curr)
+            curr = p
+    if curr:
+        pieces.append(curr)
+    return pieces
+
+
 def split_into_segments(
     script: str,
     min_chars: int = _SEGMENT_MIN_CHARS,
     max_chars: int = _SEGMENT_MAX_CHARS,
 ) -> list[str]:
-    """Group a script's sentences into ~60-120 char TTS-safe segments.
+    """Group a script's sentences into ~75-105 char TTS-sweetspot segments.
 
-    Never splits mid-sentence -- a single sentence longer than max_chars is
-    kept whole rather than cut, since a mid-sentence break sounds worse than
-    a slightly long segment.
+    Splits overlong single sentences at clause boundaries, and groups sentences
+    into the calibrated 80-100 char sweet spot to prevent both early truncation
+    (<60-80 chars) and runaway babble/hallucination (>100 chars).
     """
-    sentences = [s.strip() for s in _SENTENCE_END_RE.split(script.strip()) if s.strip()]
+    raw_sentences = [s.strip() for s in _SENTENCE_END_RE.split(script.strip()) if s.strip()]
+    sentences: list[str] = []
+    for sent in raw_sentences:
+        if len(sent) > max_chars:
+            sentences.extend(_split_long_sentence(sent, max_chars=max_chars))
+        else:
+            sentences.append(sent)
+
     segments: list[str] = []
     current = ""
     for sent in sentences:
@@ -232,7 +256,7 @@ def split_into_segments(
             current = sent
             continue
         candidate = f"{current} {sent}"
-        if len(current) < min_chars or len(candidate) <= max_chars:
+        if len(candidate) <= max_chars or (len(current) < min_chars and len(candidate) <= max_chars + 10):
             current = candidate
         else:
             segments.append(current)

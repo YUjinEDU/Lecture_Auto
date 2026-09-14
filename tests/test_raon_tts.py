@@ -500,3 +500,60 @@ def test_trace_is_off_by_default(tmp_path, monkeypatch):
     mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
     assert mod._TRACE_PATH is None
     mod._trace(event="attempt")  # must be a no-op, not an error
+
+
+def test_split_into_segments_sweetspot_behavior():
+    # Slide 23 text: 187 chars should cleanly split into two sweetspot segments (85 and 101 chars)
+    # instead of the old 120 + 66 char split.
+    text = (
+        "그래서 포스트잇이 충분히 모이면 우리가 공통적인 속성을 기준으로 묶어봅니다. "
+        "비슷한 내용끼리 모으고, 그 묶음의 특징을 잘 보여주는 제목을 붙이는 거죠. "
+        "중요한 건 보기 좋게 정리하는 데서 끝나지 않는다는 점입니다. "
+        "서로 떨어져 있던 내용이 연결되면서 새로운 관점이나 인사이트가 보이면, "
+        "그것도 별도의 포스트잇에 바로 적어두는 겁니다."
+    )
+    segments = split_into_segments(text)
+    assert len(segments) == 2
+    assert 75 <= len(segments[0]) <= 105
+    assert 75 <= len(segments[1]) <= 105
+
+
+def test_split_into_segments_splits_overlong_sentence_at_clause_boundary():
+    # A single sentence of ~130 chars without period, but with clauses.
+    long_sent = (
+        "디자인씽킹은 현장에서 문제를 겪고 있는 실제 사용자의 고통과 숨겨진 요구사항을 깊이 있게 공감하고, "
+        "이를 바탕으로 문제를 새롭게 정의하며 창의적인 해결 아이디어를 도출하여 프로토타입으로 검증하는 실천적 방법론입니다."
+    )
+    assert len(long_sent) > 105
+    segments = split_into_segments(long_sent)
+    assert len(segments) >= 2
+    assert all(len(s) <= 105 for s in segments)
+    assert "".join(segments).replace(" ", "") == long_sent.replace(" ", "")
+
+
+def test_slide_gate_catches_moderate_truncation_under_78_percent():
+    sr = 24000
+    # Expected 40s (approx 228 chars), but audio is 30s (0.75x ratio).
+    # Old 0.70 threshold let this slip through (the slide 041 defect), 0.78 must catch it.
+    char_count = int(40 * 5.7)
+    clip_30s = _tone(30.0, sr)
+    failures = _slide_gate_failures(clip_30s, sr, char_count=char_count, max_seconds=40.0)
+    assert any(f.startswith("short") for f in failures), failures
+
+
+def test_slide_gate_catches_internal_silence_over_2_8s():
+    sr = 24000
+    # 3.0s internal silence (like slide 023's 3.8s). Old 3.5s limit missed 3.0s, new 2.8s catches it.
+    clip = np.concatenate([_tone(5.0, sr), np.zeros(int(sr * 3.0), dtype=np.float32), _tone(5.0, sr)])
+    failures = _slide_gate_failures(clip, sr, char_count=int(13 * 5.7), max_seconds=20.0)
+    assert any(f.startswith("silence") for f in failures), failures
+
+
+def test_slide_gate_catches_duration_overrun_over_1_35():
+    sr = 24000
+    # max_seconds = 20s. Output is 28s (1.40x).
+    # Old 1.80 limit allowed up to 36s (causing babble/stretching), 1.35 catches 28s.
+    clip_28s = _tone(28.0, sr)
+    failures = _slide_gate_failures(clip_28s, sr, char_count=int(20 * 5.7), max_seconds=20.0)
+    assert any(f.startswith("long") for f in failures), failures
+
