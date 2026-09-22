@@ -37,14 +37,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from lecture_auto.api.routes import download, jobs, scripts, tts  # noqa: E402
-from lecture_auto.api.routes import demo  # noqa: E402
+from lecture_auto.api.routes import demo, download, jobs, review, scripts, tts  # noqa: E402
 
 app.include_router(jobs.router)
 app.include_router(scripts.router)
 app.include_router(tts.router)
 app.include_router(download.router)
 app.include_router(demo.router)
+app.include_router(review.router)
 
 demo_static_dir = Path(__file__).resolve().parents[1] / "demo_static"
 app.mount("/demo/assets", StaticFiles(directory=demo_static_dir), name="demo-assets")

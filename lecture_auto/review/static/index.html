@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive Lecture Player - 복습용 AI 렉처</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main: #0f172a;
+      --bg-card: #1e293b;
+      --bg-hover: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #3b82f6;
+      --accent-blue-hover: #2563eb;
+      --accent-purple: #8b5cf6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --border-color: #334155;
+      --radius-lg: 16px;
+      --radius-md: 10px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Navigation */
+    header {
+      background: rgba(30, 41, 59, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-color);
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 18px;
+    }
+
+    .course-meta h1 {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .course-meta p {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .slide-stepper {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 6px 14px;
+    }
+
+    .slide-stepper button {
+      background: none;
+      border: none;
+      color: var(--text-main);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: background 0.15s;
+    }
+
+    .slide-stepper button:hover {
+      background: var(--bg-hover);
+    }
+
+    .slide-stepper span {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent-blue);
+    }
+
+    /* Main Grid */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 20px;
+      padding: 20px 28px;
+      max-width: 1600px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    @media (max-width: 1024px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Left: Lecture Stage */
+    .lecture-stage {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .slide-container {
+      background: #000;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border-color);
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+    }
+
+    .slide-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    /* Dual Audio Player Card */
+    .player-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .track-tabs {
+      display: flex;
+      background: var(--bg-main);
+      border-radius: var(--radius-md);
+      padding: 4px;
+      border: 1px solid var(--border-color);
+      gap: 4px;
+    }
+
+    .track-tab {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      background: none;
+      color: var(--text-muted);
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+
+    .track-tab.active {
+      background: var(--accent-blue);
+      color: white;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+    }
+
+    .track-tab.active.raw {
+      background: var(--accent-purple);
+      box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+    }
+
+    .player-controls {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .play-btn {
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: var(--accent-blue);
+      border: none;
+      color: white;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+      transition: transform 0.15s, background 0.15s;
+    }
+
+    .play-btn:hover {
+      transform: scale(1.05);
+      background: var(--accent-blue-hover);
+    }
+
+    .timeline-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 6px;
+      background: var(--bg-hover);
+      border-radius: 3px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--accent-blue);
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.1s linear;
+    }
+
+    .time-display {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .speed-select {
+      background: var(--bg-main);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    /* Cards Section */
+    .meta-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    @media (max-width: 768px) {
+      .meta-cards {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .info-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .info-card.key-point {
+      border-left: 4px solid var(--accent-blue);
+    }
+
+    .info-card.exam-hint {
+      border-left: 4px solid var(--accent-amber);
+    }
+
+    .card-label {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .info-card.key-point .card-label {
+      color: var(--accent-blue);
+    }
+
+    .info-card.exam-hint .card-label {
+      color: var(--accent-amber);
+    }
+
+    .card-content {
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--text-main);
+    }
+
+    /* Transcript Box */
+    .script-accordion {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .script-header {
+      padding: 12px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .script-body {
+      padding: 16px 18px;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #cbd5e1;
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* Right: Q&A Side Panel */
+    .qna-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 120px);
+      position: sticky;
+      top: 90px;
+    }
+
+    .qna-header {
+      padding: 18px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .qna-header-avatar {
+      width: 32px;
+      height: 32px;
+      background: var(--accent-emerald);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    .qna-header-title h3 {
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .qna-header-title span {
+      font-size: 11px;
+      color: var(--accent-emerald);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .qna-chips {
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-bottom: 1px solid var(--border-color);
+      background: rgba(15, 23, 42, 0.4);
+    }
+
+    .chip-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .qna-chip {
+      background: var(--bg-hover);
+      border: 1px solid var(--border-color);
+      color: #cbd5e1;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .qna-chip:hover {
+      background: var(--accent-blue);
+      color: white;
+      border-color: var(--accent-blue);
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .msg {
+      max-width: 85%;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: var(--accent-blue);
+      color: white;
+      border-bottom-right-radius: 2px;
+    }
+
+    .msg.bot {
+      align-self: flex-start;
+      background: var(--bg-hover);
+      color: var(--text-main);
+      border-bottom-left-radius: 2px;
+      border: 1px solid var(--border-color);
+    }
+
+    .msg-time {
+      font-size: 10px;
+      opacity: 0.6;
+      margin-top: 4px;
+      text-align: right;
+    }
+
+    .qna-input-box {
+      padding: 14px;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      gap: 8px;
+    }
+
+    .qna-input-box input {
+      flex: 1;
+      background: var(--bg-main);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text-main);
+      font-size: 13px;
+      outline: none;
+    }
+
+    .qna-input-box input:focus {
+      border-color: var(--accent-blue);
+    }
+
+    .qna-input-box button {
+      background: var(--accent-blue);
+      border: none;
+      color: white;
+      border-radius: 8px;
+      padding: 0 16px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .qna-input-box button:hover {
+      background: var(--accent-blue-hover);
+    }
+
+    .qna-input-box button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="brand-logo">📚</div>
+      <div class="course-meta">
+        <h1 id="headerCourseTitle">AI활용현업문제해결 (2025)</h1>
+        <p id="headerLectureTitle">03. 공감과 디브리핑 — 복습용 인터랙티브 플레이어</p>
+      </div>
+    </div>
+    <div class="slide-stepper">
+      <button id="prevSlideBtn">◀</button>
+      <span id="slideIndicator">Slide 31 / 33</span>
+      <button id="nextSlideBtn">▶</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Left Column: Lecture Stage -->
+    <section class="lecture-stage">
+      <!-- Slide Viewer -->
+      <div class="slide-container">
+        <img id="slideImg" src="/review/media/slides/prototype_slide_31.png" alt="Lecture Slide">
+      </div>
+
+      <!-- Dual Audio Player -->
+      <div class="player-card">
+        <div class="track-tabs">
+          <button class="track-tab active" id="tabAiAudio">
+            <span>🤖 AI 90초 핵심 과외</span>
+            <small style="opacity:0.8;">(시험/핵심 압축)</small>
+          </button>
+          <button class="track-tab" id="tabRawAudio">
+            <span>🎙️ 실제 수업 현장 원본</span>
+            <small style="opacity:0.8;">(23:00~26:30)</small>
+          </button>
+        </div>
+
+        <div class="player-controls">
+          <button class="play-btn" id="playBtn">▶</button>
+          <div class="timeline-container">
+            <div class="progress-bar-bg" id="progressBarBg">
+              <div class="progress-bar-fill" id="progressBarFill"></div>
+            </div>
+            <div class="time-display">
+              <span id="currentTime">00:00</span>
+              <span id="totalDuration">01:15</span>
+            </div>
+          </div>
+          <select class="speed-select" id="speedSelect">
+            <option value="1.0">1.0x</option>
+            <option value="1.25" selected>1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2.0">2.0x</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Metadata Cards -->
+      <div class="meta-cards">
+        <div class="info-card key-point">
+          <div class="card-label">📌 핵심 개념 요약</div>
+          <div class="card-content" id="cardKeyPoint">
+            쓰레기 투기는 단순 시민의식 문제가 아니라, 불편한 처리 환경과 죄책감·심리적 안정감이 얽힌 사용자 문제입니다.
+          </div>
+        </div>
+        <div class="info-card exam-hint">
+          <div class="card-label">🎯 교수님 강조 (시험/과제 힌트)</div>
+          <div class="card-content" id="cardExamHint">
+            공감지도 각 항목을 구분하고, 특히 남들이 버린 곳에 버리는 행동의 이유를 '심리적 안정감'으로 설명하는 것이 핵심입니다.
+          </div>
+        </div>
+      </div>
+
+      <!-- Full Script Accordion -->
+      <div class="script-accordion">
+        <div class="script-header" id="scriptToggle">
+          <span>📝 90초 해설 대본 전문 보기</span>
+          <span id="scriptArrow">▼</span>
+        </div>
+        <div class="script-body" id="scriptBody">
+          자, 이 공감지도에서 중요한 건 쓰레기 문제를 단순히 ‘시민의식 부족’으로 보면 안 된다는 거예요. 당사자는 버릴 곳이 마땅치 않고 귀찮은 데다, 버리고 나서도 찝찝하죠. 집 입구에는 쓰레기와 냄새, 파리가 보이고, 주변에서는 CCTV 감시나 경고 딱지 이야기를 듣습니다. 그래서 실제 행동은 주로 밤에 몰래 버리거나, 남들이 이미 버린 곳에 같이 버리는 형태로 나타나죠. 여기서 남들이 버린 곳에 버리는 건 단순한 모방이 아니라 심리적 안정감 때문이에요. ‘나만 잘못하는 건 아니다’라는 느낌이 들거든요. Pain은 버릴 곳을 찾는 스트레스와 죄책감이고, Gain은 집 가까이에서 쉽고 편하게, 죄책감 없이 처리하는 겁니다. 자, 이 생각·감정·환경·행동·고통·욕구를 종합해서 다음 단계인 문제 정의로 넘어가야 하겠죠.
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Interactive Q&A Panel -->
+    <aside class="qna-panel">
+      <div class="qna-header">
+        <div class="qna-header-avatar">🎓</div>
+        <div class="qna-header-title">
+          <h3>교수님 AI 튜터 Q&A</h3>
+          <span>● 수업 내용 기반 실시간 답변</span>
+        </div>
+      </div>
+
+      <div class="qna-chips">
+        <span class="chip-label">💡 자주 묻는 질문 (클릭해서 물어보기)</span>
+        <button class="qna-chip" onclick="askChip(this)">남들이 버린 곳에 버리면 왜 심리적 안정감이 드나요?</button>
+        <button class="qna-chip" onclick="askChip(this)">Pain과 Gain을 뽑아서 다음 문제 정의로 어떻게 연결해요?</button>
+        <button class="qna-chip" onclick="askChip(this)">이 슬라이드에서 시험에 가장 잘 나오는 포인트가 뭐예요?</button>
+      </div>
+
+      <div class="chat-messages" id="chatMessages">
+        <div class="msg bot">
+          안녕하세요! 이번 슬라이드(공감지도 사례: 쓰레기 문제)를 복습하면서 이해가 안 가는 점이 있으면 언제든 편하게 물어보세요.
+          <div class="msg-time">오후 2:15</div>
+        </div>
+      </div>
+
+      <form class="qna-input-box" id="qnaForm">
+        <input type="text" id="questionInput" placeholder="이 슬라이드에 대해 질문해 보세요..." autocomplete="off">
+        <button type="submit" id="sendBtn">질문</button>
+      </form>
+    </aside>
+  </main>
+
+  <audio id="audioElement" preload="auto"></audio>
+
+  <script>
+    // State
+    const slideData = {
+      slideIndex: 30,
+      slideNumber: 31,
+      title: "공감 지도사례: 쓰레기 문제",
+      aiAudioUrl: "/review/media/audio/prototype_slide_31_ai.wav",
+      rawAudioUrl: "/review/media/audio/prototype_slide_31_raw.mp3",
+      currentTrack: "ai" // 'ai' or 'raw'
+    };
+
+    const audio = document.getElementById("audioElement");
+    const playBtn = document.getElementById("playBtn");
+    const tabAi = document.getElementById("tabAiAudio");
+    const tabRaw = document.getElementById("tabRawAudio");
+    const progressBarFill = document.getElementById("progressBarFill");
+    const progressBarBg = document.getElementById("progressBarBg");
+    const currentTimeEl = document.getElementById("currentTime");
+    const totalDurationEl = document.getElementById("totalDuration");
+    const speedSelect = document.getElementById("speedSelect");
+
+    // Audio setup
+    function setTrack(track) {
+      slideData.currentTrack = track;
+      const isAi = track === "ai";
+      tabAi.classList.toggle("active", isAi);
+      tabRaw.classList.toggle("active", !isAi);
+      tabRaw.classList.toggle("raw", !isAi);
+
+      const wasPlaying = !audio.paused;
+      audio.src = isAi ? slideData.aiAudioUrl : slideData.rawAudioUrl;
+      audio.load();
+      if (wasPlaying) {
+        audio.play();
+      }
+      playBtn.textContent = audio.paused ? "▶" : "⏸";
+    }
+
+    tabAi.addEventListener("click", () => setTrack("ai"));
+    tabRaw.addEventListener("click", () => setTrack("raw"));
+
+    playBtn.addEventListener("click", () => {
+      if (audio.paused) {
+        audio.play();
+        playBtn.textContent = "⏸";
+      } else {
+        audio.pause();
+        playBtn.textContent = "▶";
+      }
+    });
+
+    audio.addEventListener("timeupdate", () => {
+      if (!audio.duration) return;
+      const pct = (audio.currentTime / audio.duration) * 100;
+      progressBarFill.style.width = pct + "%";
+      currentTimeEl.textContent = formatTime(audio.currentTime);
+      totalDurationEl.textContent = formatTime(audio.duration);
+    });
+
+    audio.addEventListener("ended", () => {
+      playBtn.textContent = "▶";
+      progressBarFill.style.width = "0%";
+    });
+
+    progressBarBg.addEventListener("click", (e) => {
+      if (!audio.duration) return;
+      const rect = progressBarBg.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const pct = clickX / rect.width;
+      audio.currentTime = pct * audio.duration;
+    });
+
+    speedSelect.addEventListener("change", (e) => {
+      audio.playbackRate = parseFloat(e.target.value);
+    });
+
+    function formatTime(sec) {
+      if (isNaN(sec)) return "00:00";
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    // Init track
+    setTrack("ai");
+
+    // Q&A Chat
+    const qnaForm = document.getElementById("qnaForm");
+    const questionInput = document.getElementById("questionInput");
+    const chatMessages = document.getElementById("chatMessages");
+    const sendBtn = document.getElementById("sendBtn");
+
+    function askChip(btn) {
+      questionInput.value = btn.textContent;
+      qnaForm.dispatchEvent(new Event("submit"));
+    }
+
+    qnaForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const query = questionInput.value.trim();
+      if (!query) return;
+
+      appendMsg("user", query);
+      questionInput.value = "";
+      sendBtn.disabled = true;
+
+      const loadingMsg = appendMsg("bot", "교수님이 답변을 작성 중입니다... ✍️");
+
+      try {
+        const res = await fetch("/review/qna", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slide_index: slideData.slideIndex,
+            question: query
+          })
+        });
+
+        const data = await res.json();
+        loadingMsg.textContent = data.answer_text;
+      } catch (err) {
+        loadingMsg.textContent = "답변을 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.";
+      } finally {
+        sendBtn.disabled = false;
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
+    });
+
+    function appendMsg(sender, text) {
+      const msg = document.createElement("div");
+      msg.className = `msg ${sender}`;
+      msg.textContent = text;
+      chatMessages.appendChild(msg);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return msg;
+    }
+
+    // Script Toggle
+    const scriptToggle = document.getElementById("scriptToggle");
+    const scriptBody = document.getElementById("scriptBody");
+    const scriptArrow = document.getElementById("scriptArrow");
+    scriptToggle.addEventListener("click", () => {
+      const isHidden = scriptBody.style.display === "none";
+      scriptBody.style.display = isHidden ? "block" : "none";
+      scriptArrow.textContent = isHidden ? "▼" : "▲";
+    });
+  </script>
+</body>
+</html>

@@ -97,3 +97,32 @@ def test_slice_raw_audio_mock(monkeypatch, tmp_path):
     assert result == out_file
     mock_run.assert_called_once()
 
+
+def test_review_api_endpoints(monkeypatch):
+    from fastapi.testclient import TestClient
+    from lecture_auto.api.main import app
+
+    test_client = TestClient(app)
+
+    # 1. GET /review (HTML)
+    res = test_client.get("/review")
+    assert res.status_code == 200
+    assert "<title>Interactive Lecture Player" in res.text
+
+    # 2. GET /review/data (JSON)
+    res = test_client.get("/review/data")
+    assert res.status_code == 200
+    data = res.json()
+    assert "slides" in data
+    assert data["slides"][0]["slide_number"] == 31
+
+    # 3. POST /review/qna
+    monkeypatch.setattr(
+        "lecture_auto.api.routes.review.answer_student_question",
+        lambda **kwargs: "학생, 좋은 질문이에요! 이 부분은..."
+    )
+    res = test_client.post("/review/qna", json={"slide_index": 30, "question": "질문있어요!"})
+    assert res.status_code == 200
+    assert "좋은 질문이에요" in res.json()["answer_text"]
+
+
