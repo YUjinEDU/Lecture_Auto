@@ -19,7 +19,7 @@ import numpy as np
 import soundfile as sf
 
 from lecture_auto.pipeline.approval import approve, load_approvals, save_approvals, verify_approved
-from lecture_auto.pipeline.cache import content_hash, write_cache_hash
+from lecture_auto.pipeline.cache import content_hash, qc_path_for, write_cache_hash
 from lecture_auto.schemas.lecture_plan import LecturePlan
 from lecture_auto.schemas.manifest import FontInfo, ShapeRecord, SlideRecord, TextParagraph, TextRun
 from lecture_auto.schemas.production import ApprovalManifest
@@ -30,10 +30,14 @@ from scripts.batch_generate_lectures import (
     _draft_or_final_path,
     _generate_section_scripts_cached,
     _invalid_slides,
+    _lecture_output_mp4,
+    _report_path,
     _resolve_pdf_input,
     _run_slide_tts,
     _synthesize_all_slides,
+    _timeline_path,
     _tts_cache_key,
+    compute_lecture_status,
     main,
 )
 
@@ -551,7 +555,6 @@ _FAKE_LECTURE = {
     "name": "test",
     "subject": "test",
     "pdf": Path("does-not-matter.pdf"),
-    "output_mp4": Path("output/testlec.mp4"),
 }
 
 
@@ -642,7 +645,9 @@ def test_cli_assemble_only_does_not_load_llm_or_tts_model(monkeypatch, tmp_path)
     mock_llm.assert_not_called()
     mock_tts.assert_not_called()
     mock_assemble.assert_called_once()
-    assert (tmp_path / "output" / "testlec.timeline.json").exists()
+    # S8-a: per-lecture output/<id>/ subfolder, not a flat output/<id>.timeline.json.
+    assert (tmp_path / "output" / "testlec" / "testlec.timeline.json").exists()
+    assert (tmp_path / "output" / "testlec" / "testlec.report.md").exists()
 
 
 def test_cli_only_ambiguous_match_errors_for_approval_command(monkeypatch, tmp_path):
@@ -880,3 +885,212 @@ def test_lectures_new_entries_selectable_by_only_index():
     # SPEC S3-c: "--only 인덱스로도 선택 가능해야 함(6~9)" -- 1-based index.
     new_ids = {lec["id"] for lec in LECTURES if "pptx" in lec}
     assert {LECTURES[i - 1]["id"] for i in range(6, 10)} == new_ids
+
+
+# ---------------------------------------------------------------------------
+# S8-a: output/<id>/<id>.mp4 layout, stale-DRAFT cleanup
+# ---------------------------------------------------------------------------
+
+def test_lecture_output_mp4_nested_under_id():
+    assert _lecture_output_mp4("06_lec", Path("output")) == Path("output/06_lec/06_lec.mp4")
+
+
+def test_assemble_final_writes_nested_folder_with_timeline_and_report(tmp_path):
+    """Required test 1: final assembly path is output/<id>/<id>.mp4, with
+    the timeline and report as siblings in the same lecture folder."""
+    lec_id = "lec1"
+    work_dir = tmp_path / "work"
+    audio_dir = work_dir / "audio"
+    video_dir = work_dir / "video"
+    audio_dir.mkdir(parents=True)
+
+    wav1 = audio_dir / "slide_001.wav"
+    _write_real_wav(wav1, 1.0)
+    write_cache_hash(wav1, _tts_cache_key("s1", b"ref", 5.0))
+    png1 = tmp_path / "slide_001.png"
+    png1.write_bytes(b"PNG")
+
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+    out_mp4 = _lecture_output_mp4(lec_id, tmp_path / "output")
+    with patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+        target = _assemble_with_approvals(
+            lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
+        )
+
+    assert target == out_mp4 == tmp_path / "output" / "lec1" / "lec1.mp4"
+    assert _timeline_path(target).exists()
+    assert _report_path(target).exists()
+    mock_assemble.assert_called_once()
+
+
+def test_assemble_final_deletes_stale_draft_trio(tmp_path):
+    """Required test 2 (first half): assembling a FINAL video removes an old
+    _DRAFT.mp4 + its timeline + report from the same folder (regenerable)."""
+    lec_id = "lec1"
+    work_dir = tmp_path / "work"
+    audio_dir = work_dir / "audio"
+    video_dir = work_dir / "video"
+    audio_dir.mkdir(parents=True)
+    out_dir = tmp_path / "output" / lec_id
+    out_dir.mkdir(parents=True)
+
+    wav1 = audio_dir / "slide_001.wav"
+    _write_real_wav(wav1, 1.0)
+    write_cache_hash(wav1, _tts_cache_key("s1", b"ref", 5.0))
+    png1 = tmp_path / "slide_001.png"
+    png1.write_bytes(b"PNG")
+
+    out_mp4 = out_dir / f"{lec_id}.mp4"
+    draft_mp4 = out_dir / f"{lec_id}_DRAFT.mp4"
+    draft_mp4.write_bytes(b"OLD-DRAFT")
+    draft_timeline = _timeline_path(draft_mp4)
+    draft_timeline.write_text("{}", encoding="utf-8")
+    draft_report = _report_path(draft_mp4)
+    draft_report.write_text("old report", encoding="utf-8")
+
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+    with patch("scripts.batch_generate_lectures.assemble_video"):
+        target = _assemble_with_approvals(
+            lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
+        )
+
+    assert target == out_mp4  # everything valid -> final
+    assert not draft_mp4.exists()
+    assert not draft_timeline.exists()
+    assert not draft_report.exists()
+
+
+def test_assemble_draft_does_not_touch_existing_final(tmp_path):
+    """Required test 2 (second half): assembling a DRAFT (invalid,
+    unapproved audio) must never touch an existing final MP4/timeline/report
+    (S1-e rule, extended to the new report.md)."""
+    lec_id = "lec1"
+    work_dir = tmp_path / "work"
+    audio_dir = work_dir / "audio"
+    video_dir = work_dir / "video"
+    audio_dir.mkdir(parents=True)
+    out_dir = tmp_path / "output" / lec_id
+    out_dir.mkdir(parents=True)
+
+    wav1 = audio_dir / "slide_001.wav"
+    _write_real_wav(wav1, 1.0)
+    # No .hash written -> invalid and unapproved -> DRAFT.
+    png1 = tmp_path / "slide_001.png"
+    png1.write_bytes(b"PNG")
+
+    out_mp4 = out_dir / f"{lec_id}.mp4"
+    out_mp4.write_bytes(b"OLD-FINAL")
+    final_timeline = _timeline_path(out_mp4)
+    final_timeline.write_text("final timeline", encoding="utf-8")
+    final_report = _report_path(out_mp4)
+    final_report.write_text("final report", encoding="utf-8")
+
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+    with patch("scripts.batch_generate_lectures.assemble_video"):
+        target = _assemble_with_approvals(
+            lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
+        )
+
+    assert target == out_dir / f"{lec_id}_DRAFT.mp4"
+    assert out_mp4.read_bytes() == b"OLD-FINAL"
+    assert final_timeline.read_text(encoding="utf-8") == "final timeline"
+    assert final_report.read_text(encoding="utf-8") == "final report"
+
+
+# ---------------------------------------------------------------------------
+# S8-c: --status
+# ---------------------------------------------------------------------------
+
+def test_compute_lecture_status_counts(tmp_path):
+    """Required test 4 (pure-function half): known on-disk layout -> exact
+    counts. qc-missing is counted separately from qc-fail (SPEC: qc없음 is
+    not counted as a failure)."""
+    lec_id = "statlec"
+    base_work = tmp_path / "data" / "work_batch"
+    output_dir = tmp_path / "output"
+    work_dir = base_work / lec_id
+    rendered_dir = work_dir / "rendered"
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    for d in (rendered_dir, scripts_dir, audio_dir):
+        d.mkdir(parents=True)
+
+    for n in (1, 2, 3):
+        (rendered_dir / f"slide_{n:03d}.png").write_bytes(b"PNG")
+    for n in (1, 2):
+        (scripts_dir / f"script_{n:03d}.json").write_text("{}", encoding="utf-8")
+
+    wav1 = audio_dir / "slide_001.wav"
+    wav1.write_bytes(b"a")
+    qc_path_for(wav1).write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+    wav2 = audio_dir / "slide_002.wav"
+    wav2.write_bytes(b"b")
+    qc_path_for(wav2).write_text(json.dumps({"ok": False}), encoding="utf-8")
+
+    wav3 = audio_dir / "slide_003.wav"
+    wav3.write_bytes(b"c")  # no qc.json -> qc_missing, not qc_fail
+
+    (audio_dir / "slide_002.cand.wav").write_bytes(b"CAND")  # candidate waiting
+
+    manifest = approve(ApprovalManifest(lecture_id=lec_id), audio_dir, 1, source="existing", gate_ok=True)
+    save_approvals(work_dir, manifest)
+
+    st = compute_lecture_status({"id": lec_id}, base_work, output_dir)
+
+    assert st.slides == 3
+    assert st.scripts == 2
+    assert st.audio == 3
+    assert st.qc_fail == 1
+    assert st.qc_missing == 1
+    assert st.candidates == 1
+    assert st.approved == 1
+    assert st.video_state == "none"
+    assert st.video_path is None
+
+
+def test_compute_lecture_status_finds_final_and_draft_video(tmp_path):
+    base_work = tmp_path / "data" / "work_batch"
+    output_dir = tmp_path / "output"
+
+    assert compute_lecture_status({"id": "lec_a"}, base_work, output_dir).video_state == "none"
+
+    lec_out_dir = output_dir / "lec_a"
+    lec_out_dir.mkdir(parents=True)
+    (lec_out_dir / "lec_a_DRAFT.mp4").write_bytes(b"D")
+    st_draft = compute_lecture_status({"id": "lec_a"}, base_work, output_dir)
+    assert st_draft.video_state == "draft"
+    assert st_draft.video_path == lec_out_dir / "lec_a_DRAFT.mp4"
+
+    (lec_out_dir / "lec_a.mp4").write_bytes(b"F")
+    st_final = compute_lecture_status({"id": "lec_a"}, base_work, output_dir)
+    assert st_final.video_state == "final"
+    assert st_final.video_path == lec_out_dir / "lec_a.mp4"
+
+
+def test_cli_status_does_not_load_models_or_write_files(monkeypatch, tmp_path, capsys):
+    """Required test 4 (CLI half): --status reads disk only, loads no
+    TTS/LLM model, and writes no files."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+
+    rendered_dir = tmp_path / "data" / "work_batch" / "testlec" / "rendered"
+    rendered_dir.mkdir(parents=True)
+    (rendered_dir / "slide_001.png").write_bytes(b"PNG")
+
+    before = {p for p in tmp_path.rglob("*") if p.is_file()}
+
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--status"])
+    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
+         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts:
+        main()
+
+    mock_llm.assert_not_called()
+    mock_tts.assert_not_called()
+
+    after = {p for p in tmp_path.rglob("*") if p.is_file()}
+    assert after == before  # no file created/modified by --status
+
+    out = capsys.readouterr().out
+    assert "testlec" in out
+    assert "영상 없음" in out
