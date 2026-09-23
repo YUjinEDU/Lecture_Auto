@@ -188,6 +188,14 @@ def _run_slide_tts(
     ``slide_NNN.cand.wav`` sibling instead -- the existing WAV and its
     ``.hash`` sidecar are **never** touched, success or failure. Only when
     *out_wav* does not exist yet is it written to directly, same as before.
+
+    If a candidate for the *current* cache key already exists (same file +
+    recorded ``cache_key``) and ``force_regen`` is False, synthesis is
+    skipped and the recorded ``ok`` is returned -- otherwise every full
+    re-run after S1-d ships would re-synthesize all ~77 slides as candidates
+    every single time, since S1-d invalidates every existing ``.hash`` at
+    once. Seeds are fixed, so re-running an unforced, already-recorded
+    candidate (pass or fail) would just reproduce the same result.
     """
     script_text = sc.get("script", "")
 
@@ -198,6 +206,21 @@ def _run_slide_tts(
     if out_wav.exists():
         cand_wav = out_wav.with_name(out_wav.stem + ".cand.wav")
         cand_json = out_wav.with_name(out_wav.stem + ".cand.wav.json")
+
+        # A prior run may have already synthesized a candidate for this exact
+        # cache key (very likely right after S1-d ships, since that change
+        # invalidates every existing .hash at once). Seeds are fixed, so
+        # re-running would just reproduce the same result at real GPU cost --
+        # skip unless --slides explicitly forces it.
+        if not force_regen and cand_wav.exists() and cand_wav.stat().st_size > 0 and cand_json.exists():
+            try:
+                recorded = json.loads(cand_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                recorded = None
+            if recorded is not None and recorded.get("cache_key") == cache_key:
+                logger.info("Slide %d: candidate up to date, skipping", n)
+                return bool(recorded.get("ok"))
+
         logger.info(
             "Slide %d: existing audio present but cache invalid/forced -- "
             "synthesizing candidate %s (existing %s left untouched)",
@@ -514,7 +537,7 @@ def process_lecture(
 
     if failed_slides:
         logger.error(
-            "%d/%d slides failed the quality gate and were not cached: %s",
+            "%d/%d slides failed the quality gate this run (candidates or new audio): %s",
             len(failed_slides), slide_count, failed_slides,
         )
     else:

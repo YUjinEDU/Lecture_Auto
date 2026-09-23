@@ -124,6 +124,105 @@ def test_run_slide_tts_candidate_preserves_existing_wav_on_failure(tmp_path):
     }
 
 
+def _make_existing_candidate(out_wav: Path, cache_key: str, ok: bool) -> Path:
+    """Set up an existing out_wav plus an already-recorded slide_NNN.cand.wav
+    (+ .cand.wav.json), as a prior run would have left behind."""
+    out_wav.write_bytes(b"EXISTING-MAIN-AUDIO")
+    cand_wav = out_wav.with_name(out_wav.stem + ".cand.wav")
+    cand_wav.write_bytes(b"EXISTING-CANDIDATE-AUDIO")
+    cand_json = out_wav.with_name(out_wav.stem + ".cand.wav.json")
+    cand_json.write_text(
+        json.dumps({"ok": ok, "cache_key": cache_key}, ensure_ascii=False), encoding="utf-8"
+    )
+    return cand_wav
+
+
+def test_run_slide_tts_reuses_matching_candidate_ok_true(tmp_path):
+    """A candidate already recorded for the current cache key (ok=True) is
+    reused -- no wasted GPU re-synthesis of an unchanged result."""
+    out_wav = tmp_path / "slide_005.wav"
+    _make_existing_candidate(out_wav, cache_key="same-key", ok=True)
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        ok = _run_slide_tts(
+            tts_pipe=object(),
+            n=5,
+            sc={"script": "x", "target_seconds": 5.0},
+            out_wav=out_wav,
+            cache_key="same-key",
+            force_regen=False,
+        )
+
+    assert ok is True
+    mock_synth.assert_not_called()
+
+
+def test_run_slide_tts_reuses_matching_candidate_ok_false(tmp_path):
+    """Same reuse when the recorded candidate FAILED the gate -- seeds are
+    fixed, so an unforced re-run would just reproduce the same failure."""
+    out_wav = tmp_path / "slide_006.wav"
+    _make_existing_candidate(out_wav, cache_key="same-key", ok=False)
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        ok = _run_slide_tts(
+            tts_pipe=object(),
+            n=6,
+            sc={"script": "x", "target_seconds": 5.0},
+            out_wav=out_wav,
+            cache_key="same-key",
+            force_regen=False,
+        )
+
+    assert ok is False
+    mock_synth.assert_not_called()
+
+
+def test_run_slide_tts_resynthesizes_when_candidate_cache_key_differs(tmp_path):
+    """A recorded candidate for a DIFFERENT (stale) cache key does not count
+    as up to date -- must re-synthesize."""
+    out_wav = tmp_path / "slide_007.wav"
+    cand_wav = _make_existing_candidate(out_wav, cache_key="old-key", ok=True)
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        mock_synth.return_value = (cand_wav, True)
+        ok = _run_slide_tts(
+            tts_pipe=object(),
+            n=7,
+            sc={"script": "x", "target_seconds": 5.0},
+            out_wav=out_wav,
+            cache_key="new-key",
+            force_regen=False,
+        )
+
+    assert ok is True
+    mock_synth.assert_called_once()
+    assert mock_synth.call_args.args[2] == cand_wav
+    cand_json = out_wav.with_name("slide_007.cand.wav.json")
+    assert json.loads(cand_json.read_text(encoding="utf-8"))["cache_key"] == "new-key"
+
+
+def test_run_slide_tts_force_regen_resynthesizes_even_if_candidate_key_matches(tmp_path):
+    """--slides forces regeneration even when the existing candidate already
+    matches the current cache key."""
+    out_wav = tmp_path / "slide_008.wav"
+    cand_wav = _make_existing_candidate(out_wav, cache_key="same-key", ok=True)
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        mock_synth.return_value = (cand_wav, True)
+        ok = _run_slide_tts(
+            tts_pipe=object(),
+            n=8,
+            sc={"script": "x", "target_seconds": 5.0},
+            out_wav=out_wav,
+            cache_key="same-key",
+            force_regen=True,
+        )
+
+    assert ok is True
+    mock_synth.assert_called_once()
+    assert mock_synth.call_args.args[2] == cand_wav
+
+
 def test_run_slide_tts_direct_write_when_out_wav_missing(tmp_path):
     """No existing WAV -- synthesis writes straight to out_wav, as before."""
     out_wav = tmp_path / "slide_002.wav"
