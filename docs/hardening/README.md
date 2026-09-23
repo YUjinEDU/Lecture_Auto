@@ -47,7 +47,7 @@ hardening/
 
 ## 완료된 운영 작업
 
-- ✅ D-09 GitHub 이력 정리 완료(2026-09-23): 민감 파일 이력 0건, force push `b762928 → 7ad63d4`, 커밋 해시 전부 변경(문서 내 해시는 새 해시로 치환). 원본 이력 백업: `../Lecture_Auto_mirror_backup_20260923.git`
+- ✅ D-09 GitHub 이력 정리 완료(2026-09-23): 민감 파일 이력 0건, force push (GitHub 이전 HEAD `983d1e8`, 재작성 전 해시) → `7ad63d4`, 커밋 해시 전부 변경(문서 내 해시는 새 해시로 치환). 원본 이력 백업: `../Lecture_Auto_mirror_backup_20260923.git`
 
 ## 안전장치
 
