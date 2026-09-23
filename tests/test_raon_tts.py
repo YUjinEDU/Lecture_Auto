@@ -588,3 +588,165 @@ def test_check_transcription_fidelity_catches_repetition_and_discrepancy(tmp_pat
     assert check_transcription_fidelity(fake_pipe, audio_path, script) == []
 
 
+def test_evaluate_transcription_stt_exception_is_unavailable(tmp_path):
+    from unittest.mock import MagicMock
+
+    from lecture_auto.pipeline.raon_tts import (
+        check_transcription_fidelity,
+        evaluate_transcription,
+    )
+
+    fake_pipe = MagicMock()
+    fake_pipe.stt.side_effect = RuntimeError("stt boom")
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+
+    check = evaluate_transcription(fake_pipe, audio_path, "아무 문장입니다.")
+    assert check.status == "unavailable"
+    assert check.reasons == []
+    assert check.transcript is None
+    assert check.cer is None
+    # Existing gate semantics unchanged: exception -> [].
+    assert check_transcription_fidelity(fake_pipe, audio_path, "아무 문장입니다.") == []
+
+
+def test_evaluate_transcription_empty_transcript_is_unavailable(tmp_path):
+    from unittest.mock import MagicMock
+
+    from lecture_auto.pipeline.raon_tts import evaluate_transcription
+
+    fake_pipe = MagicMock()
+    fake_pipe.stt.return_value = "   "
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+
+    check = evaluate_transcription(fake_pipe, audio_path, "아무 문장입니다.")
+    assert check.status == "unavailable"
+    assert check.cer is None
+
+    # Empty expected text (빈 기대문) is unavailable too, even with a real transcript.
+    fake_pipe.stt.return_value = "실제 전사된 문장입니다."
+    check2 = evaluate_transcription(fake_pipe, audio_path, "   ")
+    assert check2.status == "unavailable"
+    assert check2.cer is None
+
+
+def test_evaluate_transcription_content_mismatch_passes_but_records_high_cer(tmp_path):
+    """Similar length, different content: gate still passes (no reason triggers)
+    but CER records the content divergence -- confirms CER catches what the
+    length-ratio/repetition checks miss."""
+    from unittest.mock import MagicMock
+
+    from lecture_auto.pipeline.raon_tts import evaluate_transcription
+
+    fake_pipe = MagicMock()
+    fake_pipe.stt.return_value = "학생들이 아이디어를 검증하는 과정이 중요합니다."
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+
+    check = evaluate_transcription(fake_pipe, audio_path, "학생들이 문제를 이해하는 과정이 중요합니다.")
+    assert check.status == "pass"
+    assert check.reasons == []
+    assert check.cer is not None
+    assert check.cer >= 0.2
+
+
+def test_evaluate_transcription_identical_modulo_punctuation_has_zero_cer(tmp_path):
+    from unittest.mock import MagicMock
+
+    from lecture_auto.pipeline.raon_tts import evaluate_transcription
+
+    fake_pipe = MagicMock()
+    script = "자 다음으로 보실 내용은 디자인씽킹의 핵심 원리입니다."
+    # Differs from `script` by whitespace (extra space, a removed space) and
+    # punctuation (comma, exclamation mark) only -- content is identical.
+    fake_pipe.stt.return_value = "자  다음으로 보실 내용은,디자인씽킹의 핵심원리입니다!"
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+
+    check = evaluate_transcription(fake_pipe, audio_path, script)
+    assert check.status == "pass"
+    assert check.cer == 0.0
+
+
+def test_evaluate_transcription_repetition_is_fail_with_legacy_reason_format(tmp_path):
+    from unittest.mock import MagicMock
+
+    from lecture_auto.pipeline.raon_tts import evaluate_transcription
+
+    fake_pipe = MagicMock()
+    fake_pipe.stt.return_value = "우리가 문제를 해결해야 하는데 그렇죠 그렇죠 그렇죠 계속해서 진행합니다."
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+
+    check = evaluate_transcription(fake_pipe, audio_path, "우리가 문제를 해결해야 합니다.")
+    assert check.status == "fail"
+    # Exact legacy reason-string format (기존 문자열 형식 유지), not just a substring match.
+    assert "stt_repetition('그렇죠'*3)" in check.reasons
+
+
+def test_compute_cer_matches_spec_examples():
+    from lecture_auto.pipeline.raon_tts import compute_cer
+
+    assert compute_cer("abc", "abd") == 1 / 3
+    assert compute_cer("abc", "ab") == 1 / 3
+    assert compute_cer("abc", "abcd") == 1 / 3
+
+
+def test_compute_cer_empty_reference_is_none():
+    from lecture_auto.pipeline.raon_tts import compute_cer
+
+    assert compute_cer("", "anything") is None
+    assert compute_cer("   .,!?", "anything") is None
+
+
+def test_verify_stt_records_status_and_cer_in_slide_trace(tmp_path, monkeypatch):
+    """synthesize_raon_slide(verify_stt=True) must not change ok/gate behavior
+    (D-08/SPEC_S4a: CER is recorded, not gated) but must surface stt_status
+    and stt_cer on the slide's trace line for the web layer to read later."""
+    import importlib
+    import json as _json
+
+    trace = tmp_path / "trace.jsonl"
+    monkeypatch.setenv("RAON_TRACE", str(trace))
+    mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
+    try:
+        pipe = _FakePipe([_tone(5.0)] * 50)
+        pipe.stt = lambda audio_path: "첫 문장입니다."  # clean STT match
+        out = tmp_path / "slide.wav"
+
+        _, ok = mod.synthesize_raon_slide(pipe, "첫 문장입니다.", out, verify_stt=True)
+        assert ok is True
+
+        rows = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+        slide_rows = [r for r in rows if r.get("event") == "slide"]
+        assert len(slide_rows) == 1
+        assert slide_rows[0]["stt_status"] == "pass"
+        assert slide_rows[0]["stt_cer"] == 0.0
+    finally:
+        monkeypatch.delenv("RAON_TRACE", raising=False)
+        importlib.reload(mod)
+
+
+def test_verify_stt_off_leaves_trace_fields_null(tmp_path, monkeypatch):
+    import importlib
+    import json as _json
+
+    trace = tmp_path / "trace.jsonl"
+    monkeypatch.setenv("RAON_TRACE", str(trace))
+    mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
+    try:
+        pipe = _FakePipe([_tone(5.0)] * 50)
+        out = tmp_path / "slide.wav"
+
+        mod.synthesize_raon_slide(pipe, "첫 문장입니다.", out)  # verify_stt=False (default)
+
+        rows = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+        slide_rows = [r for r in rows if r.get("event") == "slide"]
+        assert slide_rows[0]["stt_status"] is None
+        assert slide_rows[0]["stt_cer"] is None
+    finally:
+        monkeypatch.delenv("RAON_TRACE", raising=False)
+        importlib.reload(mod)
+
+
