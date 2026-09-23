@@ -18,7 +18,7 @@
 - 작업 전 `CLAUDE.md`, 루트 `AGENTS.md`, 수정 디렉터리의 `AGENTS.md`를 읽는다.
 - 함수 수정 전 모든 호출자를 `grep`으로 찾는다. 공유 함수는 한 곳에서 고친다.
 - 테스트는 mock·임시 파일만 사용(GPU/네트워크/Redis 금지). 합성은 `synthesize_raon_slide`를 mock.
-- 기준선: `.venv/bin/python -m pytest -q --ignore=tests/test_parser.py` → **262 passed, 8 failed**
+- 기준선(S0 이후): `.venv/bin/python -m pytest -q` → **실패 0** 유지 (S0 이전 262/8)
   (health 버전, llm env 2건, approve broker, test_video 4건). 단계 후 새 실패 0건이어야 한다.
   `test_video` 4건처럼 기존 실패를 해당 단계가 건드리면 고쳐도 된다(가짜 WAV가 원인).
 - `data/`, `output/`의 실데이터는 읽기만. `api.txt`는 열지 않는다. `data/audio_ref/**` 덮어쓰기 금지.
