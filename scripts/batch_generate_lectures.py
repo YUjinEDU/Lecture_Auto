@@ -21,14 +21,17 @@ import argparse
 import fcntl
 import json
 import logging
+import re
 import shutil
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from lecture_auto.llm.openai_client import OpenAILLMClient
 from lecture_auto.pipeline.approval import (
     approve,
+    build_report,
     build_timeline,
     load_approvals,
     promote_candidate,
@@ -106,35 +109,30 @@ LECTURES = [
         "name": "02-디자인씽킹 개요",
         "subject": "AI활용현업문제해결",
         "pdf": Path("data/PDF/AI현업문제해결/02-디자인씽킹 개요.pdf"),
-        "output_mp4": Path("output/01_AI현업_02_디자인씽킹개요.mp4"),
     },
     {
         "id": "02_AI현업_03_고객문제이해",
         "name": "03-고객 문제 이해",
         "subject": "AI활용현업문제해결",
         "pdf": Path("data/PDF/AI현업문제해결/03-고객 문제 이해.pdf"),
-        "output_mp4": Path("output/02_AI현업_03_고객문제이해.mp4"),
     },
     {
         "id": "03_AI현업_04_문제정의와아이디에이션",
         "name": "04-문제정의와 아이디에이션",
         "subject": "AI활용현업문제해결",
         "pdf": Path("data/PDF/AI현업문제해결/04-문제정의와 아이디에이션.pdf"),
-        "output_mp4": Path("output/03_AI현업_04_문제정의와아이디에이션.mp4"),
     },
     {
         "id": "04_종합설계_02_고객문제이해및정의",
         "name": "02_고객 문제 이해 및 정의",
         "subject": "종합설계",
         "pdf": Path("data/PDF/종합설계 2026/1차/02_고객 문제 이해 및 정의.pdf"),
-        "output_mp4": Path("output/04_종합설계_02_고객문제이해및정의.mp4"),
     },
     {
         "id": "05_종합설계_03_문제정의와아이디에이션",
         "name": "03_문제정의와 아이디에이션",
         "subject": "종합설계",
         "pdf": Path("data/PDF/종합설계 2026/1차/03_문제정의와 아이디에이션.pdf"),
-        "output_mp4": Path("output/05_종합설계_03_문제정의와아이디에이션.mp4"),
         "clone_from": "03_AI현업_04_문제정의와아이디에이션",
     },
     # S3-c (D-10, D-11): PPTX inputs (S3-a converts pptx -> work_dir/input/*.pdf
@@ -146,7 +144,6 @@ LECTURES = [
         "subject": "종합설계",
         "pptx": Path("data/PDF/종합설계 2026/04-1_아이디어를 컨셉으로 만들기.pptx"),
         "reference_script": Path("data/PDF/종합설계 2026/04-1_아이디어를컨셉으로만들기_강의스크립트.md"),
-        "output_mp4": Path("output/06_종합설계_04-1_아이디어를컨셉으로만들기.mp4"),
     },
     {
         "id": "07_종합설계_04-2_프로토타이핑과테스트",
@@ -154,7 +151,6 @@ LECTURES = [
         "subject": "종합설계",
         "pptx": Path("data/PDF/종합설계 2026/04-2_프로토타이핑과 테스트.pptx"),
         "reference_script": Path("data/PDF/종합설계 2026/04-2_프로토타이핑과테스트_강의스크립트.md"),
-        "output_mp4": Path("output/07_종합설계_04-2_프로토타이핑과테스트.mp4"),
     },
     {
         "id": "08_종합설계_05_스크럼_활용_애자일_프로세스",
@@ -162,7 +158,6 @@ LECTURES = [
         "subject": "종합설계",
         "pptx": Path("data/PDF/종합설계 2026/05_스크럼_활용_애자일_프로세스.pptx"),
         "reference_script": Path("data/PDF/종합설계 2026/05_스크럼_활용_애자일_프로세스_강의스크립트.md"),
-        "output_mp4": Path("output/08_종합설계_05_스크럼_활용_애자일_프로세스.mp4"),
     },
     {
         "id": "09_종합설계_06_Product_Backlog",
@@ -170,9 +165,16 @@ LECTURES = [
         "subject": "종합설계",
         "pptx": Path("data/PDF/종합설계 2026/06_Product_Backlog.pptx"),
         "reference_script": Path("data/PDF/종합설계 2026/06_Product_Backlog_강의스크립트.md"),
-        "output_mp4": Path("output/09_종합설계_06_Product_Backlog.mp4"),
     },
 ]
+
+
+def _lecture_output_mp4(lec_id: str, output_dir: Path) -> Path:
+    """S8-a: every lecture's human-facing output lives in its own subfolder,
+    ``output/<id>/<id>.mp4`` (docs/STORAGE.md) -- computed from the id rather
+    than hardcoded per ``LECTURES`` entry, so DRAFT/timeline/report siblings
+    always land next to the right lecture's video."""
+    return Path(output_dir) / lec_id / f"{lec_id}.mp4"
 
 
 def _tts_cache_key(
@@ -395,6 +397,23 @@ def _timeline_path(mp4_path: Path) -> Path:
     return mp4_path.with_name(mp4_path.stem + ".timeline.json")
 
 
+def _report_path(mp4_path: Path) -> Path:
+    return mp4_path.with_name(mp4_path.stem + ".report.md")
+
+
+def _cleanup_stale_draft(final_mp4: Path) -> None:
+    """S8-a: once a lecture's video is good enough to write the *final* MP4,
+    any leftover ``_DRAFT`` (+ its timeline/report) from a previous, worse
+    run is stale and regenerable -- remove it so the output folder doesn't
+    show both a final and an old draft side by side. Never called when the
+    assembly itself is a DRAFT (the existing final is left untouched, S1-e)."""
+    draft_mp4 = final_mp4.with_name(final_mp4.stem + "_DRAFT.mp4")
+    for p in (draft_mp4, _timeline_path(draft_mp4), _report_path(draft_mp4)):
+        if p.exists():
+            logger.info("Removing stale draft artifact: %s", p)
+            p.unlink()
+
+
 def _assemble_with_approvals(
     lec_id: str,
     work_dir: Path,
@@ -435,12 +454,15 @@ def _assemble_with_approvals(
     )
     invalid = [n for n in invalid if n not in approved_numbers]
     target_mp4 = _draft_or_final_path(out_mp4, invalid)
+    target_mp4.parent.mkdir(parents=True, exist_ok=True)
     if invalid:
         logger.error(
             "Assembling a DRAFT (%s): %d/%d slides have no valid cached audio and are "
             "not approved: %s. Fix, re-run (--slides), or approve before treating this as final.",
             target_mp4.name, len(invalid), slide_count, invalid,
         )
+    else:
+        _cleanup_stale_draft(out_mp4)
 
     logger.info("Assembling video via ffmpeg -> %s", target_mp4)
     assemble_video(png_paths, wav_paths, video_dir, target_mp4, lec_id, strict=True)
@@ -451,6 +473,8 @@ def _assemble_with_approvals(
         list(zip(range(1, slide_count + 1), wav_paths)), approved_numbers,
     )
     write_text_atomic(_timeline_path(target_mp4), timeline.model_dump_json(indent=2))
+    # S8-b: human-readable review report, same folder/stem as the timeline.
+    write_text_atomic(_report_path(target_mp4), build_report(timeline, audio_dir))
 
     return target_mp4
 
@@ -610,7 +634,7 @@ def process_lecture(
     verify_stt: bool = True,
 ) -> Path:
     lec_id = item["id"]
-    out_mp4 = item["output_mp4"].resolve()
+    out_mp4 = _lecture_output_mp4(lec_id, output_dir).resolve()
     clone_source_id = item.get("clone_from")
 
     work_dir = base_work_dir / lec_id
@@ -816,7 +840,7 @@ def assemble_only(
     LLM again.
     """
     lec_id = item["id"]
-    out_mp4 = item["output_mp4"].resolve()
+    out_mp4 = _lecture_output_mp4(lec_id, output_dir).resolve()
     work_dir = base_work_dir / lec_id
     rendered_dir = work_dir / "rendered"
     scripts_dir = work_dir / "scripts"
@@ -932,6 +956,94 @@ def _parse_slides_arg(arg: str | None) -> set[int] | None:
     return slides
 
 
+_SLIDE_WAV_RE = re.compile(r"^slide_\d{3}\.wav$")
+
+
+@dataclass
+class LectureStatus:
+    """Disk-only progress summary for one lecture (S8-c). Reused as-is by a
+    future web UI, per SPEC -- only the CLI formats it into text."""
+
+    slides: int
+    scripts: int
+    audio: int
+    qc_fail: int
+    qc_missing: int
+    candidates: int
+    approved: int
+    video_state: str  # "final" | "draft" | "none"
+    video_path: Path | None
+
+
+def compute_lecture_status(item: dict, base_work_dir: Path, output_dir: Path) -> LectureStatus:
+    """Pure, disk-only status for ``--status`` (S8-c). Reads globs/JSON
+    sidecars only -- never loads the TTS model or the LLM client, never
+    writes anything.
+
+    "검사 실패" counts only ``qc.json`` with ``ok=false``; a main WAV with no
+    (or unreadable) ``.qc.json`` is counted separately as ``qc_missing``, per
+    SPEC ("qc가 없으면 세지 않고 별도 표시").
+    """
+    lec_id = item["id"]
+    work_dir = base_work_dir / lec_id
+    rendered_dir = work_dir / "rendered"
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+
+    n_slides = len(list(rendered_dir.glob("slide_*.png"))) if rendered_dir.is_dir() else 0
+    n_scripts = len(list(scripts_dir.glob("script_*.json"))) if scripts_dir.is_dir() else 0
+
+    main_wavs: list[Path] = []
+    n_candidates = 0
+    if audio_dir.is_dir():
+        main_wavs = sorted(p for p in audio_dir.glob("slide_*.wav") if _SLIDE_WAV_RE.match(p.name))
+        n_candidates = len(list(audio_dir.glob("slide_*.cand.wav")))
+
+    qc_fail = qc_missing = 0
+    for wav in main_wavs:
+        qc_file = qc_path_for(wav)
+        data = None
+        if qc_file.exists():
+            try:
+                data = json.loads(qc_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                data = None
+        if data is None:
+            qc_missing += 1
+        elif data.get("ok") is False:
+            qc_fail += 1
+
+    n_approved = len(load_approvals(work_dir, lec_id).slides)
+
+    out_mp4 = _lecture_output_mp4(lec_id, output_dir)
+    draft_mp4 = out_mp4.with_name(out_mp4.stem + "_DRAFT.mp4")
+    if out_mp4.exists():
+        video_state, video_path = "final", out_mp4
+    elif draft_mp4.exists():
+        video_state, video_path = "draft", draft_mp4
+    else:
+        video_state, video_path = "none", None
+
+    return LectureStatus(
+        slides=n_slides, scripts=n_scripts, audio=len(main_wavs),
+        qc_fail=qc_fail, qc_missing=qc_missing, candidates=n_candidates,
+        approved=n_approved, video_state=video_state, video_path=video_path,
+    )
+
+
+def _format_status_line(idx: int, lec_id: str, st: LectureStatus) -> str:
+    video = {
+        "final": f"최종 ({st.video_path})",
+        "draft": f"DRAFT ({st.video_path})",
+        "none": "없음",
+    }[st.video_state]
+    return (
+        f"{idx:2d} {lec_id:45s} 슬라이드 {st.slides:3d}  대본 {st.scripts:3d}  음성 {st.audio:3d}  "
+        f"검사실패 {st.qc_fail}(qc없음 {st.qc_missing})  후보대기 {st.candidates}  "
+        f"승인 {st.approved}  영상 {video}"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Batch lecture video generation")
     parser.add_argument(
@@ -975,6 +1087,11 @@ def main():
         help="S2: assemble the current on-disk PNGs/WAVs into a video + timeline.json "
              "without synthesizing audio. Requires --only. Loads no TTS model/LLM client.",
     )
+    approval_group.add_argument(
+        "--status", action="store_true",
+        help="S8-c: print a one-line-per-lecture progress table (optionally --only) to "
+             "stdout and exit. Disk reads only -- no TTS model/LLM client, no writes.",
+    )
     parser.add_argument(
         "--allow-failed", action="store_true",
         help="With --promote: allow promoting a candidate that failed the quality gate.",
@@ -1015,6 +1132,15 @@ def main():
             selected = [LECTURES[idx]]
         else:
             selected = [lec for lec in LECTURES if args.only in lec["id"]]
+
+    if args.status:
+        # S8-c: disk-only status table -- no TTS/LLM load, no --only-must-be-
+        # unique requirement (unlike the other approval_group commands, this
+        # one is meant to be run over many/all lectures at once).
+        for lec in selected:
+            st = compute_lecture_status(lec, base_work, output_dir)
+            print(_format_status_line(LECTURES.index(lec) + 1, lec["id"], st))
+        return
 
     if approval_mode and len(selected) != 1:
         parser.error(

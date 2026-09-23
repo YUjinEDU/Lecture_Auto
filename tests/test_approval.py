@@ -5,6 +5,7 @@ timeline). Mocks/tmp_path only -- no GPU/network/Redis, no real WAV synthesis
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ import soundfile as sf
 
 from lecture_auto.pipeline.approval import (
     approve,
+    build_report,
     build_timeline,
     load_approvals,
     promote_candidate,
@@ -21,7 +23,7 @@ from lecture_auto.pipeline.approval import (
     verify_approved,
 )
 from lecture_auto.pipeline.cache import cache_path_for, qc_path_for, write_text_atomic
-from lecture_auto.schemas.production import ApprovalManifest
+from lecture_auto.schemas.production import ApprovalManifest, Timeline, TimelineEntry
 
 
 def _write_wav(path: Path, seconds: float, sr: int = 24000) -> None:
@@ -313,3 +315,75 @@ def test_build_timeline_reads_qc_sidecar_none_when_missing(tmp_path):
     assert e2.gate_ok is None
     assert e2.stt_status is None
     assert e2.cer is None
+
+
+# ---------------------------------------------------------------------------
+# S8-b: build_report -- "먼저 들어볼 슬라이드" filtering + CER-descending sort
+# ---------------------------------------------------------------------------
+
+def test_build_report_no_issues_says_none(tmp_path):
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    timeline = Timeline(
+        lecture_id="lec1", mp4="lec1.mp4", draft=False, total_seconds=10.0,
+        entries=[
+            TimelineEntry(slide_number=1, start_seconds=0.0, duration_seconds=5.0, wav="slide_001.wav",
+                          wav_sha256="x", approved=True, stt_status="pass", cer=0.01, gate_ok=True),
+            TimelineEntry(slide_number=2, start_seconds=5.0, duration_seconds=5.0, wav="slide_002.wav",
+                          wav_sha256="y", approved=True, stt_status="pass", cer=0.02, gate_ok=True),
+        ],
+    )
+
+    report = build_report(timeline, audio_dir)
+
+    assert "승인 2 / 검사 통과 2 / 실패 0 / 후보 대기 0" in report
+    assert "없음" in report
+    assert "## 전체 슬라이드" in report
+
+
+def test_build_report_flags_problem_slides_sorted_by_cer_desc(tmp_path):
+    """Only gate-fail / STT fail-or-unavailable / boundary_review / pending-
+    candidate slides show up in "먼저 들어볼", CER descending (unknown CER
+    last), with a `--promote N` hint for a pending candidate and `--slides N`
+    otherwise -- SPEC S8-b required test 3."""
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+
+    qc_path_for(audio_dir / "slide_002.wav").write_text(
+        json.dumps({"gate_reasons": ["too_short"], "boundary_review": []}), encoding="utf-8"
+    )
+    qc_path_for(audio_dir / "slide_003.wav").write_text(
+        json.dumps({"gate_reasons": [], "boundary_review": []}), encoding="utf-8"
+    )
+    (audio_dir / "slide_004.cand.wav").write_bytes(b"CAND")  # candidate waiting, no qc.json at all
+    qc_path_for(audio_dir / "slide_005.wav").write_text(
+        json.dumps({"gate_reasons": [], "boundary_review": [2]}), encoding="utf-8"
+    )
+
+    timeline = Timeline(
+        lecture_id="lec1", mp4="lec1_DRAFT.mp4", draft=True, total_seconds=25.0,
+        entries=[
+            TimelineEntry(slide_number=1, start_seconds=0.0, duration_seconds=5.0, wav="slide_001.wav",
+                          wav_sha256="a", approved=True, stt_status="pass", cer=0.01, gate_ok=True),
+            TimelineEntry(slide_number=2, start_seconds=5.0, duration_seconds=5.0, wav="slide_002.wav",
+                          wav_sha256="b", approved=False, stt_status="fail", cer=0.10, gate_ok=False),
+            TimelineEntry(slide_number=3, start_seconds=10.0, duration_seconds=5.0, wav="slide_003.wav",
+                          wav_sha256="c", approved=False, stt_status="unavailable", cer=None, gate_ok=None),
+            TimelineEntry(slide_number=4, start_seconds=15.0, duration_seconds=5.0, wav="slide_004.wav",
+                          wav_sha256="d", approved=False, stt_status="pass", cer=None, gate_ok=True),
+            TimelineEntry(slide_number=5, start_seconds=20.0, duration_seconds=5.0, wav="slide_005.wav",
+                          wav_sha256="e", approved=True, stt_status="pass", cer=0.30, gate_ok=True),
+        ],
+    )
+
+    report = build_report(timeline, audio_dir)
+
+    first_section = report.split("## 전체 슬라이드")[0]
+    flagged_numbers = [int(m) for m in re.findall(r"^\| (\d+) \|", first_section, re.MULTILINE)]
+    assert flagged_numbers == [5, 2, 3, 4]  # CER desc (0.30, 0.10), unknown-CER last (3 before 4)
+    assert "`--promote 4`" in report
+    assert "`--slides 2`" in report
+    assert "too_short" in report
+    assert "경계 재확인 필요" in report
+    assert "후보 대기" in report
+    assert "승인 2 / 검사 통과 3 / 실패 1 / 후보 대기 1" in report

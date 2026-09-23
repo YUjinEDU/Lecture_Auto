@@ -201,3 +201,107 @@ def build_timeline(
         total_seconds=start,
         entries=entries,
     )
+
+
+def _mmss(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def build_report(timeline: Timeline, audio_dir: Path) -> str:
+    """Human-readable Markdown review report (S8-b), written atomically by
+    the caller next to the timeline (``<mp4 stem>.report.md``).
+
+    Pure function: no filesystem writes here, only reads -- each slide's
+    ``.qc.json`` sidecar (for ``gate_reasons``/``boundary_review``, which
+    ``TimelineEntry`` doesn't carry) and whether a ``slide_NNN.cand.wav``
+    candidate is waiting for review. Uses only fields the existing quality
+    gate already computed -- no new thresholds/CER cutoffs (D-08).
+    """
+    audio_dir = Path(audio_dir)
+    rows = []
+    for e in timeline.entries:
+        qc_data = None
+        qc_file = qc_path_for(audio_dir / e.wav)
+        if qc_file.exists():
+            try:
+                qc_data = json.loads(qc_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                qc_data = None
+        rows.append(
+            {
+                "n": e.slide_number,
+                "start": e.start_seconds,
+                "dur": e.duration_seconds,
+                "approved": e.approved,
+                "gate_ok": e.gate_ok,
+                "stt": e.stt_status,
+                "cer": e.cer,
+                "gate_reasons": (qc_data or {}).get("gate_reasons") or [],
+                "boundary_review": (qc_data or {}).get("boundary_review") or [],
+                "has_candidate": (audio_dir / f"slide_{e.slide_number:03d}.cand.wav").exists(),
+            }
+        )
+
+    n_approved = sum(1 for r in rows if r["approved"])
+    n_pass = sum(1 for r in rows if r["gate_ok"] is True)
+    n_fail = sum(1 for r in rows if r["gate_ok"] is False)
+    n_candidate = sum(1 for r in rows if r["has_candidate"])
+
+    def needs_review(r: dict) -> bool:
+        return (
+            r["gate_ok"] is False
+            or r["stt"] in ("fail", "unavailable")
+            or bool(r["boundary_review"])
+            or r["has_candidate"]
+        )
+
+    flagged = [r for r in rows if needs_review(r)]
+    # CER 내림차순 (S8-b spec); CER을 모르는 슬라이드는 맨 뒤로.
+    flagged.sort(key=lambda r: r["cer"] if r["cer"] is not None else -1.0, reverse=True)
+
+    lines = [
+        f"# {timeline.lecture_id} 검수 보고서",
+        "",
+        f"- 상태: {'DRAFT' if timeline.draft else '최종'} ({timeline.mp4})",
+        f"- 총 길이: {_mmss(timeline.total_seconds)}",
+        f"- 슬라이드 수: {len(rows)}",
+        f"- 승인 {n_approved} / 검사 통과 {n_pass} / 실패 {n_fail} / 후보 대기 {n_candidate}",
+        "",
+        "## 먼저 들어볼 슬라이드",
+        "",
+    ]
+    if not flagged:
+        lines.append("없음")
+    else:
+        lines.append("| 슬라이드 | 시작 | 길이 | 문제 | 조치 |")
+        lines.append("|---|---|---|---|---|")
+        for r in flagged:
+            problems = []
+            if r["gate_reasons"]:
+                problems.append(", ".join(r["gate_reasons"]))
+            if r["stt"] in ("fail", "unavailable"):
+                cer_str = f" (CER {r['cer']:.2f})" if r["cer"] is not None else ""
+                problems.append(f"STT {r['stt']}{cer_str}")
+            if r["boundary_review"]:
+                problems.append(f"경계 재확인 필요 (세그먼트 {r['boundary_review']})")
+            if r["has_candidate"]:
+                problems.append("후보 대기")
+            hint = f"`--promote {r['n']}`" if r["has_candidate"] else f"`--slides {r['n']}`"
+            lines.append(
+                f"| {r['n']} | {_mmss(r['start'])} | {_mmss(r['dur'])} | "
+                f"{'; '.join(problems) if problems else '-'} | {hint} |"
+            )
+
+    lines += ["", "## 전체 슬라이드", "", "| 번호 | 시작 | 길이 | 승인 | gate | STT | CER |", "|---|---|---|---|---|---|---|"]
+    for r in rows:
+        approved_str = "O" if r["approved"] else "-"
+        gate_str = "-" if r["gate_ok"] is None else ("통과" if r["gate_ok"] else "실패")
+        stt_str = r["stt"] or "-"
+        cer_str = "-" if r["cer"] is None else f"{r['cer']:.3f}"
+        lines.append(
+            f"| {r['n']} | {_mmss(r['start'])} | {_mmss(r['dur'])} | "
+            f"{approved_str} | {gate_str} | {stt_str} | {cer_str} |"
+        )
+
+    return "\n".join(lines) + "\n"
