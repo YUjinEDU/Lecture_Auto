@@ -2,6 +2,8 @@
 
 작성: 2026-09-23 · 기준 HEAD `9a240fb` · 근거: `.claude/LECTURE_TTS_RESEARCH_HANDOFF.md`, `docs/260923_review.md`
 
+> **2026-09-23 재조정:** 제작 대상·참고 대본·참조 음성 확정으로 S3·S4-b 범위 변경, S0 추가 — `decisions/DECISIONS.md` D-10~D-14와 `README.md` 상태판이 우선.
+
 ## 최종 목표와 이번 범위
 
 최종 목표는 **웹 인터페이스에서 교수님이 대본 검수 → 음성 청취·승인 → 부분 재생성 → 최종 영상까지 진행**하는 것.
