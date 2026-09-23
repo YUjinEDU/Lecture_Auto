@@ -26,6 +26,14 @@ import time
 from pathlib import Path
 
 from lecture_auto.llm.openai_client import OpenAILLMClient
+from lecture_auto.pipeline.approval import (
+    approve,
+    build_timeline,
+    load_approvals,
+    promote_candidate,
+    save_approvals,
+    verify_approved,
+)
 from lecture_auto.pipeline.cache import (
     cache_path_for,
     content_hash,
@@ -253,6 +261,58 @@ def _run_slide_tts(
     return ok
 
 
+def _synthesize_all_slides(
+    tts_pipe,
+    slide_count: int,
+    scripts: dict[int, dict],
+    audio_dir: Path,
+    ref_voice_bytes: bytes,
+    shard: tuple[int, int],
+    target_slides: set[int] | None,
+    approved_numbers: set[int],
+) -> tuple[list[Path], list[int]]:
+    """Stage 5 of ``process_lecture``, pulled out for direct testing: decide
+    per slide whether to synthesize, skip (sharded/kept/approved), and
+    return ``(wav_paths in slide order, failed_slides)``.
+
+    S2: a slide in *approved_numbers* is skipped entirely -- no synthesis
+    call, candidate or otherwise -- unless it is explicitly named in
+    *target_slides*, even if its cache key is stale (e.g. a
+    ``TTS_SYNTH_VERSION`` bump). This check runs before the cache-key
+    computation and before ``_run_slide_tts`` is ever called, so an approved
+    slide's audio is never touched by cache-key churn.
+    """
+    wav_paths: list[Path] = []
+    failed_slides: list[int] = []
+    shard_index, shard_count = shard
+    for n in range(1, slide_count + 1):
+        sc = scripts[n]
+        out_wav = audio_dir / f"slide_{n:03d}.wav"
+        if (n - 1) % shard_count != shard_index:
+            # Another process on another GPU owns this slide. Slides are fully
+            # independent -- tts_continuation only ever references a segment
+            # from the same slide -- so splitting them costs no quality.
+            wav_paths.append(out_wav)
+            continue
+        if n in approved_numbers and (target_slides is None or n not in target_slides):
+            logger.info("Slide %d approved, skipping synthesis (using approved audio)", n)
+            wav_paths.append(out_wav)
+            continue
+        if target_slides is not None and n not in target_slides and out_wav.exists():
+            logger.info("Slide %d/%d not in target slides, keeping existing audio", n, slide_count)
+            wav_paths.append(out_wav)
+            continue
+
+        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+        force_regen = target_slides is not None and n in target_slides
+        ok = _run_slide_tts(tts_pipe, n, sc, out_wav, cache_key, force_regen)
+        if not ok:
+            failed_slides.append(n)
+        wav_paths.append(out_wav)
+
+    return wav_paths, failed_slides
+
+
 def _draft_or_final_path(out_mp4: Path, invalid_slides: list[int]) -> Path:
     """Final MP4 path unless any slide's audio is invalid (S1-e), in which
     case the ``_DRAFT`` sibling is used so a bad/incomplete run never
@@ -260,6 +320,67 @@ def _draft_or_final_path(out_mp4: Path, invalid_slides: list[int]) -> Path:
     if invalid_slides:
         return out_mp4.with_name(out_mp4.stem + "_DRAFT.mp4")
     return out_mp4
+
+
+def _timeline_path(mp4_path: Path) -> Path:
+    return mp4_path.with_name(mp4_path.stem + ".timeline.json")
+
+
+def _assemble_with_approvals(
+    lec_id: str,
+    work_dir: Path,
+    audio_dir: Path,
+    video_dir: Path,
+    out_mp4: Path,
+    slide_count: int,
+    scripts: dict[int, dict],
+    png_paths: list[Path],
+    wav_paths: list[Path],
+    ref_voice_bytes: bytes,
+) -> Path:
+    """Shared assemble+timeline tail (S2) for both the normal pipeline and
+    ``--assemble-only``.
+
+    S1-e's DRAFT check is extended here: a slide is valid for the final path
+    if its WAV matches the *current* TTS cache key **or** it is approved
+    (S2) -- an approved slide must never regress to DRAFT just because a
+    prompt/model/version bump invalidated its cache key. Before touching the
+    approved audio at all, ``verify_approved`` must come back empty: any
+    approved WAV whose bytes no longer match its recorded sha256 aborts the
+    whole assembly (contamination), rather than silently building a video
+    from audio the professor never actually approved.
+    """
+    manifest = load_approvals(work_dir, lec_id)
+    approved_numbers = set(manifest.slides.keys())
+    contaminated = verify_approved(manifest, audio_dir)
+    if contaminated:
+        raise RuntimeError(
+            f"[{lec_id}] approved audio changed on disk for slide(s) {contaminated} -- "
+            "re-approve (--approve) or restore the file before assembling"
+        )
+
+    wav_by_number = dict(zip(range(1, slide_count + 1), wav_paths))
+    invalid = _invalid_slides(list(range(1, slide_count + 1)), wav_by_number, scripts, ref_voice_bytes)
+    invalid = [n for n in invalid if n not in approved_numbers]
+    target_mp4 = _draft_or_final_path(out_mp4, invalid)
+    if invalid:
+        logger.error(
+            "Assembling a DRAFT (%s): %d/%d slides have no valid cached audio and are "
+            "not approved: %s. Fix, re-run (--slides), or approve before treating this as final.",
+            target_mp4.name, len(invalid), slide_count, invalid,
+        )
+
+    logger.info("Assembling video via ffmpeg -> %s", target_mp4)
+    assemble_video(png_paths, wav_paths, video_dir, target_mp4, lec_id, strict=True)
+    logger.info("Video successfully created at: %s", target_mp4)
+
+    timeline = build_timeline(
+        lec_id, target_mp4.name, bool(invalid),
+        list(zip(range(1, slide_count + 1), wav_paths)), approved_numbers,
+    )
+    write_text_atomic(_timeline_path(target_mp4), timeline.model_dump_json(indent=2))
+
+    return target_mp4
 
 
 def _llm_config_repr(llm_client) -> str:
@@ -509,31 +630,13 @@ def process_lecture(
 
     # 5. Synthesize Audio with Raon-Speech-9B (segmented + quality-gated, see raon_tts.py)
     logger.info("[5/6] Synthesizing TTS with Raon-Speech-9B & Professor Voice Cloning...")
-    wav_paths: list[Path] = []
     ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+    approved_numbers = set(load_approvals(work_dir, lec_id).slides.keys())
 
-    failed_slides: list[int] = []
+    wav_paths, failed_slides = _synthesize_all_slides(
+        tts_pipe, slide_count, scripts, audio_dir, ref_voice_bytes, shard, target_slides, approved_numbers,
+    )
     shard_index, shard_count = shard
-    for n in range(1, slide_count + 1):
-        sc = scripts[n]
-        out_wav = audio_dir / f"slide_{n:03d}.wav"
-        if (n - 1) % shard_count != shard_index:
-            # Another process on another GPU owns this slide. Slides are fully
-            # independent -- tts_continuation only ever references a segment
-            # from the same slide -- so splitting them costs no quality.
-            wav_paths.append(out_wav)
-            continue
-        if target_slides is not None and n not in target_slides and out_wav.exists():
-            logger.info("Slide %d/%d not in target slides, keeping existing audio", n, slide_count)
-            wav_paths.append(out_wav)
-            continue
-
-        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
-        force_regen = target_slides is not None and n in target_slides
-        ok = _run_slide_tts(tts_pipe, n, sc, out_wav, cache_key, force_regen)
-        if not ok:
-            failed_slides.append(n)
-        wav_paths.append(out_wav)
 
     if failed_slides:
         logger.error(
@@ -552,28 +655,124 @@ def process_lecture(
         logger.info("[6/6] Sharded run -- re-run without --shard to assemble the video.")
         return out_mp4
 
-    # S1-e: decide DRAFT vs. final from whether each assembled WAV is
-    # actually valid for the scripts' *current* cache key -- not just from
-    # whether this run's own synthesis attempt failed. A slide whose WAV was
-    # never successfully produced in an earlier run (no hash, e.g. an
-    # interrupted run) must also block the final path, even if this run
-    # skipped it as "not in --slides".
-    wav_by_number = dict(zip(range(1, slide_count + 1), wav_paths))
-    invalid = _invalid_slides(list(range(1, slide_count + 1)), wav_by_number, scripts, ref_voice_bytes)
-    target_mp4 = _draft_or_final_path(out_mp4, invalid)
-    if invalid:
-        logger.error(
-            "[6/6] Assembling a DRAFT (%s): %d/%d slides have no valid cached audio "
-            "for the current cache key: %s. Fix or re-run those (--slides) before "
-            "treating this as final.",
-            target_mp4.name, len(invalid), slide_count, invalid,
-        )
+    # 6. Assemble Video + write timeline (S1-e DRAFT check extended with
+    # approvals, S2's verify_approved contamination guard) -- see
+    # _assemble_with_approvals for the DRAFT/timeline logic shared with
+    # --assemble-only.
+    logger.info("[6/6] Assembling video + timeline...")
+    return _assemble_with_approvals(
+        lec_id, work_dir, audio_dir, video_dir, out_mp4, slide_count,
+        scripts, png_paths, wav_paths, ref_voice_bytes,
+    )
 
-    # 6. Assemble Video
-    logger.info("[6/6] Assembling video via ffmpeg -> %s", target_mp4)
-    assemble_video(png_paths, wav_paths, video_dir, target_mp4, lec_id, strict=True)
-    logger.info("Video successfully created at: %s", target_mp4)
-    return target_mp4
+
+def assemble_only(item: dict, base_work_dir: Path, output_dir: Path) -> Path:
+    """``--assemble-only``: assemble the current on-disk PNGs/WAVs into a
+    video + timeline. Loads no TTS model and makes no LLM call -- slide
+    scripts are read straight from the ``scripts/script_NNN.json`` cache a
+    prior full run already wrote (that's all ``_invalid_slides`` needs for
+    its cache-key check), so there is nothing here that requires calling the
+    LLM again.
+    """
+    lec_id = item["id"]
+    out_mp4 = item["output_mp4"].resolve()
+    work_dir = base_work_dir / lec_id
+    rendered_dir = work_dir / "rendered"
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    video_dir = work_dir / "video"
+    video_dir.mkdir(parents=True, exist_ok=True)
+
+    png_paths = sorted(rendered_dir.glob("slide_*.png"))
+    if not png_paths:
+        raise FileNotFoundError(
+            f"[{lec_id}] no rendered slides in {rendered_dir} -- run a full generation first"
+        )
+    slide_count = len(png_paths)
+
+    scripts: dict[int, dict] = {}
+    for n in range(1, slide_count + 1):
+        script_path = scripts_dir / f"script_{n:03d}.json"
+        if not script_path.exists():
+            raise FileNotFoundError(f"[{lec_id}] no cached script for slide {n} at {script_path}")
+        scripts[n] = json.loads(script_path.read_text(encoding="utf-8"))
+
+    wav_paths = [audio_dir / f"slide_{n:03d}.wav" for n in range(1, slide_count + 1)]
+    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+
+    return _assemble_with_approvals(
+        lec_id, work_dir, audio_dir, video_dir, out_mp4, slide_count,
+        scripts, png_paths, wav_paths, ref_voice_bytes,
+    )
+
+
+def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str) -> None:
+    """``--approve``: pin the current ``slide_NNN.wav`` as approved
+    (``source="existing"``) for each slide in *slides_arg*. Reads only the
+    on-disk script cache to compute ``gate_ok``; no LLM/TTS model is loaded.
+    """
+    lec_id = item["id"]
+    work_dir = base_work_dir / lec_id
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+
+    manifest = load_approvals(work_dir, lec_id)
+    for n in sorted(_parse_slides_arg(slides_arg) or set()):
+        gate_ok = None
+        script_path = scripts_dir / f"script_{n:03d}.json"
+        if script_path.exists():
+            sc = json.loads(script_path.read_text(encoding="utf-8"))
+            out_wav = audio_dir / f"slide_{n:03d}.wav"
+            cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+            gate_ok = is_cache_valid(out_wav, cache_key)
+        manifest = approve(manifest, audio_dir, n, source="existing", gate_ok=gate_ok)
+        logger.info("Approved slide %d (existing, gate_ok=%s)", n, gate_ok)
+    save_approvals(work_dir, manifest)
+
+
+def _cli_approve_passing(item: dict, base_work_dir: Path) -> None:
+    """``--approve-passing``: approve every slide whose current WAV is still
+    valid for the current TTS cache key (``source="gate_pass"``).
+
+    Slides already approved (by any source, e.g. a prior ``--promote``) are
+    left alone -- this command is for picking up slides nobody has reviewed
+    yet, not for silently downgrading/overwriting an existing approval
+    record (and its note) with a plain gate-pass one.
+    """
+    lec_id = item["id"]
+    work_dir = base_work_dir / lec_id
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+
+    manifest = load_approvals(work_dir, lec_id)
+    approved_count = 0
+    for script_path in sorted(scripts_dir.glob("script_*.json")):
+        n = int(script_path.stem.rsplit("_", 1)[1])
+        if n in manifest.slides:
+            continue
+        sc = json.loads(script_path.read_text(encoding="utf-8"))
+        out_wav = audio_dir / f"slide_{n:03d}.wav"
+        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+        if is_cache_valid(out_wav, cache_key):
+            manifest = approve(manifest, audio_dir, n, source="gate_pass", gate_ok=True)
+            approved_count += 1
+    save_approvals(work_dir, manifest)
+    logger.info("Approved %d slide(s) currently passing the cache/quality gate", approved_count)
+
+
+def _cli_promote(item: dict, base_work_dir: Path, slides_arg: str, allow_failed: bool, note: str) -> None:
+    """``--promote``: promote each slide's reviewed candidate to the main WAV."""
+    lec_id = item["id"]
+    work_dir = base_work_dir / lec_id
+    audio_dir = work_dir / "audio"
+
+    manifest = load_approvals(work_dir, lec_id)
+    for n in sorted(_parse_slides_arg(slides_arg) or set()):
+        manifest = promote_candidate(manifest, audio_dir, n, allow_failed=allow_failed, note=note)
+        save_approvals(work_dir, manifest)
+        logger.info("Promoted candidate for slide %d", n)
 
 
 def _parse_slides_arg(arg: str | None) -> set[int] | None:
@@ -608,11 +807,80 @@ def main():
              "(--gpu 0 --shard 0/2 and --gpu 1 --shard 1/2), then once more "
              "unsharded to assemble the video from the cached audio.",
     )
+    # Exactly one approval command per invocation -- spec: an approval command
+    # "modifies only the approval file, then exits" (no combining e.g.
+    # --approve with --assemble-only in one run).
+    approval_group = parser.add_mutually_exclusive_group()
+    approval_group.add_argument(
+        "--approve", type=str, default=None,
+        help="S2: approve the current slide_NNN.wav as-is for these slides (e.g. '1-48'), "
+             "source=existing. Requires --only. Loads no TTS model/LLM client.",
+    )
+    approval_group.add_argument(
+        "--approve-passing", action="store_true",
+        help="S2: approve every slide whose current audio is valid for the current cache key "
+             "(source=gate_pass). Requires --only. Loads no TTS model/LLM client.",
+    )
+    approval_group.add_argument(
+        "--promote", type=str, default=None,
+        help="S2: promote reviewed slide_NNN.cand.wav to the approved main WAV for these "
+             "slides (e.g. '12,15'). Requires --only. Loads no TTS model/LLM client.",
+    )
+    approval_group.add_argument(
+        "--assemble-only", action="store_true",
+        help="S2: assemble the current on-disk PNGs/WAVs into a video + timeline.json "
+             "without synthesizing audio. Requires --only. Loads no TTS model/LLM client.",
+    )
+    parser.add_argument(
+        "--allow-failed", action="store_true",
+        help="With --promote: allow promoting a candidate that failed the quality gate.",
+    )
+    parser.add_argument(
+        "--note", type=str, default="",
+        help="With --promote: note recorded on the approval entry.",
+    )
     args = parser.parse_args()
 
     base_work = Path("data/work_batch")
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    approval_mode = bool(args.approve or args.approve_passing or args.promote or args.assemble_only)
+    if approval_mode and not args.only:
+        parser.error(
+            "--approve/--approve-passing/--promote/--assemble-only require --only <lecture id or index>"
+        )
+
+    selected = LECTURES
+    if args.only:
+        if args.only.isdigit():
+            idx = int(args.only) - 1
+            if not 0 <= idx < len(LECTURES):
+                parser.error(f"--only {args.only}: index must be in 1..{len(LECTURES)}")
+            selected = [LECTURES[idx]]
+        else:
+            selected = [lec for lec in LECTURES if args.only in lec["id"]]
+
+    if approval_mode and len(selected) != 1:
+        parser.error(
+            f"--only {args.only!r} must match exactly one lecture for an approval command "
+            f"(matched: {[s['id'] for s in selected]})"
+        )
+
+    if approval_mode:
+        # Approval-only commands touch only approved.json / on-disk audio --
+        # never load the TTS model or the LLM client (SPEC S2 §3).
+        item = selected[0]
+        if args.approve:
+            _cli_approve(item, base_work, args.approve)
+        if args.approve_passing:
+            _cli_approve_passing(item, base_work)
+        if args.promote:
+            _cli_promote(item, base_work, args.promote, args.allow_failed, args.note)
+        if args.assemble_only:
+            mp4_path = assemble_only(item, base_work, output_dir)
+            logger.info("Assembled (no synth/LLM): %s", mp4_path)
+        return
 
     logger.info("Initializing LLM client (FactChat gpt-5.6-luna)...")
     llm_client = OpenAILLMClient()
@@ -622,14 +890,6 @@ def main():
         logger.info("Loading Raon-Speech-9B TTS model on cuda:%d...", args.gpu)
         tts_pipe = load_raon_pipeline(TTS_MODEL_ID, device=f"cuda:{args.gpu}", dtype="bfloat16")
         logger.info("Raon-Speech-9B ready!")
-
-    selected = LECTURES
-    if args.only:
-        if args.only.isdigit():
-            idx = int(args.only) - 1
-            selected = [LECTURES[idx]]
-        else:
-            selected = [lec for lec in LECTURES if args.only in lec["id"]]
 
     shard_index, shard_count = (int(x) for x in args.shard.split("/"))
     if not 0 <= shard_index < shard_count:

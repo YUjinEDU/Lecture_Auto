@@ -14,12 +14,21 @@ from unittest.mock import patch
 
 import pytest
 
+import numpy as np
+import soundfile as sf
+
+from lecture_auto.pipeline.approval import approve, load_approvals, save_approvals, verify_approved
 from lecture_auto.pipeline.cache import write_cache_hash
+from lecture_auto.schemas.production import ApprovalManifest
 from scripts.batch_generate_lectures import (
+    _assemble_with_approvals,
+    _cli_approve_passing,
     _draft_or_final_path,
     _invalid_slides,
     _run_slide_tts,
+    _synthesize_all_slides,
     _tts_cache_key,
+    main,
 )
 
 
@@ -350,3 +359,287 @@ def test_assembly_path_end_to_end_one_invalid_then_all_valid(tmp_path):
     invalid = _invalid_slides([1, 2], wav_by_number, scripts, b"ref")
     assert invalid == []
     assert _draft_or_final_path(out_mp4, invalid) == out_mp4
+
+
+# ---------------------------------------------------------------------------
+# S2 test 6/7: TTS loop respects approvals (_synthesize_all_slides)
+# ---------------------------------------------------------------------------
+
+def test_synthesize_all_slides_skips_approved_slide_despite_stale_cache(tmp_path):
+    """Required test 6: an approved slide is never resynthesized, even when
+    its cache key is stale (e.g. a TTS_SYNTH_VERSION bump invalidated it)."""
+    out_wav = tmp_path / "slide_001.wav"
+    out_wav.write_bytes(b"APPROVED-AUDIO")
+    write_cache_hash(out_wav, "stale-hash-unrelated-to-current-cache-key")
+
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        wav_paths, failed = _synthesize_all_slides(
+            tts_pipe=object(),
+            slide_count=1,
+            scripts=scripts,
+            audio_dir=tmp_path,
+            ref_voice_bytes=b"ref",
+            shard=(0, 1),
+            target_slides=None,
+            approved_numbers={1},
+        )
+
+    mock_synth.assert_not_called()
+    assert wav_paths == [out_wav]
+    assert failed == []
+    assert out_wav.read_bytes() == b"APPROVED-AUDIO"
+
+
+def test_synthesize_all_slides_approved_and_in_target_slides_uses_candidate_flow(tmp_path):
+    """Required test 7: an approved slide explicitly named in --slides is
+    NOT skipped -- it goes through the normal S1-c candidate flow, and the
+    main WAV (and therefore the existing approval record, whose sha256
+    points at it) is left untouched."""
+    audio_dir = tmp_path
+    out_wav = audio_dir / "slide_001.wav"
+    out_wav.write_bytes(b"APPROVED-MAIN-AUDIO")
+    cand_wav = audio_dir / "slide_001.cand.wav"
+
+    manifest = approve(ApprovalManifest(lecture_id="lec1"), audio_dir, 1, source="existing", gate_ok=True)
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        mock_synth.return_value = (cand_wav, True)
+        wav_paths, failed = _synthesize_all_slides(
+            tts_pipe=object(),
+            slide_count=1,
+            scripts=scripts,
+            audio_dir=audio_dir,
+            ref_voice_bytes=b"ref",
+            shard=(0, 1),
+            target_slides={1},
+            approved_numbers={1},
+        )
+
+    mock_synth.assert_called_once()
+    assert mock_synth.call_args.args[2] == cand_wav  # candidate path, not main
+    assert out_wav.read_bytes() == b"APPROVED-MAIN-AUDIO"  # main WAV untouched
+    assert (audio_dir / "slide_001.cand.wav.json").exists()
+    assert failed == []
+    # The approval record still describes what's on disk -- untouched.
+    assert verify_approved(manifest, audio_dir) == []
+
+
+# ---------------------------------------------------------------------------
+# S2 test 8: DRAFT judgment considers approvals; contamination aborts assembly
+# ---------------------------------------------------------------------------
+
+def _write_real_wav(path: Path, seconds: float, sr: int = 24000) -> None:
+    sf.write(str(path), np.zeros(int(sr * seconds), dtype=np.float32), sr)
+
+
+def test_assemble_with_approvals_final_path_when_approved_despite_stale_cache(tmp_path):
+    lec_id = "lec1"
+    work_dir = tmp_path / "work"
+    audio_dir = work_dir / "audio"
+    video_dir = work_dir / "video"
+    audio_dir.mkdir(parents=True)
+
+    wav1 = audio_dir / "slide_001.wav"
+    _write_real_wav(wav1, 1.0)
+    # No .hash at all -> cache-invalid under _invalid_slides -- but approved.
+    png1 = tmp_path / "slide_001.png"
+    png1.write_bytes(b"PNG-BYTES")
+
+    manifest = approve(ApprovalManifest(lecture_id=lec_id), audio_dir, 1, source="existing", gate_ok=False)
+    save_approvals(work_dir, manifest)
+
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+    out_mp4 = tmp_path / "lecture.mp4"
+    with patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+        target = _assemble_with_approvals(
+            lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
+        )
+
+    assert target == out_mp4  # final path, not _DRAFT -- approval covers the stale cache key
+    mock_assemble.assert_called_once()
+    timeline_path = out_mp4.with_name("lecture.timeline.json")
+    assert timeline_path.exists()
+    assert json.loads(timeline_path.read_text(encoding="utf-8"))["draft"] is False
+
+
+def test_assemble_with_approvals_aborts_when_approved_audio_contaminated(tmp_path):
+    """Required test 8 (second half): an approved WAV whose bytes no longer
+    match its recorded sha256 aborts the whole assembly."""
+    lec_id = "lec1"
+    work_dir = tmp_path / "work"
+    audio_dir = work_dir / "audio"
+    video_dir = work_dir / "video"
+    audio_dir.mkdir(parents=True)
+
+    wav1 = audio_dir / "slide_001.wav"
+    _write_real_wav(wav1, 1.0)
+    png1 = tmp_path / "slide_001.png"
+    png1.write_bytes(b"PNG-BYTES")
+
+    manifest = approve(ApprovalManifest(lecture_id=lec_id), audio_dir, 1, source="existing", gate_ok=True)
+    save_approvals(work_dir, manifest)
+
+    # Tamper the approved WAV after approval -- a real, valid WAV of a
+    # different length, so the mutation-verification below (guard removed)
+    # exercises the RuntimeError guard itself rather than an unrelated
+    # soundfile read error on garbage bytes (both happen to be RuntimeError
+    # subclasses, which would let the guard-removed test pass for the wrong
+    # reason).
+    _write_real_wav(wav1, 2.0)
+
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+    out_mp4 = tmp_path / "lecture.mp4"
+    with patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+        with pytest.raises(RuntimeError, match=r"\[lec1\].*slide.*1"):
+            _assemble_with_approvals(
+                lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
+            )
+    mock_assemble.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# S2 test 10: CLI approval commands require --only and skip LLM/TTS model load
+# ---------------------------------------------------------------------------
+
+_FAKE_LECTURE = {
+    "id": "testlec",
+    "name": "test",
+    "subject": "test",
+    "pdf": Path("does-not-matter.pdf"),
+    "output_mp4": Path("output/testlec.mp4"),
+}
+
+
+@pytest.mark.parametrize(
+    "argv_tail",
+    [
+        ["--approve", "1-3"],
+        ["--approve-passing"],
+        ["--promote", "1"],
+        ["--assemble-only"],
+    ],
+)
+def test_cli_approval_commands_without_only_error(monkeypatch, tmp_path, argv_tail):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", *argv_tail])
+    with pytest.raises(SystemExit):
+        main()
+
+
+def test_cli_approve_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+
+    audio_dir = tmp_path / "data" / "work_batch" / "testlec" / "audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "slide_001.wav").write_bytes(b"SOME-AUDIO")
+
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--approve", "1"])
+    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
+         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts:
+        main()
+
+    mock_llm.assert_not_called()
+    mock_tts.assert_not_called()
+    manifest = json.loads(
+        (tmp_path / "data" / "work_batch" / "testlec" / "approved.json").read_text(encoding="utf-8")
+    )
+    assert manifest["slides"]["1"]["source"] == "existing"
+
+
+def test_cli_promote_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+
+    audio_dir = tmp_path / "data" / "work_batch" / "testlec" / "audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "slide_001.cand.wav").write_bytes(b"CANDIDATE-AUDIO")
+    (audio_dir / "slide_001.cand.wav.json").write_text(
+        json.dumps({"ok": True, "cache_key": "k"}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--promote", "1"])
+    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
+         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts:
+        main()
+
+    mock_llm.assert_not_called()
+    mock_tts.assert_not_called()
+    assert (audio_dir / "slide_001.wav").read_bytes() == b"CANDIDATE-AUDIO"
+
+
+def test_cli_assemble_only_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+
+    work_dir = tmp_path / "data" / "work_batch" / "testlec"
+    rendered_dir = work_dir / "rendered"
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    rendered_dir.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+
+    (rendered_dir / "slide_001.png").write_bytes(b"PNG")
+    (scripts_dir / "script_001.json").write_text(
+        json.dumps({"target_seconds": 3.0, "script": "s1"}), encoding="utf-8"
+    )
+    wav1 = audio_dir / "slide_001.wav"
+    _write_real_wav(wav1, 1.0)
+    write_cache_hash(wav1, _tts_cache_key("s1", b"", 3.0))  # REF_VOICE doesn't exist -> b""
+
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--assemble-only"])
+    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
+         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts, \
+         patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+        main()
+
+    mock_llm.assert_not_called()
+    mock_tts.assert_not_called()
+    mock_assemble.assert_called_once()
+    assert (tmp_path / "output" / "testlec.timeline.json").exists()
+
+
+def test_cli_only_ambiguous_match_errors_for_approval_command(monkeypatch, tmp_path):
+    """--only must resolve to exactly one lecture for an approval command --
+    a substring matching several real lecture ids (e.g. shared '종합설계')
+    must not silently pick the first match and promote the wrong lecture's
+    audio."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "종합설계", "--approve", "1"])
+    with pytest.raises(SystemExit):
+        main()
+    # No approved.json should have been written for either matched lecture.
+    assert not (tmp_path / "data" / "work_batch").exists()
+
+
+def test_cli_approve_passing_does_not_overwrite_existing_approval(tmp_path):
+    """A slide already approved (e.g. via --promote, with a note) is left
+    alone by --approve-passing -- it must not be silently downgraded to a
+    bare gate_pass record with the note wiped."""
+    item = {"id": "lec1"}
+    work_dir = tmp_path / "lec1"
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    scripts_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+
+    sc = {"script": "s1", "target_seconds": 5.0}
+    (scripts_dir / "script_001.json").write_text(json.dumps(sc), encoding="utf-8")
+    out_wav = audio_dir / "slide_001.wav"
+    out_wav.write_bytes(b"AUDIO")
+    write_cache_hash(out_wav, _tts_cache_key("s1", b"", 5.0))  # REF_VOICE doesn't exist -> b""
+
+    manifest = approve(
+        ApprovalManifest(lecture_id="lec1"), audio_dir, 1,
+        source="candidate", gate_ok=True, note="professor reviewed by ear",
+    )
+    save_approvals(work_dir, manifest)
+
+    _cli_approve_passing(item, tmp_path)
+
+    reloaded = load_approvals(work_dir, "lec1")
+    assert reloaded.slides[1].source == "candidate"
+    assert reloaded.slides[1].note == "professor reviewed by ear"
