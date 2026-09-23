@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -12,10 +13,17 @@ from lecture_auto.pipeline.lecture_plan import (
     build_section_prompt,
     generate_lecture_plan,
     generate_section_scripts,
+    parse_reference_script,
     validate_plan_covers_slides,
 )
 from lecture_auto.schemas.lecture_plan import CarryForward, LecturePlan, LectureSection
 from lecture_auto.schemas.manifest import FontInfo, ShapeRecord, SlideRecord, TextParagraph, TextRun
+
+# S3 base commit (see docs/hardening/stages/S3_new_lecture_inputs/SPEC.md): the
+# pre-S3-b lecture_plan.py, used below to prove the reference-args-omitted
+# prompt output stayed byte-identical.
+_S3_BASE_COMMIT = "5a83baf"
+_MAIN_REPO_ROOT = Path("/home/dbsdosdb/workspace/Lecture_Auto")
 
 
 def _make_slide(number: int, title: str, body: str) -> SlideRecord:
@@ -285,3 +293,154 @@ def test_budget_is_measured_against_the_plan_not_the_models_own_target_seconds(t
     result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
     assert client.chat.call_count == 2
     assert sum(len(s.script) for s in result.slides) == 340
+
+
+# ---------------------------------------------------------------------------
+# S3-b: parse_reference_script (required test 1)
+# ---------------------------------------------------------------------------
+
+_SAMPLE_REFERENCE_MD = """\
+# 어느 강의 · 강의 스크립트
+
+- 대상 자료: sample.pptx (5슬라이드)
+- 구성: 도입 -> 본문 -> 마무리
+- 표기: **[슬라이드 N]** 전환 지점, *(⏱ 누적 시간)*, *(연출)* 화면 조작 안내
+
+---
+
+## Part 0. 도입 *(⏱ 0:00-1:00)*
+
+**[슬라이드 1] 표지**
+
+안녕하세요. *(연출: 화면 전환)*
+반갑습니다.
+
+**[슬라이드 2] 본문** *(⏱ 1:00-2:00)*
+
+본문 설명입니다.
+
+### 소단원: 본문 안의 하위 제목 *(⏱ 1:30-2:00)*
+
+**[슬라이드 3–4] 범위 예시**
+
+3번과 4번의 공통 설명입니다.
+
+---
+
+## Part 1. 마무리
+
+**[슬라이드 5] 마무리**
+
+정리합니다.
+"""
+
+
+def test_parse_reference_script_basic():
+    result = parse_reference_script(_SAMPLE_REFERENCE_MD)
+
+    # 마커 없는 머리말(제목/대상 자료/구성/표기)은 무시된다.
+    assert set(result.keys()) == {1, 2, 3, 4, 5}
+    assert "sample.pptx" not in "".join(result.values())
+
+    # 이탤릭 괄호 주석(*(⏱ ...)*, *(연출...)*)은 제거된다.
+    assert "⏱" not in result[1]
+    assert "연출" not in result[1]
+    assert "안녕하세요" in result[1]
+    assert "반갑습니다" in result[1]
+
+    assert result[2].strip() == "본문 설명입니다."
+    # A "### " sub-heading between two slide markers ends the previous
+    # slide's block (same intent as "## "/"---") instead of leaking into it.
+    assert "소단원" not in result[2]
+
+    # 범위 마커([슬라이드 3–4])는 두 슬라이드 모두에 같은 설명을 배정한다.
+    assert result[3] == result[4]
+    assert "공통 설명" in result[3]
+
+    assert result[5].strip() == "정리합니다."
+
+
+def test_parse_reference_script_real_files():
+    """Data-format regression guard: parse the 4 real reference scripts and
+    make sure the slide numbers form a non-empty, 1-based increasing set.
+    Skips when data/PDF isn't present (gitignored -- only in the main repo
+    checkout, not this worktree)."""
+    real_dir = _MAIN_REPO_ROOT / "data" / "PDF" / "종합설계 2026"
+    if not real_dir.is_dir():
+        pytest.skip(f"{real_dir} not present in this worktree (gitignored data)")
+
+    md_files = sorted(real_dir.glob("*_강의스크립트.md"))
+    assert len(md_files) == 4
+    for md_path in md_files:
+        notes = parse_reference_script(md_path.read_text(encoding="utf-8"))
+        assert len(notes) > 0, md_path
+        assert sorted(notes) == list(range(1, max(notes) + 1)), md_path
+
+
+# ---------------------------------------------------------------------------
+# S3-b: reference_notes / reference_outline optional args (required tests 3, 4)
+# ---------------------------------------------------------------------------
+
+def _load_base_build_section_prompt():
+    """The pre-S3-b build_section_prompt, loaded straight from the S3 base
+    commit -- used as the "current implementation" expected value the SPEC
+    asks for (test 3), without hand-duplicating the whole function body."""
+    src = subprocess.run(
+        ["git", "show", f"{_S3_BASE_COMMIT}:lecture_auto/pipeline/lecture_plan.py"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    ns: dict = {}
+    exec(compile(src, "lecture_plan_s3_base.py", "exec"), ns)  # noqa: S102
+    return ns["build_section_prompt"]
+
+
+def test_build_section_prompt_reference_notes_none_matches_baseline():
+    plan = _plan()
+    section = plan.sections[1]
+    slides = [_make_slide(4, "관찰", "관찰 방법"), _make_slide(5, "인터뷰", "인터뷰 방법")]
+    carry_forward = CarryForward(explained=["사용자 중심성"], active_example="쓰레기 무단투기", next_question="어떻게 관찰하는가")
+
+    got = build_section_prompt(plan, section, slides, carry_forward, is_last_section=False, reference_notes=None)
+
+    baseline_fn = _load_base_build_section_prompt()
+    expected = baseline_fn(plan, section, slides, carry_forward, is_last_section=False)
+
+    assert got == expected
+
+
+def test_build_section_prompt_reference_notes_scopes_to_section():
+    plan = _plan()
+    section = plan.sections[1]  # slides [4, 5]
+    slides = [_make_slide(4, "관찰", "관찰 방법"), _make_slide(5, "인터뷰", "인터뷰 방법")]
+    reference_notes = {
+        1: "다른 섹션(도입) 슬라이드의 참고 설명 -- 포함되면 안 됨",
+        4: "관찰 슬라이드 참고 설명",
+        5: "인터뷰 슬라이드 참고 설명",
+    }
+
+    prompt = build_section_prompt(
+        plan, section, slides, None, is_last_section=False, reference_notes=reference_notes
+    )
+
+    assert "관찰 슬라이드 참고 설명" in prompt
+    assert "인터뷰 슬라이드 참고 설명" in prompt
+    assert "다른 섹션(도입) 슬라이드의 참고 설명" not in prompt
+    assert "그대로 복사하지 말고" in prompt
+
+
+def test_build_lecture_plan_prompt_reference_outline_none_matches_baseline():
+    slides = [_make_slide(1, "표지", "AI활용현업문제해결"), _make_slide(2, "목차", "오늘의 순서")]
+
+    got = build_lecture_plan_prompt(slides, "AI활용현업문제해결", "디자인씽킹 개요", 30.0, reference_outline=None)
+
+    src = subprocess.run(
+        ["git", "show", f"{_S3_BASE_COMMIT}:lecture_auto/pipeline/lecture_plan.py"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    ns: dict = {}
+    exec(compile(src, "lecture_plan_s3_base.py", "exec"), ns)  # noqa: S102
+    expected = ns["build_lecture_plan_prompt"](slides, "AI활용현업문제해결", "디자인씽킹 개요", 30.0)
+
+    assert got == expected

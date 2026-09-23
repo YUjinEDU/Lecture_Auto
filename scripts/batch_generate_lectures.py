@@ -47,6 +47,8 @@ from lecture_auto.pipeline.lecture_plan import (
     build_section_prompt,
     generate_lecture_plan,
     generate_section_scripts,
+    parse_reference_script,
+    summarize_reference_outline,
 )
 from lecture_auto.pipeline.parser_pdf import parse_pdf
 from lecture_auto.pipeline.raon_tts import (
@@ -57,7 +59,7 @@ from lecture_auto.pipeline.raon_tts import (
     load_raon_pipeline,
     synthesize_raon_slide,
 )
-from lecture_auto.pipeline.renderer import render_slides
+from lecture_auto.pipeline.renderer import pptx_to_pdf, render_slides
 from lecture_auto.pipeline.script_gen import (
     generate_script_for_slide_vision,
     get_professor_system_prompt,
@@ -131,6 +133,41 @@ LECTURES = [
         "pdf": Path("data/PDF/종합설계/03_문제정의와 아이디에이션.pdf"),
         "output_mp4": Path("output/05_종합설계_03_문제정의와아이디에이션.mp4"),
         "clone_from": "03_AI현업_04_문제정의와아이디에이션",
+    },
+    # S3-c (D-10, D-11): PPTX inputs (S3-a converts pptx -> work_dir/input/*.pdf
+    # via pptx_to_pdf) + reference lecture scripts (S3-b: reference only, not
+    # fed straight to TTS -- see lecture_plan.parse_reference_script).
+    {
+        "id": "06_종합설계_04-1_아이디어를컨셉으로만들기",
+        "name": "04-1_아이디어를 컨셉으로 만들기",
+        "subject": "종합설계",
+        "pptx": Path("data/PDF/종합설계 2026/04-1_아이디어를 컨셉으로 만들기.pptx"),
+        "reference_script": Path("data/PDF/종합설계 2026/04-1_아이디어를컨셉으로만들기_강의스크립트.md"),
+        "output_mp4": Path("output/06_종합설계_04-1_아이디어를컨셉으로만들기.mp4"),
+    },
+    {
+        "id": "07_종합설계_04-2_프로토타이핑과테스트",
+        "name": "04-2_프로토타이핑과 테스트",
+        "subject": "종합설계",
+        "pptx": Path("data/PDF/종합설계 2026/04-2_프로토타이핑과 테스트.pptx"),
+        "reference_script": Path("data/PDF/종합설계 2026/04-2_프로토타이핑과테스트_강의스크립트.md"),
+        "output_mp4": Path("output/07_종합설계_04-2_프로토타이핑과테스트.mp4"),
+    },
+    {
+        "id": "08_종합설계_05_스크럼_활용_애자일_프로세스",
+        "name": "05_스크럼 활용 애자일 프로세스",
+        "subject": "종합설계",
+        "pptx": Path("data/PDF/종합설계 2026/05_스크럼_활용_애자일_프로세스.pptx"),
+        "reference_script": Path("data/PDF/종합설계 2026/05_스크럼_활용_애자일_프로세스_강의스크립트.md"),
+        "output_mp4": Path("output/08_종합설계_05_스크럼_활용_애자일_프로세스.mp4"),
+    },
+    {
+        "id": "09_종합설계_06_Product_Backlog",
+        "name": "06_Product Backlog",
+        "subject": "종합설계",
+        "pptx": Path("data/PDF/종합설계 2026/06_Product_Backlog.pptx"),
+        "reference_script": Path("data/PDF/종합설계 2026/06_Product_Backlog_강의스크립트.md"),
+        "output_mp4": Path("output/09_종합설계_06_Product_Backlog.mp4"),
     },
 ]
 
@@ -394,9 +431,10 @@ def _llm_config_repr(llm_client) -> str:
 
 
 def _generate_lecture_plan_cached(
-    llm_client, slides, subject: str, name: str, plan_path: Path
+    llm_client, slides, subject: str, name: str, plan_path: Path,
+    reference_outline: str | None = None,
 ) -> LecturePlan:
-    prompt_text = build_lecture_plan_prompt(slides, subject, name, TARGET_MINUTES)
+    prompt_text = build_lecture_plan_prompt(slides, subject, name, TARGET_MINUTES, reference_outline)
     cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text, _llm_config_repr(llm_client))
 
     if is_cache_valid(plan_path, cache_key):
@@ -404,7 +442,7 @@ def _generate_lecture_plan_cached(
         return LecturePlan(**json.loads(plan_path.read_text(encoding="utf-8")))
 
     logger.info("Generating lecture plan (whole-slide-set analysis)...")
-    plan = generate_lecture_plan(llm_client, slides, subject, name, TARGET_MINUTES)
+    plan = generate_lecture_plan(llm_client, slides, subject, name, TARGET_MINUTES, reference_outline)
     write_text_atomic(plan_path, json.dumps(plan.model_dump(), ensure_ascii=False, indent=2))
     write_cache_hash(plan_path, cache_key)
     logger.info("Lecture plan: %d sections covering %d slides", len(plan.sections), len(slides))
@@ -420,8 +458,15 @@ def _generate_section_scripts_cached(
     carry_forward: CarryForward | None,
     is_last_section: bool,
     section_result_path: Path,
+    reference_notes: dict[int, str] | None = None,
 ):
-    prompt_text = build_section_prompt(plan, section, slides_in_section, carry_forward, is_last_section)
+    # S3-b: reference_notes flows into prompt_text, which is what the cache
+    # key hashes below -- a changed/added/removed reference script therefore
+    # invalidates the section cache automatically, no separate hash input
+    # needed (SPEC S3-b "캐시 키... 확인하고, 아니면 포함").
+    prompt_text = build_section_prompt(
+        plan, section, slides_in_section, carry_forward, is_last_section, reference_notes=reference_notes
+    )
     image_bytes = b"".join(p.read_bytes() for p in png_paths_in_section)
     carry_forward_repr = carry_forward.model_dump_json() if carry_forward else ""
     cache_key = content_hash(
@@ -440,7 +485,8 @@ def _generate_section_scripts_cached(
 
     logger.info("Generating section %r (%d slides)...", section.title, len(section.slides))
     result = generate_section_scripts(
-        llm_client, plan, section, slides_in_section, png_paths_in_section, carry_forward, is_last_section
+        llm_client, plan, section, slides_in_section, png_paths_in_section, carry_forward, is_last_section,
+        reference_notes=reference_notes,
     )
     validate_section_result(result, section)
     write_text_atomic(
@@ -487,6 +533,36 @@ def _hand_edited(script_path: Path) -> dict | None:
     return json.loads(current)
 
 
+def _resolve_pdf_input(item: dict, input_dir: Path, lec_id: str) -> Path:
+    """S3-a: a lecture entry may give a ``"pptx"`` path instead of ``"pdf"``.
+
+    Convert it once into ``work_dir/input/<stem>.pdf`` via the same
+    ``pptx_to_pdf`` LibreOffice helper ``renderer.render_slides`` uses, then
+    everything downstream (parse/render/plan/script) is the existing
+    PDF-based pipeline unchanged. Skips reconversion when the PDF already on
+    disk is newer than the source PPTX.
+
+    Caller must hold ``work_dir/.prep.lock`` (same as stages 1-4): two shards
+    of the same lecture calling this concurrently would otherwise race on
+    ``pptx_to_pdf``'s ``/tmp/soffice-<job_id>`` UserInstallation dir, same
+    failure mode the lock already exists to prevent for PNG/script writes.
+
+    ``job_id`` passed to ``pptx_to_pdf`` is *not* ``lec_id`` directly -- it
+    only names a throwaway ``/tmp`` dir, and LibreOffice's handling of
+    non-ASCII (Korean) characters in a ``file://`` UserInstallation URL is
+    unverified. A short ascii hash keeps that question moot.
+    """
+    if "pptx" not in item:
+        return item["pdf"].resolve()
+    pptx_path = item["pptx"].resolve()
+    converted = input_dir / f"{pptx_path.stem}.pdf"
+    if not converted.exists() or converted.stat().st_mtime < pptx_path.stat().st_mtime:
+        job_id = f"batch-{content_hash(lec_id)[:12]}"
+        logger.info("[0/6] Converting PPTX -> PDF: %s", pptx_path)
+        pptx_to_pdf(pptx_path, input_dir, job_id)
+    return converted
+
+
 def process_lecture(
     item: dict,
     llm_client: OpenAILLMClient,
@@ -497,14 +573,8 @@ def process_lecture(
     target_slides: set[int] | None = None,
 ) -> Path:
     lec_id = item["id"]
-    pdf_path = item["pdf"].resolve()
     out_mp4 = item["output_mp4"].resolve()
     clone_source_id = item.get("clone_from")
-
-    logger.info("=" * 60)
-    logger.info("Processing [%s] %s (%s)", lec_id, item["name"], item["subject"])
-    logger.info("PDF: %s", pdf_path)
-    logger.info("=" * 60)
 
     work_dir = base_work_dir / lec_id
     rendered_dir = work_dir / "rendered"
@@ -512,17 +582,27 @@ def process_lecture(
     sections_dir = work_dir / "sections"
     audio_dir = work_dir / "audio"
     video_dir = work_dir / "video"
+    input_dir = work_dir / "input"
 
-    for d in (work_dir, rendered_dir, scripts_dir, sections_dir, audio_dir, video_dir, output_dir):
+    for d in (work_dir, rendered_dir, scripts_dir, sections_dir, audio_dir, video_dir, input_dir, output_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    # Stages 1-4 write PNGs and script JSON that every shard then reads. Hold
-    # an exclusive lock across them: without it a second shard starting at the
-    # same moment reads a slide PNG mid-write and the VLM rejects it as
-    # "Invalid base64 image_url". The loser of the race waits, then finds
-    # everything cached and falls through in seconds.
+    # Stages 0-4 write the converted PDF, PNGs and script JSON that every
+    # shard then reads. Hold an exclusive lock across all of them: without
+    # it a second shard starting at the same moment either races
+    # _resolve_pdf_input's PPTX->PDF conversion (S3-a) or reads a slide PNG
+    # mid-write, which the VLM rejects as "Invalid base64 image_url". The
+    # loser of the race waits, then finds everything cached and falls
+    # through in seconds.
     prep_lock = (work_dir / ".prep.lock").open("w")
     fcntl.flock(prep_lock, fcntl.LOCK_EX)
+
+    pdf_path = _resolve_pdf_input(item, input_dir, lec_id)
+
+    logger.info("=" * 60)
+    logger.info("Processing [%s] %s (%s)", lec_id, item["name"], item["subject"])
+    logger.info("PDF: %s", pdf_path)
+    logger.info("=" * 60)
 
     # 1. Parse PDF
     logger.info("[1/6] Parsing PDF...")
@@ -535,6 +615,24 @@ def process_lecture(
     png_paths, _ = render_slides(pdf_path, rendered_dir, lec_id)
     png_by_number = {i + 1: p for i, p in enumerate(png_paths)}
     logger.info("Rendered %d PNG images", len(png_paths))
+
+    # S3-b (D-11): optional reference lecture script -- fed into the prompt
+    # builders as material to draw from, never used as the script itself.
+    reference_notes: dict[int, str] | None = None
+    reference_outline: str | None = None
+    reference_script_path = item.get("reference_script")
+    if reference_script_path is not None:
+        ref_md_text = reference_script_path.read_text(encoding="utf-8")
+        reference_notes = parse_reference_script(ref_md_text)
+        reference_outline = summarize_reference_outline(ref_md_text)
+        if reference_notes:
+            max_ref_slide = max(reference_notes)
+            if max_ref_slide != slide_count:
+                logger.warning(
+                    "[%s] reference script max slide number %d != actual slide count %d "
+                    "(%s) -- slides missing from the reference are generated without it",
+                    lec_id, max_ref_slide, slide_count, reference_script_path,
+                )
 
     scripts: dict[int, dict] = {}  # slide_number -> {"target_seconds": ..., "script": ...}
 
@@ -580,7 +678,9 @@ def process_lecture(
         # 3. Lecture plan
         logger.info("[3/6] Building lecture plan...")
         plan_path = work_dir / "lecture_plan.json"
-        plan = _generate_lecture_plan_cached(llm_client, slides, item["subject"], item["name"], plan_path)
+        plan = _generate_lecture_plan_cached(
+            llm_client, slides, item["subject"], item["name"], plan_path, reference_outline
+        )
 
         # 4. Section-by-section script generation
         logger.info("[4/6] Generating scripts section by section...")
@@ -600,6 +700,7 @@ def process_lecture(
                 carry_forward,
                 is_last_section,
                 section_result_path,
+                reference_notes,
             )
             for s in result.slides:
                 script_path = scripts_dir / f"script_{s.slide_number:03d}.json"
@@ -793,7 +894,10 @@ def _parse_slides_arg(arg: str | None) -> set[int] | None:
 
 def main():
     parser = argparse.ArgumentParser(description="Batch lecture video generation")
-    parser.add_argument("--only", type=str, default=None, help="Run only specific lecture id or index (1-5)")
+    parser.add_argument(
+        "--only", type=str, default=None,
+        help=f"Run only specific lecture id or index (1-{len(LECTURES)})",
+    )
     parser.add_argument(
         "--slides", type=str, default=None,
         help="Comma-separated list of slide numbers to selectively regenerate (e.g. '23,41,48' or '23-25'). "

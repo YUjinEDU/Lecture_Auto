@@ -9,8 +9,9 @@ testable functions instead of driving the whole function. All externals
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,18 +19,25 @@ import numpy as np
 import soundfile as sf
 
 from lecture_auto.pipeline.approval import approve, load_approvals, save_approvals, verify_approved
-from lecture_auto.pipeline.cache import write_cache_hash
+from lecture_auto.pipeline.cache import content_hash, write_cache_hash
+from lecture_auto.schemas.lecture_plan import LecturePlan
+from lecture_auto.schemas.manifest import FontInfo, ShapeRecord, SlideRecord, TextParagraph, TextRun
 from lecture_auto.schemas.production import ApprovalManifest
 from scripts.batch_generate_lectures import (
+    LECTURES,
     _assemble_with_approvals,
     _cli_approve_passing,
     _draft_or_final_path,
+    _generate_section_scripts_cached,
     _invalid_slides,
+    _resolve_pdf_input,
     _run_slide_tts,
     _synthesize_all_slides,
     _tts_cache_key,
     main,
 )
+
+_MAIN_REPO_ROOT = Path("/home/dbsdosdb/workspace/Lecture_Auto")
 
 
 # ---------------------------------------------------------------------------
@@ -643,3 +651,174 @@ def test_cli_approve_passing_does_not_overwrite_existing_approval(tmp_path):
     reloaded = load_approvals(work_dir, "lec1")
     assert reloaded.slides[1].source == "candidate"
     assert reloaded.slides[1].note == "professor reviewed by ear"
+
+
+# ---------------------------------------------------------------------------
+# S3-a: PPTX input -> pptx_to_pdf (required test 5)
+# ---------------------------------------------------------------------------
+
+def test_resolve_pdf_input_converts_pptx_via_pptx_to_pdf(tmp_path):
+    pptx_path = tmp_path / "lecture.pptx"
+    pptx_path.write_bytes(b"pptx-bytes")
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    item = {"pptx": pptx_path}
+
+    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+        mock_convert.return_value = (input_dir / "lecture.pdf", "")
+        result = _resolve_pdf_input(item, input_dir, "lec1")
+
+    # job_id passed to pptx_to_pdf is an ascii hash of lec_id, not lec_id
+    # itself -- avoids an unverified "does soffice accept Hangul in a
+    # file:// UserInstallation URL" question for Korean lecture ids.
+    mock_convert.assert_called_once_with(pptx_path, input_dir, f"batch-{content_hash('lec1')[:12]}")
+    assert result == input_dir / "lecture.pdf"
+
+
+def test_resolve_pdf_input_skips_reconversion_when_pdf_is_up_to_date(tmp_path):
+    pptx_path = tmp_path / "lecture.pptx"
+    pptx_path.write_bytes(b"pptx-bytes")
+    os.utime(pptx_path, (1_000, 1_000))
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    converted = input_dir / "lecture.pdf"
+    converted.write_bytes(b"pdf-bytes")
+    os.utime(converted, (2_000, 2_000))  # newer than the pptx
+    item = {"pptx": pptx_path}
+
+    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+        result = _resolve_pdf_input(item, input_dir, "lec1")
+
+    mock_convert.assert_not_called()
+    assert result == converted
+
+
+def test_resolve_pdf_input_reconverts_when_pptx_is_newer_than_existing_pdf(tmp_path):
+    pptx_path = tmp_path / "lecture.pptx"
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    converted = input_dir / "lecture.pdf"
+    converted.write_bytes(b"stale-pdf-bytes")
+    os.utime(converted, (1_000, 1_000))
+    pptx_path.write_bytes(b"pptx-bytes")
+    os.utime(pptx_path, (2_000, 2_000))  # newer than the stale PDF
+    item = {"pptx": pptx_path}
+
+    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+        mock_convert.return_value = (converted, "")
+        _resolve_pdf_input(item, input_dir, "lec1")
+
+    mock_convert.assert_called_once_with(pptx_path, input_dir, f"batch-{content_hash('lec1')[:12]}")
+
+
+def test_resolve_pdf_input_uses_pdf_key_unchanged(tmp_path):
+    """Existing "pdf" entries (no "pptx" key) still work exactly as before."""
+    pdf_path = tmp_path / "lecture.pdf"
+    pdf_path.write_bytes(b"pdf-bytes")
+    item = {"pdf": pdf_path}
+
+    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+        result = _resolve_pdf_input(item, tmp_path / "input", "lec1")
+
+    mock_convert.assert_not_called()
+    assert result == pdf_path.resolve()
+
+
+# ---------------------------------------------------------------------------
+# S3-b: a changed reference script invalidates the section cache (required test 6)
+# ---------------------------------------------------------------------------
+
+def _plan_section_slides_for_cache_test(tmp_path):
+    plan = LecturePlan(
+        lecture_title="테스트 강의", total_minutes=5.0, opening_context="o", core_message="c",
+        recurring_examples=[], sections=[{"title": "s", "slides": [1, 2], "minutes": 1.0, "goal": "g"}],
+    )
+    section = plan.sections[0]
+
+    def shape(text: str, role: str) -> ShapeRecord:
+        return ShapeRecord(
+            shape_id=1, name="box", z_order=0, left=0, top=0, width=10, height=10,
+            content_source="text", has_text=True, text_role=role,
+            paragraphs=[TextParagraph(full_text=text, runs=[TextRun(text=text, font=FontInfo())])],
+        )
+
+    slides = [
+        SlideRecord(slide_index=n - 1, slide_number=n, png_path=f"slide_{n:03d}.png",
+                    shapes=[shape(f"제목{n}", "title"), shape(f"본문{n}", "body")])
+        for n in section.slides
+    ]
+    png_paths = []
+    for n in section.slides:
+        p = tmp_path / f"slide_{n:03d}.png"
+        p.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        png_paths.append(p)
+    return plan, section, slides, png_paths
+
+
+def _section_response(section) -> str:
+    # section.minutes=1.0 -> budget 342 chars (1.0*60*5.7); 170 chars/slide
+    # keeps both slides combined (340) inside the no-retry window (0.90-1.12x)
+    # so this test only exercises cache invalidation, not the budget retry.
+    return json.dumps(
+        {
+            "section_summary": "요약",
+            "carry_forward": {"explained": [], "active_example": "", "next_question": ""},
+            "slides": [{"slide_number": n, "target_seconds": 30.0, "script": "가" * 170} for n in section.slides],
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_reference_script_change_invalidates_section_cache(tmp_path):
+    plan, section, slides, png_paths = _plan_section_slides_for_cache_test(tmp_path)
+    section_result_path = tmp_path / "section_001.json"
+
+    client = MagicMock()
+    client.text_model = "text-model"
+    client.vlm_model = "vlm-model"
+    client.chat.return_value = _section_response(section)
+
+    _generate_section_scripts_cached(
+        client, plan, section, slides, png_paths, None, False, section_result_path,
+        reference_notes={1: "원래 참고 설명"},
+    )
+    assert client.chat.call_count == 1
+
+    # Same everything, but a changed reference script -> the section cache
+    # (keyed by build_section_prompt's text, which now embeds the reference
+    # note) must be treated as invalid and regenerate instead of reusing.
+    _generate_section_scripts_cached(
+        client, plan, section, slides, png_paths, None, False, section_result_path,
+        reference_notes={1: "바뀐 참고 설명"},
+    )
+    assert client.chat.call_count == 2
+
+    # And reusing the exact same reference_notes again hits the cache.
+    _generate_section_scripts_cached(
+        client, plan, section, slides, png_paths, None, False, section_result_path,
+        reference_notes={1: "바뀐 참고 설명"},
+    )
+    assert client.chat.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# S3-c: LECTURES entries point at real files (required test 7)
+# ---------------------------------------------------------------------------
+
+def test_lectures_new_entries_reference_real_files():
+    real_dir = _MAIN_REPO_ROOT / "data" / "PDF" / "종합설계 2026"
+    if not real_dir.is_dir():
+        pytest.skip(f"{real_dir} not present in this worktree (gitignored data)")
+
+    new_lectures = [lec for lec in LECTURES if "pptx" in lec]
+    assert len(new_lectures) == 4
+    for lec in new_lectures:
+        assert lec["subject"] == "종합설계"
+        assert (_MAIN_REPO_ROOT / lec["pptx"]).is_file(), lec["pptx"]
+        assert (_MAIN_REPO_ROOT / lec["reference_script"]).is_file(), lec["reference_script"]
+
+
+def test_lectures_new_entries_selectable_by_only_index():
+    # SPEC S3-c: "--only 인덱스로도 선택 가능해야 함(6~9)" -- 1-based index.
+    new_ids = {lec["id"] for lec in LECTURES if "pptx" in lec}
+    assert {LECTURES[i - 1]["id"] for i in range(6, 10)} == new_ids
