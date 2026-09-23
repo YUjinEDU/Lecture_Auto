@@ -14,10 +14,12 @@ import re
 import tempfile
 import time
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
+from pydantic import BaseModel
 import torch
 
 logger = logging.getLogger(__name__)
@@ -98,28 +100,15 @@ def transcribe_audio(
     return text
 
 
-def check_transcription_fidelity(
-    pipe,
-    audio_path: str | Path,
-    expected_text: str,
-) -> list[str]:
-    """Check synthesized audio against script using Raon-Speech-9B STT.
+def _stt_content_reasons(trans_clean: str, exp_clean: str) -> list[str]:
+    """Repetition-loop and length-discrepancy checks shared by the gate.
 
-    Detects:
     1. Repetition loops (hallucination babble / word repetition).
     2. Severe truncation or runaway length discrepancy in transcribed text.
+
+    Both inputs are expected to already be whitespace-collapsed and non-empty.
     """
     reasons: list[str] = []
-    try:
-        transcribed = transcribe_audio(pipe, audio_path)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("STT transcription failed during fidelity check: %s", e)
-        return []
-
-    trans_clean = re.sub(r"\s+", " ", transcribed).strip()
-    exp_clean = re.sub(r"\s+", " ", expected_text).strip()
-    if not trans_clean or not exp_clean:
-        return reasons
 
     # 1. Repetition loop detection (same word or 2-word phrase repeated consecutively)
     words = trans_clean.split()
@@ -140,6 +129,125 @@ def check_transcription_fidelity(
         reasons.append(f"stt_long({ratio:.2f})")
 
     return reasons
+
+
+_CER_STRIP_RE = re.compile(r"[\s.,!?·…\"'()\[\]]")
+
+
+def _normalize_for_cer(text: str) -> str:
+    """Normalize text for character error rate comparison.
+
+    Rules (spec SPEC_S4a.md): strip all whitespace, strip the punctuation set
+    ``.,!?·…"'()[]``, then ``.lower()`` (only affects cased letters, e.g. any
+    stray Latin text mixed into a Korean script; Korean syllables have no
+    case and are unaffected). Only the literal punctuation set the spec
+    lists is stripped -- other marks (curly quotes, colons, dashes, etc.)
+    are intentionally left in place; broadening this to
+    ``unicodedata.category(ch)[0] == "P"`` would be a reasonable follow-up
+    if real transcripts show CER inflated by punctuation outside this set.
+    """
+    return _CER_STRIP_RE.sub("", text).lower()
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Minimal character edit distance (insert/delete/substitute), O(len(a)*len(b)).
+
+    A true DP, not a difflib-style longest-common-subsequence diff: difflib's
+    opcodes are not guaranteed to be the minimum edit count.
+    """
+    if a == b:
+        return 0
+    m, n = len(a), len(b)
+    if m == 0:
+        return n
+    if n == 0:
+        return m
+    prev = list(range(n + 1))
+    for i in range(1, m + 1):
+        curr = [i] + [0] * n
+        ai = a[i - 1]
+        for j in range(1, n + 1):
+            cost = 0 if ai == b[j - 1] else 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+        prev = curr
+    return prev[n]
+
+
+def compute_cer(reference: str, hypothesis: str) -> float | None:
+    """Character Error Rate = edit_distance(ref, hyp) / len(ref), after normalization.
+
+    Returns ``None`` when the normalized reference is empty (CER is undefined).
+    """
+    ref_norm = _normalize_for_cer(reference)
+    if not ref_norm:
+        return None
+    hyp_norm = _normalize_for_cer(hypothesis)
+    return _levenshtein(ref_norm, hyp_norm) / len(ref_norm)
+
+
+class TranscriptionCheck(BaseModel):
+    """Result of comparing synthesized audio's STT transcript against its script.
+
+    Lives alongside the stage that produces it (matches ``VlmNote`` in
+    ``pipeline/vlm.py``, which is likewise a Pydantic model defined in its own
+    stage module rather than in ``lecture_auto/schemas/``) rather than in
+    ``lecture_auto/schemas/tts.py``, whose models are API request/response
+    shapes for job endpoints, not per-slide stage results. Trade-off worth
+    knowing: this module imports ``torch`` at the top, so any future API code
+    that imports ``TranscriptionCheck`` pulls in torch/soundfile/pyloudnorm
+    with it -- move it to ``schemas/tts.py`` when the web wiring for this
+    actually lands and that cost matters.
+    """
+
+    status: Literal["pass", "fail", "unavailable"]
+    reasons: list[str]
+    transcript: str | None = None
+    cer: float | None = None
+
+
+def evaluate_transcription(
+    pipe,
+    audio_path: str | Path,
+    expected_text: str,
+) -> TranscriptionCheck:
+    """Run the STT fidelity check and report status/reasons/transcript/CER.
+
+    ``status`` is ``"unavailable"`` when STT itself failed or either the
+    transcript or expected text is empty (fidelity could not be judged),
+    ``"fail"`` when content-fidelity reasons were found, otherwise ``"pass"``.
+    ``cer`` is recorded for visibility only (D-08: no pass/fail threshold) and
+    is ``None`` whenever it can't be computed.
+    """
+    try:
+        transcribed = transcribe_audio(pipe, audio_path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("STT transcription failed during fidelity check: %s", e)
+        return TranscriptionCheck(status="unavailable", reasons=[], transcript=None, cer=None)
+
+    trans_clean = re.sub(r"\s+", " ", transcribed).strip()
+    exp_clean = re.sub(r"\s+", " ", expected_text).strip()
+    if not trans_clean or not exp_clean:
+        return TranscriptionCheck(
+            status="unavailable", reasons=[], transcript=transcribed or None, cer=None
+        )
+
+    reasons = _stt_content_reasons(trans_clean, exp_clean)
+    cer = compute_cer(expected_text, transcribed)
+    status: Literal["pass", "fail"] = "fail" if reasons else "pass"
+    return TranscriptionCheck(status=status, reasons=reasons, transcript=transcribed, cer=cer)
+
+
+def check_transcription_fidelity(
+    pipe,
+    audio_path: str | Path,
+    expected_text: str,
+) -> list[str]:
+    """Check synthesized audio against script using Raon-Speech-9B STT.
+
+    Thin wrapper over :func:`evaluate_transcription` kept for existing
+    callers: same return value (``reasons``) for every input as before.
+    """
+    return evaluate_transcription(pipe, audio_path, expected_text).reasons
 
 
 def _trim_lead_tail_silence(wav: np.ndarray, sr: int = _SAMPLE_RATE) -> np.ndarray:
@@ -857,9 +965,13 @@ def synthesize_raon_slide(
     # while every segment reported ok. Only the joined wav can see it.
     if substituted:
         reasons.append(f"{substituted}-silent-substitutions")
+    stt_status: str | None = None
+    stt_cer: float | None = None
     if (verify_stt or os.environ.get("RAON_VERIFY_STT") == "1") and hasattr(pipe, "stt"):
-        stt_reasons = check_transcription_fidelity(pipe, output_path, text)
-        reasons.extend(stt_reasons)
+        stt_check = evaluate_transcription(pipe, output_path, text)
+        reasons.extend(stt_check.reasons)
+        stt_status = stt_check.status
+        stt_cer = stt_check.cer
     ok = not reasons
     # Spell out the retries. "0 failed gate" only means no segment ended on a
     # fallback; it says nothing about how many draws were spent getting there,
@@ -876,6 +988,7 @@ def synthesize_raon_slide(
         seconds=round(time.monotonic() - slide_started, 1), duration=round(duration, 1),
         fallbacks=failures, redraws=redraws, redraws_adopted=redraws_adopted,
         redraw_seconds=round(redraw_seconds, 1), ok=ok, rejected=reasons,
+        stt_status=stt_status, stt_cer=stt_cer,
     )
     return output_path, ok
 
