@@ -85,11 +85,23 @@ def test_apply_pronunciation_never_mutates_input_text_or_entries():
 # load_pronunciation_entries: the committed config/pronunciation.yaml
 # ---------------------------------------------------------------------------
 
-def test_load_pronunciation_entries_reads_committed_yaml():
+def test_committed_pronunciation_yaml_is_well_formed():
+    """Schema/sanity check on config/pronunciation.yaml -- must pass no
+    matter which entries the professor has approved (that's live user data,
+    not something a test should pin to a fixed approval state)."""
     entries = load_pronunciation_entries(_REPO_ROOT / "config" / "pronunciation.yaml")
-    assert len(entries) >= 3
-    assert all(e["approved"] is False for e in entries)
-    assert all({"written", "spoken", "approved"} <= e.keys() for e in entries)
+    # Non-empty, not a fixed count: entries are live user data the professor
+    # edits. This still catches load_pronunciation_entries silently returning
+    # [] on a missing/renamed/misconfigured path.
+    assert entries
+    written_terms = []
+    for e in entries:
+        assert {"written", "spoken", "approved"} <= e.keys()
+        assert isinstance(e["written"], str) and e["written"]
+        assert isinstance(e["spoken"], str) and e["spoken"]
+        assert isinstance(e["approved"], bool)
+        written_terms.append(e["written"])
+    assert len(written_terms) == len(set(written_terms))  # no duplicate written
 
 
 def test_load_pronunciation_entries_missing_file_returns_empty_list(tmp_path):
@@ -98,16 +110,28 @@ def test_load_pronunciation_entries_missing_file_returns_empty_list(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Cache key integration (S6 SPEC #8): approved-only dictionary changes only
-# the affected slide's key; the shipped all-false dictionary is a byte-
-# identical no-op against the pre-S6 key (golden value above).
+# the affected slide's key; an all-unapproved dictionary (built in-test
+# below, not read from the live config) and omitted entries are both
+# byte-identical to the pre-S6 key (golden value above).
 # ---------------------------------------------------------------------------
 
-def test_committed_pronunciation_yaml_is_a_cache_key_no_op():
-    """All-approved:false (the shipped state) must reproduce the exact
-    pre-S6 cache key -- otherwise every already-produced 01/04 lecture WAV
-    would look stale the moment this ships (SPEC's explicit prohibition)."""
-    entries = load_pronunciation_entries(_REPO_ROOT / "config" / "pronunciation.yaml")
+def test_all_unapproved_entries_reproduce_golden_cache_key():
+    """All-approved:false entries must reproduce the exact pre-S6 cache key
+    -- otherwise every already-produced 01/04 lecture WAV would look stale
+    the moment this ships (SPEC's explicit prohibition). Built in-test
+    (not read from the live config/pronunciation.yaml, which the professor
+    approves entries in over time) so this stays a no-op check regardless
+    of the live file's current approval state."""
+    entries = [
+        {"written": "API", "spoken": "에이피아이", "approved": False},
+        {"written": "GPU", "spoken": "지피유", "approved": False},
+        {"written": "SQL", "spoken": "에스큐엘", "approved": False},
+        {"written": "CI/CD", "spoken": "씨아이 씨디", "approved": False},
+    ]
     assert _tts_cache_key("API를 쓰는 예시입니다", b"ref", 20.0, entries) == _GOLDEN_CACHE_KEY
+
+
+def test_omitted_entries_reproduce_golden_cache_key():
     assert _tts_cache_key("API를 쓰는 예시입니다", b"ref", 20.0) == _GOLDEN_CACHE_KEY  # entries omitted
 
 
