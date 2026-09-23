@@ -16,4 +16,4 @@ output/
 data/work*
 data/audio_ref/
 data/transcripts/
-data/demo_jobs/
+data/demo_jobs/data/backup_*/
