@@ -48,11 +48,12 @@
 ## 4. 자주 쓰는 명령
 
 ```bash
-python scripts/batch_generate_lectures.py --status             # 전체 강의 진행 상황 한 표
-python scripts/batch_generate_lectures.py --only 6 --gpu 1     # 04-1 제작(대본→음성→영상)
-python scripts/batch_generate_lectures.py --only 6 --slides 12,15   # 일부 슬라이드 재생성(후보로)
-python scripts/batch_generate_lectures.py --only 6 --promote 12     # 후보 채택
-python scripts/batch_generate_lectures.py --only 6 --approve 1-46   # 현재 음성 승인
-python scripts/batch_generate_lectures.py --only 6 --assemble-only  # 모델 없이 재조립
+# 프로젝트 가상환경(.venv)의 python을 쓴다. conda (base)의 python으로는 lecture_auto를 못 찾는다.
+.venv/bin/python scripts/batch_generate_lectures.py --status             # 전체 강의 진행 상황 한 표
+.venv/bin/python scripts/batch_generate_lectures.py --only 6 --gpu 1     # 04-1 제작(대본→음성→영상)
+.venv/bin/python scripts/batch_generate_lectures.py --only 6 --slides 12,15   # 일부 슬라이드 재생성(후보로)
+.venv/bin/python scripts/batch_generate_lectures.py --only 6 --promote 12     # 후보 채택
+.venv/bin/python scripts/batch_generate_lectures.py --only 6 --approve 1-46   # 현재 음성 승인
+.venv/bin/python scripts/batch_generate_lectures.py --only 6 --assemble-only  # 모델 없이 재조립
 ```
 강의 번호(`--only`): 1–3 AI현업, 4–5 종합설계 1차, 6 04-1, 7 04-2, 8 05, 9 06.
