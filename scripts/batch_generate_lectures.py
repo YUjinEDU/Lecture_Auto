@@ -23,6 +23,7 @@ import json
 import logging
 import shutil
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from lecture_auto.llm.openai_client import OpenAILLMClient
@@ -38,9 +39,11 @@ from lecture_auto.pipeline.cache import (
     cache_path_for,
     content_hash,
     is_cache_valid,
+    qc_path_for,
     write_cache_hash,
     write_text_atomic,
 )
+from lecture_auto.pipeline.pronunciation import apply_pronunciation, load_pronunciation_entries
 from lecture_auto.pipeline.lecture_plan import (
     _PLAN_SYSTEM_PROMPT,
     build_lecture_plan_prompt,
@@ -172,7 +175,9 @@ LECTURES = [
 ]
 
 
-def _tts_cache_key(script_text: str, ref_voice_bytes: bytes, target_seconds) -> str:
+def _tts_cache_key(
+    script_text: str, ref_voice_bytes: bytes, target_seconds, entries: Sequence[dict] = ()
+) -> str:
     """TTS artifact cache key -- the single source of truth for what makes a
     synthesized slide WAV valid.
 
@@ -188,9 +193,18 @@ def _tts_cache_key(script_text: str, ref_voice_bytes: bytes, target_seconds) -> 
     this ships, even for slides whose script/voice/model config never
     changed -- S1-c's ``.cand.wav`` candidate flow is what keeps that mass
     invalidation from silently overwriting the already-reviewed WAVs.
+
+    ``entries`` (S6-d) is the pronunciation dictionary. The key is hashed on
+    the *spoken* text (``apply_pronunciation(script_text, entries)``), not
+    the raw script, per SPEC: "TTS 캐시 키는 spoken_text 기준" -- a dictionary
+    edit invalidates only the slides whose spoken text it actually changes,
+    and with every entry ``approved: false`` (the shipped default) spoken ==
+    script, so this is byte-identical to omitting ``entries`` entirely (see
+    ``test_tts_cache_key_unaffected_by_all_unapproved_entries``).
     """
+    spoken_text = apply_pronunciation(script_text, list(entries))
     return content_hash(
-        script_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION,
+        spoken_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION,
         str(target_seconds),
     )
 
@@ -200,6 +214,7 @@ def _invalid_slides(
     wav_by_number: dict[int, Path],
     scripts: dict[int, dict],
     ref_voice_bytes: bytes,
+    entries: Sequence[dict] = (),
 ) -> list[int]:
     """Slide numbers whose assembly-bound WAV is not valid for the scripts'
     *current* cache key: missing file, missing/stale ``.hash`` sidecar, or a
@@ -210,7 +225,7 @@ def _invalid_slides(
     invalid: list[int] = []
     for n in slide_numbers:
         sc = scripts[n]
-        key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+        key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
         if not is_cache_valid(wav_by_number[n], key):
             invalid.append(n)
     return invalid
@@ -223,6 +238,8 @@ def _run_slide_tts(
     out_wav: Path,
     cache_key: str,
     force_regen: bool,
+    entries: Sequence[dict] = (),
+    verify_stt: bool = True,
 ) -> bool:
     """Synthesize slide *n* audio if needed. Returns the quality-gate result
     for whatever happened this run (``True`` if the existing cache was reused
@@ -241,8 +258,17 @@ def _run_slide_tts(
     every single time, since S1-d invalidates every existing ``.hash`` at
     once. Seeds are fixed, so re-running an unforced, already-recorded
     candidate (pass or fail) would just reproduce the same result.
+
+    S6-a: ``verify_stt`` defaults to True here (batch's own default -- see
+    ``main --no-stt``), unlike ``synthesize_raon_slide``'s own ``False``
+    default, which stays unchanged for every other caller. A ``<wav>.qc.json``
+    (or ``<cand.wav>.qc.json``) is always written alongside whatever WAV this
+    call produces. S6-d: the actual synthesized (and cache-keyed) text is
+    ``apply_pronunciation(script_text, entries)``, never the raw script --
+    the caller's *cache_key* must already reflect the same ``entries``.
     """
     script_text = sc.get("script", "")
+    spoken_text = apply_pronunciation(script_text, list(entries))
 
     if not force_regen and is_cache_valid(out_wav, cache_key):
         logger.info("Slide %d audio cached, skipping...", n)
@@ -272,7 +298,8 @@ def _run_slide_tts(
             n, cand_wav, out_wav.name,
         )
         _, ok = synthesize_raon_slide(
-            tts_pipe, script_text, cand_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds")
+            tts_pipe, spoken_text, cand_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
+            verify_stt=verify_stt, qc_path=qc_path_for(cand_wav),
         )
         write_text_atomic(
             cand_json, json.dumps({"ok": ok, "cache_key": cache_key}, ensure_ascii=False, indent=2)
@@ -285,7 +312,8 @@ def _run_slide_tts(
 
     logger.info("Synthesizing slide %d audio (%d chars)...", n, len(script_text))
     _, ok = synthesize_raon_slide(
-        tts_pipe, script_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds")
+        tts_pipe, spoken_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
+        verify_stt=verify_stt, qc_path=qc_path_for(out_wav),
     )
     if ok:
         write_cache_hash(out_wav, cache_key)
@@ -307,6 +335,8 @@ def _synthesize_all_slides(
     shard: tuple[int, int],
     target_slides: set[int] | None,
     approved_numbers: set[int],
+    entries: Sequence[dict] = (),
+    verify_stt: bool = True,
 ) -> tuple[list[Path], list[int]]:
     """Stage 5 of ``process_lecture``, pulled out for direct testing: decide
     per slide whether to synthesize, skip (sharded/kept/approved), and
@@ -340,9 +370,11 @@ def _synthesize_all_slides(
             wav_paths.append(out_wav)
             continue
 
-        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
         force_regen = target_slides is not None and n in target_slides
-        ok = _run_slide_tts(tts_pipe, n, sc, out_wav, cache_key, force_regen)
+        ok = _run_slide_tts(
+            tts_pipe, n, sc, out_wav, cache_key, force_regen, entries=entries, verify_stt=verify_stt
+        )
         if not ok:
             failed_slides.append(n)
         wav_paths.append(out_wav)
@@ -374,6 +406,7 @@ def _assemble_with_approvals(
     png_paths: list[Path],
     wav_paths: list[Path],
     ref_voice_bytes: bytes,
+    entries: Sequence[dict] = (),
 ) -> Path:
     """Shared assemble+timeline tail (S2) for both the normal pipeline and
     ``--assemble-only``.
@@ -397,7 +430,9 @@ def _assemble_with_approvals(
         )
 
     wav_by_number = dict(zip(range(1, slide_count + 1), wav_paths))
-    invalid = _invalid_slides(list(range(1, slide_count + 1)), wav_by_number, scripts, ref_voice_bytes)
+    invalid = _invalid_slides(
+        list(range(1, slide_count + 1)), wav_by_number, scripts, ref_voice_bytes, entries
+    )
     invalid = [n for n in invalid if n not in approved_numbers]
     target_mp4 = _draft_or_final_path(out_mp4, invalid)
     if invalid:
@@ -571,6 +606,8 @@ def process_lecture(
     output_dir: Path,
     shard: tuple[int, int] = (0, 1),
     target_slides: set[int] | None = None,
+    entries: Sequence[dict] = (),
+    verify_stt: bool = True,
 ) -> Path:
     lec_id = item["id"]
     out_mp4 = item["output_mp4"].resolve()
@@ -736,6 +773,7 @@ def process_lecture(
 
     wav_paths, failed_slides = _synthesize_all_slides(
         tts_pipe, slide_count, scripts, audio_dir, ref_voice_bytes, shard, target_slides, approved_numbers,
+        entries=entries, verify_stt=verify_stt,
     )
     shard_index, shard_count = shard
 
@@ -763,11 +801,13 @@ def process_lecture(
     logger.info("[6/6] Assembling video + timeline...")
     return _assemble_with_approvals(
         lec_id, work_dir, audio_dir, video_dir, out_mp4, slide_count,
-        scripts, png_paths, wav_paths, ref_voice_bytes,
+        scripts, png_paths, wav_paths, ref_voice_bytes, entries,
     )
 
 
-def assemble_only(item: dict, base_work_dir: Path, output_dir: Path) -> Path:
+def assemble_only(
+    item: dict, base_work_dir: Path, output_dir: Path, entries: Sequence[dict] = ()
+) -> Path:
     """``--assemble-only``: assemble the current on-disk PNGs/WAVs into a
     video + timeline. Loads no TTS model and makes no LLM call -- slide
     scripts are read straight from the ``scripts/script_NNN.json`` cache a
@@ -803,11 +843,11 @@ def assemble_only(item: dict, base_work_dir: Path, output_dir: Path) -> Path:
 
     return _assemble_with_approvals(
         lec_id, work_dir, audio_dir, video_dir, out_mp4, slide_count,
-        scripts, png_paths, wav_paths, ref_voice_bytes,
+        scripts, png_paths, wav_paths, ref_voice_bytes, entries,
     )
 
 
-def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str) -> None:
+def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str, entries: Sequence[dict] = ()) -> None:
     """``--approve``: pin the current ``slide_NNN.wav`` as approved
     (``source="existing"``) for each slide in *slides_arg*. Reads only the
     on-disk script cache to compute ``gate_ok``; no LLM/TTS model is loaded.
@@ -825,14 +865,14 @@ def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str) -> None:
         if script_path.exists():
             sc = json.loads(script_path.read_text(encoding="utf-8"))
             out_wav = audio_dir / f"slide_{n:03d}.wav"
-            cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+            cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
             gate_ok = is_cache_valid(out_wav, cache_key)
         manifest = approve(manifest, audio_dir, n, source="existing", gate_ok=gate_ok)
         logger.info("Approved slide %d (existing, gate_ok=%s)", n, gate_ok)
     save_approvals(work_dir, manifest)
 
 
-def _cli_approve_passing(item: dict, base_work_dir: Path) -> None:
+def _cli_approve_passing(item: dict, base_work_dir: Path, entries: Sequence[dict] = ()) -> None:
     """``--approve-passing``: approve every slide whose current WAV is still
     valid for the current TTS cache key (``source="gate_pass"``).
 
@@ -855,7 +895,7 @@ def _cli_approve_passing(item: dict, base_work_dir: Path) -> None:
             continue
         sc = json.loads(script_path.read_text(encoding="utf-8"))
         out_wav = audio_dir / f"slide_{n:03d}.wav"
-        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
         if is_cache_valid(out_wav, cache_key):
             manifest = approve(manifest, audio_dir, n, source="gate_pass", gate_ok=True)
             approved_count += 1
@@ -943,11 +983,22 @@ def main():
         "--note", type=str, default="",
         help="With --promote: note recorded on the approval entry.",
     )
+    parser.add_argument(
+        "--no-stt", action="store_true",
+        help="S6-a: disable the post-synthesis STT fidelity check (on by default). "
+             "STT adds one transcription pass per slide and can turn a previously "
+             "gate-passing slide into a candidate/DRAFT if the transcript doesn't "
+             "match (content-fidelity reasons feed the same gate as everything else).",
+    )
     args = parser.parse_args()
 
     base_work = Path("data/work_batch")
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
+    # S6-d: professor-approved pronunciation overrides, applied only right
+    # before synthesis (never rewrites script JSON). Every shipped entry is
+    # approved:false, so this is a no-op until someone flips one to true.
+    pronunciation_entries = load_pronunciation_entries(Path("config/pronunciation.yaml"))
 
     approval_mode = bool(args.approve or args.approve_passing or args.promote or args.assemble_only)
     if approval_mode and not args.only:
@@ -976,13 +1027,13 @@ def main():
         # never load the TTS model or the LLM client (SPEC S2 §3).
         item = selected[0]
         if args.approve:
-            _cli_approve(item, base_work, args.approve)
+            _cli_approve(item, base_work, args.approve, pronunciation_entries)
         if args.approve_passing:
-            _cli_approve_passing(item, base_work)
+            _cli_approve_passing(item, base_work, pronunciation_entries)
         if args.promote:
             _cli_promote(item, base_work, args.promote, args.allow_failed, args.note)
         if args.assemble_only:
-            mp4_path = assemble_only(item, base_work, output_dir)
+            mp4_path = assemble_only(item, base_work, output_dir, pronunciation_entries)
             logger.info("Assembled (no synth/LLM): %s", mp4_path)
         return
 
@@ -1009,10 +1060,12 @@ def main():
     logger.info("Lectures to generate: %d", len(selected))
     results = []
 
+    verify_stt = not args.no_stt
     for lec in selected:
         t0 = time.time()
         mp4_path = process_lecture(
-            lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides
+            lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
+            entries=pronunciation_entries, verify_stt=verify_stt,
         )
         elapsed = time.time() - t0
         results.append((lec["id"], mp4_path, elapsed))

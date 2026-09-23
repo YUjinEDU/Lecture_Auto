@@ -39,6 +39,12 @@ class TimelineEntry(BaseModel):
     wav: str
     wav_sha256: str
     approved: bool
+    # S6-a: read from the slide's .qc.json sidecar (pipeline/raon_tts.py's
+    # synthesize_raon_slide) if present, None otherwise -- old timeline.json
+    # files without these fields still validate.
+    stt_status: Literal["pass", "fail", "unavailable"] | None = None
+    cer: float | None = None
+    gate_ok: bool | None = None
 
 
 class Timeline(BaseModel):
@@ -47,3 +53,50 @@ class Timeline(BaseModel):
     draft: bool
     total_seconds: float
     entries: list[TimelineEntry] = Field(default_factory=list)
+
+
+class TranscriptionCheck(BaseModel):
+    """Result of comparing synthesized audio's STT transcript against its script.
+
+    Moved here (S6-a) from ``pipeline/raon_tts.py``, which defined it inline
+    (see that module's git history) because it imports ``torch`` at module
+    scope -- any future API code that only needs this result type used to pull
+    in torch/soundfile/pyloudnorm with it. ``pipeline/raon_tts.py`` re-exports
+    this exact class so ``from lecture_auto.pipeline.raon_tts import
+    TranscriptionCheck`` keeps working for existing callers.
+    """
+
+    status: Literal["pass", "fail", "unavailable"]
+    reasons: list[str]
+    transcript: str | None = None
+    cer: float | None = None
+
+
+class SegmentQC(BaseModel):
+    """One synthesized TTS segment/piece within a slide (S6-a, F1/F6)."""
+
+    index: int
+    text: str
+    seed: int | None
+    call: Literal["tts", "tts_continuation"] | None
+    continuation_from: int | None = None  # index of the prior SegmentQC used as
+    # tts_continuation's audio reference, or None if this piece used plain tts.
+    fallback: bool = False  # True if this piece never passed its own quality gate.
+
+
+class SlideQC(BaseModel):
+    """Per-slide TTS quality record, written by ``synthesize_raon_slide`` when
+    called with ``qc_path`` (S6-a). Sits next to the WAV as ``<wav>.qc.json``.
+    """
+
+    ok: bool
+    gate_reasons: list[str] = Field(default_factory=list)
+    stt: TranscriptionCheck | None = None
+    spoken_text_sha256: str
+    segments: list[SegmentQC] = Field(default_factory=list)
+    # F6: segments whose continuation source was redrawn/replaced after they
+    # were already generated from it -- the join no longer reflects the take
+    # that shipped, so these are worth re-listening to. See raon_tts.py.
+    boundary_review: list[int] = Field(default_factory=list)
+    synth_version: str
+    created_at: datetime

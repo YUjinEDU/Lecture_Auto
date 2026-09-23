@@ -1,0 +1,14 @@
+# 화면 표기: TTS 발음. 교수님 확인된 항목만. 문맥에 따라 다르게 읽는 용어는 넣지 말 것.
+entries:
+  - written: "API"
+    spoken: "에이피아이"
+    approved: false
+  - written: "GPU"
+    spoken: "지피유"
+    approved: false
+  - written: "SQL"
+    spoken: "에스큐엘"
+    approved: false
+  - written: "CI/CD"
+    spoken: "씨아이 씨디"
+    approved: false

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-from lecture_auto.pipeline.cache import cache_path_for, write_cache_hash, write_text_atomic
+from lecture_auto.pipeline.cache import cache_path_for, qc_path_for, write_cache_hash, write_text_atomic
 from lecture_auto.schemas.production import (
     ApprovalManifest,
     ApprovedSlide,
@@ -117,6 +117,8 @@ def promote_candidate(
         )
 
     hash_path = cache_path_for(wav_path)
+    qc_path = qc_path_for(wav_path)
+    cand_qc_path = qc_path_for(cand_wav)
     prev_wav = audio_dir / f"slide_{n:03d}.prev.wav"
     if wav_path.exists():
         os.replace(wav_path, prev_wav)
@@ -126,10 +128,18 @@ def promote_candidate(
         # No current hash -- don't let a stale hash from an earlier prev.wav
         # linger and get paired with this (unhashed) prev.wav.
         cache_path_for(prev_wav).unlink(missing_ok=True)
+    # S6-a: same keep-as-prev treatment for the QC sidecar as the hash above,
+    # so a bad promotion can be undone with its quality record intact too.
+    if qc_path.exists():
+        os.replace(qc_path, qc_path_for(prev_wav))
+    else:
+        qc_path_for(prev_wav).unlink(missing_ok=True)
 
     os.replace(cand_wav, wav_path)
     if ok:
         write_cache_hash(wav_path, cand_info.get("cache_key", ""))
+    if cand_qc_path.exists():
+        os.replace(cand_qc_path, qc_path)
 
     cand_json_path.unlink()
 
@@ -145,12 +155,31 @@ def build_timeline(
 ) -> Timeline:
     """Build a ``Timeline`` from WAVs in the exact order they were merged for
     the video (same list ``assemble_video`` consumed, so start/duration match
-    the actual MP4)."""
+    the actual MP4).
+
+    S6-a: each entry's ``stt_status``/``cer``/``gate_ok`` are read from the
+    WAV's ``.qc.json`` sidecar (``synthesize_raon_slide``'s ``qc_path``) if
+    one exists there, so a professor/web UI can sort by CER without opening
+    every sidecar by hand; a slide with no QC record (or an unreadable one)
+    just gets ``None`` for all three -- this never blocks timeline building.
+    """
     entries: list[TimelineEntry] = []
     start = 0.0
     for n, wav_path in slide_wavs:
         wav_path = Path(wav_path)
         duration = sf.info(str(wav_path)).duration
+        stt_status = cer = gate_ok = None
+        qc_file = qc_path_for(wav_path)
+        if qc_file.exists():
+            try:
+                qc_data = json.loads(qc_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                qc_data = None
+            if qc_data is not None:
+                gate_ok = qc_data.get("ok")
+                stt = qc_data.get("stt") or {}
+                stt_status = stt.get("status")
+                cer = stt.get("cer")
         entries.append(
             TimelineEntry(
                 slide_number=n,
@@ -159,6 +188,9 @@ def build_timeline(
                 wav=wav_path.name,
                 wav_sha256=_sha256_file(wav_path),
                 approved=n in approved,
+                stt_status=stt_status,
+                cer=cer,
+                gate_ok=gate_ok,
             )
         )
         start += duration

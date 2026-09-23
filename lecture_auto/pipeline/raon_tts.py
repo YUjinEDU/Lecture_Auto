@@ -6,6 +6,7 @@ Supports:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -13,16 +14,22 @@ import os
 import re
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
-from pydantic import BaseModel
 import torch
 
+from lecture_auto.pipeline.cache import qc_path_for, write_text_atomic
+from lecture_auto.schemas.production import SegmentQC, SlideQC, TranscriptionCheck
+
 logger = logging.getLogger(__name__)
+
+# TranscriptionCheck is re-exported from schemas/production.py (S6-a moved it
+# there); `from lecture_auto.pipeline.raon_tts import TranscriptionCheck`
+# keeps working for existing callers (S4-a review follow-up).
 
 _DEFAULT_MODEL_ID = "KRAFTON/Raon-Speech-9B"
 _SAMPLE_RATE = 24000
@@ -183,26 +190,6 @@ def compute_cer(reference: str, hypothesis: str) -> float | None:
         return None
     hyp_norm = _normalize_for_cer(hypothesis)
     return _levenshtein(ref_norm, hyp_norm) / len(ref_norm)
-
-
-class TranscriptionCheck(BaseModel):
-    """Result of comparing synthesized audio's STT transcript against its script.
-
-    Lives alongside the stage that produces it (matches ``VlmNote`` in
-    ``pipeline/vlm.py``, which is likewise a Pydantic model defined in its own
-    stage module rather than in ``lecture_auto/schemas/``) rather than in
-    ``lecture_auto/schemas/tts.py``, whose models are API request/response
-    shapes for job endpoints, not per-slide stage results. Trade-off worth
-    knowing: this module imports ``torch`` at the top, so any future API code
-    that imports ``TranscriptionCheck`` pulls in torch/soundfile/pyloudnorm
-    with it -- move it to ``schemas/tts.py`` when the web wiring for this
-    actually lands and that cost matters.
-    """
-
-    status: Literal["pass", "fail", "unavailable"]
-    reasons: list[str]
-    transcript: str | None = None
-    cer: float | None = None
 
 
 def evaluate_transcription(
@@ -630,6 +617,7 @@ def _synthesize_segment_with_gate(
     continuation_ref: tuple[Path, str] | None = None,
     energy_reference: float | None = None,
     depth: int = 0,
+    record: dict | None = None,
 ) -> tuple[np.ndarray, int, bool]:
     """Synthesize one short segment, retrying with a different seed on gate failure.
 
@@ -641,6 +629,13 @@ def _synthesize_segment_with_gate(
     empirically that the returned waveform is only the new continuation, not
     a copy of the prefilled reference -- correlation ~0 between the two).
     When ``None`` (first segment of a slide), falls back to plain ``tts()``.
+
+    ``record`` (S6-a), if given, is mutated in place with ``{"seed": ...,
+    "call": "tts" | "tts_continuation" | None}`` for whichever attempt is
+    actually returned (the passing one, or the least-bad fallback) -- this is
+    how the caller learns *which* draw was kept without changing this
+    function's return shape, which existing tests unpack as a plain 3-tuple.
+    ``seed``/``call`` are ``None`` only when every attempt raised.
     """
     # +8 tokens of slack for the audio-end marker so a clip that is exactly
     # long enough is not cut off mid-word by its own budget.
@@ -663,6 +658,7 @@ def _synthesize_segment_with_gate(
 
     best_fallback: tuple[np.ndarray, int] | None = None
     best_fallback_score = float("inf")  # longest internal silence/babble run, seconds -- lower is better
+    best_fallback_attempt: tuple[int, bool] | None = None  # (seed, use_continuation) that produced it
     # Spend two seeds on continuation, then stop asking it. When
     # tts_continuation fails on a (text, prefill) pair it fails on every seed --
     # all three of a batch's crashes repeated identically across seeds, and
@@ -712,6 +708,9 @@ def _synthesize_segment_with_gate(
             out_seconds=round(len(trimmed) / sr, 2), outcome="pass" if passed else "gate_fail",
         )
         if passed:
+            if record is not None:
+                record["seed"] = seed
+                record["call"] = "tts_continuation" if use_continuation else "tts"
             return trimmed, sr, True
         # Keep the least-bad failed attempt as fallback, not just the first
         # one tried -- an early seed's babble shouldn't beat a later seed's
@@ -725,6 +724,7 @@ def _synthesize_segment_with_gate(
         if score < best_fallback_score:
             best_fallback_score = score
             best_fallback = (trimmed, sr)
+            best_fallback_attempt = (seed, use_continuation)
 
     if best_fallback is None:
         # Every seed raised -- no audio was ever produced for this segment.
@@ -733,9 +733,16 @@ def _synthesize_segment_with_gate(
         # narration is far cheaper than losing hours of an unattended batch.
         logger.error("All %d attempts raised for segment, using silence: %r", len(attempts), text[:60])
         silence = np.zeros(int(_SAMPLE_RATE * expected_seconds), dtype=np.float32)
+        if record is not None:
+            record["seed"] = None
+            record["call"] = None
         return silence, _SAMPLE_RATE, False
 
     logger.warning("Segment failed quality gate after %d attempts: %r", len(attempts), text[:60])
+    if record is not None and best_fallback_attempt is not None:
+        fb_seed, fb_use_continuation = best_fallback_attempt
+        record["seed"] = fb_seed
+        record["call"] = "tts_continuation" if fb_use_continuation else "tts"
     return best_fallback[0], best_fallback[1], False
 
 
@@ -753,6 +760,26 @@ class _SplitState:
         return path, text
 
 
+def _meta_for_leaf(record: dict, continuation_ref, own_path, fallback: bool) -> dict:
+    """Build one S6-a piece-metadata dict from a ``_synthesize_segment_with_gate``
+    ``record`` (``{"seed": ..., "call": ...}``).
+
+    ``continuation_from_path`` is the *path* of the ref actually used --
+    resolved to a ``SegmentQC.continuation_from`` index only once the whole
+    slide's piece list is final (see ``synthesize_raon_slide``), because a
+    piece's final index isn't known while generation is still in progress and
+    a split can discard already-generated children (see docstring below).
+    """
+    used_continuation = record.get("call") == "tts_continuation"
+    return {
+        "seed": record.get("seed"),
+        "call": record.get("call"),
+        "fallback": fallback,
+        "continuation_from_path": continuation_ref[0] if (used_continuation and continuation_ref is not None) else None,
+        "own_path": own_path,
+    }
+
+
 def _synthesize_with_splitting(
     pipe,
     text: str,
@@ -760,6 +787,7 @@ def _synthesize_with_splitting(
     continuation_ref: tuple[Path, str] | None,
     depth: int,
     state: _SplitState,
+    metas: list[dict] | None = None,
 ) -> tuple[list[tuple[str, np.ndarray, int]], bool, tuple[Path, str] | None]:
     """Synthesize one segment, splitting and retrying only if that actually helps.
 
@@ -779,22 +807,36 @@ def _synthesize_with_splitting(
     parent's own single best attempt caps a failure at exactly what it cost
     before splitting existed, while keeping the full benefit when a split does
     produce clean children.
+
+    ``metas`` (S6-a), if given, gets exactly one dict appended per entry in
+    the *returned* pieces list, in the same order -- so callers pair
+    ``metas[i]`` with the piece at the same position without needing a
+    parallel index scheme through the recursion. When a split is attempted
+    but discarded (one child failed), the children's own metas are dropped
+    along with their audio -- they were never part of the output, so
+    recording them would describe generations the final WAV never contains.
     """
     expected_seconds = max(len(text) / _CHARS_PER_SECOND, 3.0)
+    record: dict = {}
     audio, sr, ok = _synthesize_segment_with_gate(
-        pipe, text, speaker_audio, expected_seconds, continuation_ref=continuation_ref, depth=depth
+        pipe, text, speaker_audio, expected_seconds, continuation_ref=continuation_ref, depth=depth, record=record
     )
     if ok:
         # Only a passing segment becomes the prosody reference for the next
         # one. Prefilling tts_continuation with a collapsed generation
         # propagates that collapse forward.
-        return [(text, audio, sr)], True, state.save_ref(audio, sr, text)
+        ref = state.save_ref(audio, sr, text)
+        if metas is not None:
+            metas.append(_meta_for_leaf(record, continuation_ref, ref[0], fallback=False))
+        return [(text, audio, sr)], True, ref
 
     # Below this a split is not worth attempting: the halves are too short to
     # be judged reliably and each one still costs a full set of draws.
     splittable = len(text) > _MIN_SPLIT_WORTH_CHARS
     halves = split_in_half(text) if depth < _MAX_SPLIT_DEPTH and splittable else [text]
     if len(halves) != 2:
+        if metas is not None:
+            metas.append(_meta_for_leaf(record, continuation_ref, None, fallback=True))
         return [(text, audio, sr)], False, continuation_ref
 
     logger.info(
@@ -802,11 +844,12 @@ def _synthesize_with_splitting(
         depth, len(text), len(halves[0]), len(halves[1]),
     )
     child_pieces: list[tuple[str, np.ndarray, int]] = []
+    child_metas: list[dict] = []
     child_ref = continuation_ref
     all_ok = True
     for half in halves:
         got, child_ok, child_ref = _synthesize_with_splitting(
-            pipe, half, speaker_audio, child_ref, depth + 1, state
+            pipe, half, speaker_audio, child_ref, depth + 1, state, metas=child_metas
         )
         child_pieces.extend(got)
         if not child_ok:
@@ -817,12 +860,43 @@ def _synthesize_with_splitting(
             break
 
     if all_ok:
+        if metas is not None:
+            metas.extend(child_metas)
         return child_pieces, True, child_ref
     logger.warning(
         "Split of %d chars did not produce clean halves -- keeping the parent's best attempt",
         len(text),
     )
+    if metas is not None:
+        # Same first-attempt record as the len(halves) != 2 branch above --
+        # this is the parent's own pre-split draw, kept because the split
+        # attempt was discarded.
+        metas.append(_meta_for_leaf(record, continuation_ref, None, fallback=True))
     return [(text, audio, sr)], False, continuation_ref
+
+
+def _write_slide_qc(
+    qc_path: Path,
+    *,
+    ok: bool,
+    gate_reasons: list[str],
+    stt,
+    spoken_text: str,
+    segments: list[SegmentQC],
+    boundary_review: list[int],
+) -> None:
+    """Write ``qc_path`` atomically as a ``SlideQC`` (S6-a)."""
+    qc = SlideQC(
+        ok=ok,
+        gate_reasons=gate_reasons,
+        stt=stt,
+        spoken_text_sha256=hashlib.sha256(spoken_text.encode("utf-8")).hexdigest(),
+        segments=segments,
+        boundary_review=boundary_review,
+        synth_version=TTS_SYNTH_VERSION,
+        created_at=datetime.now(timezone.utc),
+    )
+    write_text_atomic(qc_path, qc.model_dump_json(indent=2))
 
 
 def synthesize_raon_slide(
@@ -832,6 +906,7 @@ def synthesize_raon_slide(
     speaker_audio: Path | str | None = None,
     max_seconds: float | None = None,
     verify_stt: bool = False,
+    qc_path: Path | None = None,
 ) -> tuple[Path, bool]:
     """Synthesize a slide's script as short, quality-gated segments.
 
@@ -856,6 +931,13 @@ def synthesize_raon_slide(
     audio is still written either way -- an unattended multi-hour batch must
     not die over one bad slide -- but callers MUST NOT cache a False result,
     or the next run adopts the damaged audio as a valid artifact.
+
+    ``qc_path`` (S6-a), if given, gets a ``SlideQC`` written atomically next
+    to the audio -- segment-level seed/call/continuation bookkeeping (F1) and,
+    when the second pass below actually replaces a piece another piece was
+    already generated as a ``tts_continuation`` of, that downstream piece's
+    index in ``boundary_review`` (F6) for a human to re-listen to. ``None``
+    (the default) writes nothing, matching every existing caller.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -865,6 +947,11 @@ def synthesize_raon_slide(
         logger.debug("Empty text for slide -- generating 1s silence at %s", output_path)
         silence = np.zeros(int(_SAMPLE_RATE * 1.0), dtype=np.float32)
         sf.write(str(output_path), silence, _SAMPLE_RATE)
+        if qc_path is not None:
+            _write_slide_qc(
+                qc_path, ok=True, gate_reasons=[], stt=None,
+                spoken_text=text, segments=[], boundary_review=[],
+            )
         return output_path, True
 
     segments = split_into_segments(text)
@@ -872,6 +959,7 @@ def synthesize_raon_slide(
 
     pieces: list[np.ndarray] = []
     seg_spans: list[tuple[str, int]] = []  # (text, index into pieces)
+    metas: list[dict] = []  # S6-a: one entry per seg_spans entry, same order
     sr = _SAMPLE_RATE
     failures = 0
     generated = 0
@@ -879,6 +967,7 @@ def synthesize_raon_slide(
     redraws = 0
     redraws_adopted = 0
     redraw_seconds = 0.0
+    adopted_redraw_indices: set[int] = set()
     slide_started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="raon_seg_") as tmp_dir:
         state = _SplitState(Path(tmp_dir))
@@ -886,7 +975,7 @@ def synthesize_raon_slide(
 
         for segment in segments:
             seg_pieces, ok, continuation_ref = _synthesize_with_splitting(
-                pipe, segment, speaker_audio, continuation_ref, depth=0, state=state
+                pipe, segment, speaker_audio, continuation_ref, depth=0, state=state, metas=metas
             )
             if not ok:
                 failures += 1
@@ -909,6 +998,17 @@ def synthesize_raon_slide(
 
         joined = np.concatenate(pieces) if pieces else np.zeros(int(sr * 1.0), dtype=np.float32)
 
+        # S6-a/F6: resolve each piece's continuation_from *index* now, before
+        # the redraw pass below can replace a piece -- path-matched (not
+        # "index - 1") because a failed leaf doesn't update the continuation
+        # chain, so the next piece's real ref can be more than one slot back.
+        # Only pieces that actually made it into the output have "own_path"
+        # set (see _synthesize_with_splitting/_meta_for_leaf), so a discarded
+        # split child's orphaned ref path simply matches nothing here.
+        path_to_index = {m["own_path"]: i for i, m in enumerate(metas) if m.get("own_path") is not None}
+        for m in metas:
+            m["continuation_from"] = path_to_index.get(m.get("continuation_from_path"))
+
         # Second pass. A segment's own gate compares it against itself, so a
         # uniformly quiet generation always passes and never consumes a retry
         # -- that is why slides 018/019/038 came back byte-identical no matter
@@ -917,7 +1017,7 @@ def synthesize_raon_slide(
         # ones that are only quiet next to their neighbours.
         reference = _speech_reference(joined, sr)
         if reference > 1e-6:
-            for seg_text, idx in seg_spans:
+            for leaf_idx, (seg_text, idx) in enumerate(seg_spans):
                 piece = pieces[idx]
                 quiet = _voiced_ratio(piece, sr, reference=reference)
                 gap = _longest_silence_seconds(piece, sr, reference=reference)
@@ -933,10 +1033,12 @@ def synthesize_raon_slide(
                     quiet, gap, seg_text[:60],
                 )
                 redraw_started = time.monotonic()
+                redraw_record: dict = {}
                 redraw, redraw_sr, ok = _synthesize_segment_with_gate(
                     pipe, seg_text, speaker_audio,
                     max(len(seg_text) / _CHARS_PER_SECOND, 3.0),
                     energy_reference=reference,
+                    record=redraw_record,
                 )
                 _trace(
                     event="redraw", slide=output_path.name, chars=len(seg_text),
@@ -950,7 +1052,24 @@ def synthesize_raon_slide(
                     pieces[idx] = redraw
                     sr = redraw_sr
                     failures = max(0, failures - 1)
+                    # This piece's own audio is now the redraw's, generated
+                    # fresh with no continuation_ref (see the call above) --
+                    # any piece downstream that was generated as a
+                    # tts_continuation of the REPLACED audio no longer
+                    # reflects what's actually in the joined WAV (F6).
+                    metas[leaf_idx]["seed"] = redraw_record.get("seed")
+                    metas[leaf_idx]["call"] = redraw_record.get("call")
+                    metas[leaf_idx]["fallback"] = False
+                    metas[leaf_idx]["continuation_from"] = None
+                    adopted_redraw_indices.add(leaf_idx)
             joined = np.concatenate(pieces)
+
+    # F6: flag every piece whose recorded continuation source was one of the
+    # pieces actually replaced above. A piece that was itself redrawn now has
+    # continuation_from=None (set just above) and drops out of this check.
+    boundary_review = sorted(
+        i for i, m in enumerate(metas) if m.get("continuation_from") in adopted_redraw_indices
+    )
 
     normalized = _loudness_normalize(joined, sr)
     sf.write(str(output_path), normalized, sr)
@@ -967,8 +1086,15 @@ def synthesize_raon_slide(
         reasons.append(f"{substituted}-silent-substitutions")
     stt_status: str | None = None
     stt_cer: float | None = None
-    if (verify_stt or os.environ.get("RAON_VERIFY_STT") == "1") and hasattr(pipe, "stt"):
-        stt_check = evaluate_transcription(pipe, output_path, text)
+    stt_check: TranscriptionCheck | None = None
+    if verify_stt or os.environ.get("RAON_VERIFY_STT") == "1":
+        if hasattr(pipe, "stt"):
+            stt_check = evaluate_transcription(pipe, output_path, text)
+        else:
+            # STT was requested but this pipe can't do it (e.g. a fake/mock
+            # in tests, or a real pipe built without the STT head) -- record
+            # that the check could not run rather than silently skipping it.
+            stt_check = TranscriptionCheck(status="unavailable", reasons=[], transcript=None, cer=None)
         reasons.extend(stt_check.reasons)
         stt_status = stt_check.status
         stt_cer = stt_check.cer
@@ -990,6 +1116,24 @@ def synthesize_raon_slide(
         redraw_seconds=round(redraw_seconds, 1), ok=ok, rejected=reasons,
         stt_status=stt_status, stt_cer=stt_cer,
     )
+
+    if qc_path is not None:
+        segments_qc = [
+            SegmentQC(
+                index=i,
+                text=seg_spans[i][0],
+                seed=m.get("seed"),
+                call=m.get("call"),
+                continuation_from=m.get("continuation_from"),
+                fallback=bool(m.get("fallback", False)),
+            )
+            for i, m in enumerate(metas)
+        ]
+        _write_slide_qc(
+            qc_path, ok=ok, gate_reasons=reasons, stt=stt_check,
+            spoken_text=text, segments=segments_qc, boundary_review=boundary_review,
+        )
+
     return output_path, ok
 
 
