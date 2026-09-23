@@ -247,6 +247,14 @@ detail.
 
 ## Known issues
 
-- `api.txt` at the repo root contains a leaked OpenAI key — do not read/echo it; it needs to
-  be scrubbed from history and rotated (not yet done as of this writing).
-- `=2.0.0` at the repo root is stray `pip install` error output, safe to delete.
+- None open. (`api.txt` key was revoked and purged from history on 2026-09-23; stray root files removed.)
+
+## Production batch workflow (scripts/batch_generate_lectures.py)
+
+Hardening work is tracked in `docs/hardening/` (status board in its `README.md`). Key rules:
+- Existing slide WAVs are never overwritten by resynthesis — new takes go to `slide_NNN.cand.wav`.
+- Human-approved audio lives in `data/work_batch/<lec>/approved.json` (sha256-pinned) and is never
+  resynthesized unless named in `--slides`; `--promote N` swaps a candidate in.
+- `--approve`, `--approve-passing`, `--promote`, `--assemble-only` need `--only <lecture>` and load
+  no TTS model / LLM. Unapproved + cache-invalid audio yields `<name>_DRAFT.mp4`; every assembly
+  writes `<mp4 stem>.timeline.json`.

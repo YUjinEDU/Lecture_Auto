@@ -18,3 +18,5 @@ data/audio_ref/
 data/transcripts/
 data/demo_jobs/
 data/backup_*/
+PPTX/
+__pycache__/
