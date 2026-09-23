@@ -24,12 +24,16 @@ logger = logging.getLogger(__name__)
 
 # Measured rendering rate of Raon-Speech-9B on this professor's cloned voice,
 # NOT how fast the professor himself talks (he runs 6.46 chars/s over his 32min
-# recording). Only the TTS rate determines video length: two gate-passing v7
-# generations came out at 5.52 and 5.84 chars/s. The previous 7.0 is why 48
-# slides budgeted to exactly 30.0 minutes rendered as 42.2 minutes of audio.
+# recording). Only the TTS rate determines video length.
+# S9/D-15: this constant's prior value (5.7) was measured against the
+# length-based segment gate it then fed. EXPERIMENT.md (pipeline/raon_tts.py
+# has the full citation): of 20 plain-tts segments that gate rejected as
+# "too short", 19 were content-complete narration at 7.3-9.7 chars/s, and the
+# model's real median rate over content-correct segments is 7.5 chars/s --
+# 7.0 keeps a small margin under that rather than chasing it exactly.
 # Keep in sync with _CHARS_PER_SECOND in pipeline/raon_tts.py, which sizes the
 # quality gate's duration window around the same rate.
-SPEECH_CHARS_PER_SECOND = 5.7
+SPEECH_CHARS_PER_SECOND = 7.0
 
 _PREV_SCRIPT_CONTEXT_CHARS = 100
 

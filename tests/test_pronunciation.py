@@ -18,7 +18,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 # value means an all-unapproved dictionary is no longer a byte-identical
 # no-op for the cache key, which would force-regenerate the shipped 01/04
 # lecture audio the SPEC explicitly forbids (S6 SPEC "금지" section).
-_GOLDEN_CACHE_KEY = "2f750b294b513712204313de9a1927a8177e660721dbb1e8ed5e842d5ccff23f"
+# Recaptured for S9/D-15: TTS_SYNTH_VERSION bumped to "v12-stt-gate-plain"
+# (STT-based segment gate, tts_continuation retired -- see EXPERIMENT.md),
+# which this key legitimately includes and which intentionally invalidates
+# every prior cache entry. What this test still guards is narrower: given
+# the current TTS_SYNTH_VERSION, an all-unapproved/omitted pronunciation
+# dictionary must stay a byte-identical no-op for the cache key.
+_GOLDEN_CACHE_KEY = "58f25729b3128f43bfc4d91b4acc0a0dc7558e3ba9a4cbac610d584ba4643878"
 
 
 # ---------------------------------------------------------------------------

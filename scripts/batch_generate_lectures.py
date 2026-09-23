@@ -59,6 +59,7 @@ from lecture_auto.pipeline.lecture_plan import (
 from lecture_auto.pipeline.parser_pdf import parse_pdf
 from lecture_auto.pipeline.raon_tts import (
     TTS_MODEL_ID,
+    TTS_RESEED_SEEDS,
     TTS_SEEDS,
     TTS_SYNTH_VERSION,
     TTS_TEMPERATURE,
@@ -268,9 +269,15 @@ def _run_slide_tts(
     call produces. S6-d: the actual synthesized (and cache-keyed) text is
     ``apply_pronunciation(script_text, entries)``, never the raw script --
     the caller's *cache_key* must already reflect the same ``entries``.
+
+    S9-d/D-15: ``force_regen`` (set only by ``--slides`` naming this slide)
+    also selects ``TTS_RESEED_SEEDS`` instead of the default ``TTS_SEEDS`` --
+    seeds are otherwise fixed, so an explicitly requested re-run would
+    reproduce byte-identical audio to the run it's meant to replace.
     """
     script_text = sc.get("script", "")
     spoken_text = apply_pronunciation(script_text, list(entries))
+    seeds = TTS_RESEED_SEEDS if force_regen else None
 
     if not force_regen and is_cache_valid(out_wav, cache_key):
         logger.info("Slide %d audio cached, skipping...", n)
@@ -301,7 +308,7 @@ def _run_slide_tts(
         )
         _, ok = synthesize_raon_slide(
             tts_pipe, spoken_text, cand_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
-            verify_stt=verify_stt, qc_path=qc_path_for(cand_wav),
+            verify_stt=verify_stt, qc_path=qc_path_for(cand_wav), seeds=seeds,
         )
         write_text_atomic(
             cand_json, json.dumps({"ok": ok, "cache_key": cache_key}, ensure_ascii=False, indent=2)
@@ -315,7 +322,7 @@ def _run_slide_tts(
     logger.info("Synthesizing slide %d audio (%d chars)...", n, len(script_text))
     _, ok = synthesize_raon_slide(
         tts_pipe, spoken_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
-        verify_stt=verify_stt, qc_path=qc_path_for(out_wav),
+        verify_stt=verify_stt, qc_path=qc_path_for(out_wav), seeds=seeds,
     )
     if ok:
         write_cache_hash(out_wav, cache_key)

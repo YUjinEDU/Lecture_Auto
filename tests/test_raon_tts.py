@@ -9,6 +9,7 @@ import soundfile as sf
 from lecture_auto.pipeline.raon_tts import (
     _MAX_INTERNAL_SILENCE_S,
     _MIN_VOICED_RATIO,
+    TTS_RESEED_SEEDS,
     TTS_SEEDS,
     TranscriptionCheck,
     _integrated_lufs,
@@ -396,15 +397,19 @@ def test_speech_reference_makes_a_quiet_clip_read_as_silence():
     assert _voiced_ratio(quiet, sr, reference=ref) == 0.0  # judged against real speech
 
 
-def test_continuation_gives_up_after_two_seeds_and_falls_back_to_plain_tts():
-    """tts_continuation fails identically on every seed; plain tts never has.
-
-    Spending all the draws on continuation was the most expensive thing this
-    module did. Two, then switch.
+def test_plan_attempts_is_always_plain_tts_even_with_continuation_requested():
+    """S9-b/D-15: tts_continuation is retired. The S9 diagnostic experiment
+    found that when its prefill was itself imperfect, 20/20 continuation
+    draws produced unrelated speech with no gate able to tell a bad join from
+    a good one after the fact -- worse than the crash-repeats-every-seed
+    problem this function used to route around. has_continuation=True must
+    no longer request it.
     """
-    attempts = plan_attempts(has_continuation=True)
-    assert [use for _, use in attempts] == [True, True, False, False]
-    assert len(attempts) < len(TTS_SEEDS) + 2  # strictly cheaper than every seed twice
+    attempts_with = plan_attempts(has_continuation=True)
+    attempts_without = plan_attempts(has_continuation=False)
+    assert [use for _, use in attempts_with] == [False, False, False, False]
+    assert attempts_with == attempts_without
+    assert len(attempts_with) == 4
 
 
 def test_short_segments_are_not_split_further(tmp_path):
@@ -454,8 +459,10 @@ def test_split_children_carry_their_own_text_not_the_parents():
     attempts = len(plan_attempts(has_continuation=False))
     parent = "첫 번째 문장은 이렇게 길게 시작해서 충분한 분량을 확보합니다. 두 번째 문장도 마찬가지로 넉넉한 길이를 갖도록 이어서 작성합니다."
     # Whole segment fails every draw, then both halves come back clean.
-    # 7s clears the halves' own duration floor (35 chars / 5.7 * 0.7 = 4.3s).
-    pipe = _FakePipe([_speech_then_gap(6.0, sr)] * attempts + [_tone(7.0, sr)] * 40)
+    # 5.5s clears both halves' own duration floor (35-37 chars / 7.0 * 0.78 ~=
+    # 3.9-4.1s) while staying under each half's overlong ceiling (~6.8-7.1s,
+    # _MAX_DURATION_RATIO * expected_seconds).
+    pipe = _FakePipe([_speech_then_gap(6.0, sr)] * attempts + [_tone(5.5, sr)] * 40)
 
     with tempfile.TemporaryDirectory() as tmp:
         pieces, ok, _ = _synthesize_with_splitting(
@@ -536,9 +543,10 @@ def test_split_into_segments_splits_overlong_sentence_at_clause_boundary():
 
 def test_slide_gate_catches_moderate_truncation_under_78_percent():
     sr = 24000
-    # Expected 40s (approx 228 chars), but audio is 30s (0.75x ratio).
+    # Expected 40s (approx 280 chars at the S9/D-15 7.0 chars/s rate), but
+    # audio is 30s (0.75x ratio).
     # Old 0.70 threshold let this slip through (the slide 041 defect), 0.78 must catch it.
-    char_count = int(40 * 5.7)
+    char_count = int(40 * 7.0)
     clip_30s = _tone(30.0, sr)
     failures = _slide_gate_failures(clip_30s, sr, char_count=char_count, max_seconds=40.0)
     assert any(f.startswith("short") for f in failures), failures
@@ -793,9 +801,10 @@ def test_qc_path_given_writes_slide_qc_with_segment_fields(tmp_path):
     assert seg0["seed"] in TTS_SEEDS
     assert seg0["call"] == "tts"
     assert seg0["continuation_from"] is None
-    # Second segment continues from the first (both passed on the first draw).
-    assert seg1["call"] == "tts_continuation"
-    assert seg1["continuation_from"] == 0
+    # S9-b/D-15: tts_continuation is retired -- every segment is plain tts now,
+    # including the second one, which used to continue from the first.
+    assert seg1["call"] == "tts"
+    assert seg1["continuation_from"] is None
     assert data["boundary_review"] == []
 
 
@@ -838,10 +847,13 @@ def test_transcription_check_import_path_from_raon_tts_is_the_schema_class():
 # the_slide_level above triggering the same code path.
 # ---------------------------------------------------------------------------
 
-def test_boundary_review_flags_downstream_continuation_after_redraw(tmp_path):
-    """Segment 0 passes quiet (self-relative gate), segment 1 continues from
-    it. The whole-slide reference then reads segment 0 as silence and redraws
-    it -- segment 1's join partner is gone, so it must land in boundary_review.
+def test_boundary_review_stays_empty_even_in_its_old_trigger_scenario(tmp_path):
+    """S9-b/D-15: tts_continuation is retired, so continuation_from is always
+    None and boundary_review can never be populated -- not even in the exact
+    setup that used to trigger it (a redraw replacing a piece a later piece
+    was recorded as continuing from). Segment 0 still gets redrawn here (it
+    reads as silence against the whole-slide reference), but segment 1 was
+    never actually joined to it -- both are plain tts, independent draws.
     """
     import json as _json
 
@@ -849,7 +861,7 @@ def test_boundary_review_flags_downstream_continuation_after_redraw(tmp_path):
     quiet = _tone(10.0, sr, amp=0.005)
     loud = _tone(10.0, sr, amp=0.3)
     # 1: segment 0's only draw (quiet, passes self-relative).
-    # 2: segment 1's tts_continuation draw (loud, passes; continues off segment 0).
+    # 2: segment 1's only draw (loud, passes).
     # 3: segment 0's redraw (loud, passes against the real reference).
     pipe = _FakePipe([quiet, loud, loud] + [loud] * 10)
 
@@ -864,9 +876,9 @@ def test_boundary_review_flags_downstream_continuation_after_redraw(tmp_path):
     data = _json.loads(qc_path.read_text(encoding="utf-8"))
     seg0, seg1 = data["segments"]
     assert seg0["fallback"] is False  # the redraw was adopted, not left failing
-    assert seg1["call"] == "tts_continuation"
-    assert seg1["continuation_from"] == 0
-    assert data["boundary_review"] == [1]
+    assert seg1["call"] == "tts"
+    assert seg1["continuation_from"] is None
+    assert data["boundary_review"] == []
 
 
 def test_boundary_review_empty_when_no_redraw_replaces_a_continuation_source(tmp_path):
@@ -905,5 +917,244 @@ def test_verify_stt_requested_but_pipe_has_no_stt_records_unavailable(tmp_path):
 
     data = _json.loads(qc_path.read_text(encoding="utf-8"))
     assert data["stt"] == {"status": "unavailable", "reasons": [], "transcript": None, "cer": None}
+
+
+# ---------------------------------------------------------------------------
+# S9-a (D-15): per-segment pass/fail is STT-based -- length lower bound
+# excluded from the decision, CER<=0.25 required instead. See
+# docs/hardening/stages/S9_stt_gate/EXPERIMENT.md / DECISIONS.md D-15.
+# ---------------------------------------------------------------------------
+
+def test_verify_stt_accepts_a_short_but_content_correct_first_attempt():
+    """A fast, content-complete take must pass on the first seed even though
+    it fails the old (now retired) length floor -- EXPERIMENT.md: 19/20 of
+    the old gate's "too short" rejects were exactly this."""
+    sr = 24000
+    text = "학생들이 여러 가지 문제를 함께 해결해 나가는 과정이 정말 중요합니다"
+    # min_seconds under the old (still-computed) floor: len(text)/7.0*0.78 ~= 4.3s
+    audio = _tone(3.0, sr)  # well under that floor
+    pipe = _FakePipe([audio])
+    pipe.stt = lambda audio_path: "학생들이 여러 가지 문제를 함께 해결해 나가는 과정이 정말 중용합니다"  # cer ~0.03
+
+    result_audio, _sr, ok = _synthesize_segment_with_gate(
+        pipe, text, None, expected_seconds=5.0, verify_stt=True,
+    )
+
+    assert ok is True
+    assert pipe.calls == 1, "must pass on the first seed, no retry"
+    assert len(result_audio) > 0
+
+
+def test_verify_stt_rejects_high_cer_and_tries_next_seed():
+    """Length/silence are both fine, but the transcript doesn't match
+    (CER well over 0.25) -- must fail and move to the next seed."""
+    sr = 24000
+    text = "우리가 오늘 배운 핵심 개념을 정리하고 다음 단계로 넘어가겠습니다"
+    good_audio = _tone(9.0, sr)  # clears every cheap check regardless of seed
+    pipe = _FakePipe([good_audio, good_audio])
+    transcripts = iter([
+        "우리가 오늘 배운 것과는 전혀 상관없는 이야기를 한참 길게 늘어놓겠습니다",  # cer ~0.68
+        text,  # exact match on the second seed
+    ])
+    pipe.stt = lambda audio_path: next(transcripts)
+
+    _, _sr, ok = _synthesize_segment_with_gate(pipe, text, None, expected_seconds=10.0, verify_stt=True)
+
+    assert ok is True
+    assert pipe.calls == 2, "the first attempt's high CER must not be accepted"
+
+
+def test_verify_stt_skips_stt_call_when_cheap_gate_already_fails():
+    """Overlong/under-voiced/too-silent audio never reaches STT -- an
+    internal silence over the cap must reject without ever calling .stt."""
+    from unittest.mock import MagicMock
+
+    sr = 24000
+    text = "짧은 문장 하나입니다."
+    bad = _speech_then_gap(6.0, sr)  # internal silence far over the 2.8s cap
+    pipe = _FakePipe([bad] * len(plan_attempts(has_continuation=False)))
+    pipe.stt = MagicMock()
+
+    _, _sr, ok = _synthesize_segment_with_gate(pipe, text, None, expected_seconds=5.0, verify_stt=True)
+
+    assert ok is False
+    pipe.stt.assert_not_called()
+
+
+def test_verify_stt_off_preserves_the_old_length_floor_behavior():
+    """Same short-but-content-complete shape as the STT-accepts-it test
+    above, but with verify_stt=False -- D-15 item 4: must reproduce the
+    original length-inclusive gate exactly, i.e. still reject as too short."""
+    sr = 24000
+    text = "학생들이 여러 가지 문제를 함께 해결해 나가는 과정이 정말 중요합니다"
+    audio = _tone(3.0, sr)
+    attempts = len(plan_attempts(has_continuation=False))
+    pipe = _FakePipe([audio] * attempts)
+
+    _, _sr, ok = _synthesize_segment_with_gate(pipe, text, None, expected_seconds=5.0, verify_stt=False)
+
+    assert ok is False
+
+
+def test_verify_stt_fallback_prefers_lowest_cer_when_all_fail():
+    """With STT active, the kept fallback is the attempt with the lowest
+    CER, not simply the earliest draw or the quietest one."""
+    sr = 24000
+    text = "우리가 오늘 배운 핵심 개념을 정리하고 다음 단계로 넘어가겠습니다"
+    attempts_n = len(plan_attempts(has_continuation=False))
+    # Distinguishable by peak amplitude so the returned audio identifies
+    # which attempt won.
+    amps = [0.1, 0.2, 0.3, 0.4][:attempts_n]
+    waveforms = [_tone(9.0, sr, amp=a) for a in amps]
+    pipe = _FakePipe(waveforms)
+    # cer: 0.93, 0.57 (lowest -- must win), 0.89, 0.82 -- all fail (>0.25).
+    transcripts = iter([
+        "완전히 다른 이야기를 하고 있어서 원래 내용과는 거의 무관합니다",
+        "우리가 오늘 배운 것과는 완전히 다른 이야기를 한참 늘어놓겠습니다",
+        "역시 전혀 관련 없는 내용을 한참 길게 늘어놓고 있습니다 그렇습니다",
+        "이번에도 마찬가지로 아무 상관 없는 문장을 계속 말해보겠습니다",
+    ])
+    pipe.stt = lambda audio_path: next(transcripts)
+
+    audio, _sr, ok = _synthesize_segment_with_gate(pipe, text, None, expected_seconds=10.0, verify_stt=True)
+
+    assert ok is False
+    assert abs(np.abs(audio).max() - 0.2) < 1e-6, "the lowest-CER (second) attempt must be kept as the fallback"
+
+
+def test_synthesize_slide_never_calls_tts_continuation(tmp_path):
+    """S9-b/D-15: at the full synthesize_raon_slide level (not just
+    plan_attempts), no segment of a multi-segment slide ever calls
+    tts_continuation -- the join path this module used to route every
+    segment after the first through."""
+    from unittest.mock import MagicMock
+
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    pipe = _FakePipe([_tone(10.0)] * 10)
+    pipe.tts_continuation = MagicMock(side_effect=AssertionError("tts_continuation must not be called (S9-b)"))
+    out = tmp_path / "slide.wav"
+
+    _, ok = synthesize_raon_slide(pipe, text, out, max_seconds=60.0)
+
+    assert ok is True
+    pipe.tts_continuation.assert_not_called()
+
+
+def test_speech_rate_constants_stay_in_sync_with_script_gen():
+    """_CHARS_PER_SECOND (raon_tts.py) and SPEECH_CHARS_PER_SECOND
+    (script_gen.py) must move together -- a mismatch either loosens the
+    gate or makes every clean clip look overlong (see both constants'
+    own comments)."""
+    from lecture_auto.pipeline.raon_tts import _CHARS_PER_SECOND
+    from lecture_auto.pipeline.script_gen import SPEECH_CHARS_PER_SECOND
+
+    assert _CHARS_PER_SECOND == SPEECH_CHARS_PER_SECOND == 7.0
+
+
+def test_verify_stt_unavailable_status_falls_back_to_length_floor():
+    """D-15 item 4's third case: not verify_stt=False, not a missing .stt
+    attribute (both covered above), but evaluate_transcription itself coming
+    back "unavailable" at runtime (pipe.stt raises). Same short-but-complete
+    audio as the STT-accepts-it test above, but here it must still be
+    rejected by the length floor -- confirms the fallback actually engages
+    per attempt, not just at the has-no-.stt call-site check."""
+    from unittest.mock import MagicMock
+
+    sr = 24000
+    text = "학생들이 여러 가지 문제를 함께 해결해 나가는 과정이 정말 중요합니다"
+    audio = _tone(3.0, sr)  # under the (still-computed) length floor
+    attempts = len(plan_attempts(has_continuation=False))
+    pipe = _FakePipe([audio] * attempts)
+    pipe.stt = MagicMock(side_effect=RuntimeError("stt boom"))
+
+    _, _sr, ok = _synthesize_segment_with_gate(pipe, text, None, expected_seconds=5.0, verify_stt=True)
+
+    assert ok is False
+    assert pipe.stt.call_count == attempts, "STT must actually be attempted on every draw"
+
+
+def test_seeds_override_propagates_to_every_segment_draw(tmp_path):
+    """S9-d/D-15: seeds=TTS_RESEED_SEEDS passed into synthesize_raon_slide
+    must reach the actual per-segment draw (through _synthesize_with_splitting
+    down to _synthesize_segment_with_gate/plan_attempts), not just be accepted
+    and dropped -- verified via each segment's recorded seed in the QC file."""
+    import json as _json
+
+    text = "첫 문장입니다. 두 번째 문장입니다."
+    pipe = _FakePipe([_tone(5.0)] * 50)
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+
+    synthesize_raon_slide(pipe, text, out, qc_path=qc_path, seeds=TTS_RESEED_SEEDS)
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    seeds_used = [seg["seed"] for seg in data["segments"]]
+    assert seeds_used, "expected at least one segment"
+    assert all(seed in TTS_RESEED_SEEDS for seed in seeds_used)
+    assert not any(seed in TTS_SEEDS for seed in seeds_used)
+
+
+def test_trace_records_cer_reason_on_fail_and_silence_reason_without_stt(tmp_path, monkeypatch):
+    """S9-a item 6: trace rows carry cer/stt_status/reason. A high-CER
+    failure names reason="cer" with its cer value and stt_status="pass"
+    (content mismatch, not a repetition/length-ratio "fail"); a cheap-gate
+    silence failure never reaches STT, so it names reason="silence" with
+    stt_status/cer both still null."""
+    import importlib
+    import json as _json
+    from unittest.mock import MagicMock
+
+    trace = tmp_path / "trace.jsonl"
+    monkeypatch.setenv("RAON_TRACE", str(trace))
+    mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
+    try:
+        sr = 24000
+        text = "우리가 오늘 배운 핵심 개념을 정리하고 다음 단계로 넘어가겠습니다"
+        good_audio = _tone(9.0, sr)
+        pipe = _FakePipe([good_audio, good_audio])
+        transcripts = iter([
+            "우리가 오늘 배운 것과는 전혀 상관없는 이야기를 한참 길게 늘어놓겠습니다",  # cer ~0.68 -> fail
+            text,  # exact match -> pass
+        ])
+        pipe.stt = lambda audio_path: next(transcripts)
+
+        mod._synthesize_segment_with_gate(pipe, text, None, expected_seconds=10.0, verify_stt=True)
+
+        rows = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+        attempt_rows = [r for r in rows if r.get("event") == "attempt"]
+        assert len(attempt_rows) == 2
+        assert attempt_rows[0]["outcome"] == "gate_fail"
+        assert attempt_rows[0]["reason"] == "cer"
+        assert attempt_rows[0]["stt_status"] == "pass"
+        assert attempt_rows[0]["cer"] > 0.25
+        assert attempt_rows[1]["outcome"] == "pass"
+        assert attempt_rows[1]["reason"] is None
+
+        # Separate case: a cheap-gate (silence) failure must never reach STT.
+        # Enough real speech either side (voiced ratio stays well over the
+        # 0.45 floor) that the internal 6s gap is what actually fails it --
+        # _speech_then_gap's own 0.3s/side would also trip the voiced check
+        # first and this test wants "silence" specifically.
+        tone, gap = _tone(5.0, sr), np.zeros(int(sr * 6.0), dtype=np.float32)
+        bad = np.concatenate([tone, gap, tone])
+        pipe2 = _FakePipe([bad] * len(mod.plan_attempts(has_continuation=False)))
+        pipe2.stt = MagicMock()
+        mod._synthesize_segment_with_gate(
+            pipe2, "짧은 문장 하나입니다.", None, expected_seconds=15.0, verify_stt=True,
+        )
+
+        rows2 = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+        silence_rows = [r for r in rows2 if r.get("event") == "attempt" and r.get("reason") == "silence"]
+        assert silence_rows, "expected at least one silence-reason row"
+        assert silence_rows[0]["stt_status"] is None
+        assert silence_rows[0]["cer"] is None
+        pipe2.stt.assert_not_called()
+    finally:
+        monkeypatch.delenv("RAON_TRACE", raising=False)
+        importlib.reload(mod)
 
 
