@@ -41,6 +41,7 @@ hardening/
 | S6 | 품질 지표 실제 적용(STT·CER 슬라이드별 기록) + F3 API 재개 + F6 경계 기록 + 발음 사전 | ✅ 병합 완료 (ad24f1c) | — |
 | S7 | `pptx_to_pdf` soffice 옵션 버그(`--env:` → `-env:`) — S5 PPTX 변환 차단 요인 | ✅ 병합 완료 (6a5793f) | — |
 | S5 | 새 4편 제작 (GPU) | ⚪ 준비됨 — 실행 전 사용자 확인 | — |
+| S8 | 결과물 폴더 구조(`output/<id>/`) + 검수 보고서 report.md + `--status` ([STORAGE.md](../STORAGE.md)) | ✅ 병합 완료 | — |
 
 ## 사용자 확인 대기
 
