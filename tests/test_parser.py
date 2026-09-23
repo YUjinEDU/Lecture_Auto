@@ -16,7 +16,7 @@ from pptx.util import Inches, Pt, Emu
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
 
-from lecture_auto.pipeline.parser import (
+from lecture_auto.pipeline.parser_pptx import (
     parse_pptx,
     classify_shape,
     extract_text_content,

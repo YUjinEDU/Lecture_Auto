@@ -28,7 +28,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 SCRIPTS = Path("data/work_batch/01_AI현업_02_디자인씽킹개요/scripts")
 OUT = Path("data/smoke_tts_gate")
-REF_VOICE = Path("data/audio_ref/test_variants/ref_phone_norm.wav")
+# Same reference as scripts/batch_generate_lectures.REF_VOICE (D-12: reference_v1.wav
+# confirmed, no A/B needed). Not imported from there: `scripts/` has no __init__.py, so
+# `from scripts.batch_generate_lectures import REF_VOICE` resolves as a namespace package
+# against whatever `scripts/` dir sys.path finds first -- ambiguous across worktrees/cwd
+# and risks silently loading a different checkout's copy. Duplicated instead; keep in sync
+# by hand if the reference voice changes.
+REF_VOICE = Path("data/audio_ref/reference_v1.wav")
 
 
 def main() -> int:

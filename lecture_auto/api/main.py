@@ -64,4 +64,4 @@ async def no_cache_demo_assets(request: Request, call_next):
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "version": "0.3.0"}
+    return {"status": "ok", "version": app.version}
