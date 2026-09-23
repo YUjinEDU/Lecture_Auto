@@ -1,6 +1,6 @@
 # S4-a REPORT (작업자: Sonnet, 2026-09-23)
 
-- 브랜치 `worktree-agent-a87549a01810e4110`, 커밋 `3b41808` (분기점 `983d1e8`)
+- 브랜치 `worktree-agent-a87549a01810e4110`, 커밋 `c608d0a` (분기점 `b762928`)
 - 변경 파일: `lecture_auto/pipeline/raon_tts.py`, `tests/test_raon_tts.py`
 
 ## 구현

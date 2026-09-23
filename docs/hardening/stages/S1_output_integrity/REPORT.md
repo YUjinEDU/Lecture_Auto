@@ -1,6 +1,6 @@
 # S1 REPORT (작업자: Sonnet, 2026-09-23)
 
-- 브랜치 `worktree-agent-a50565098e1ae5caf`, 커밋 `2e4a430` (분기점 `983d1e8`)
+- 브랜치 `worktree-agent-a50565098e1ae5caf`, 커밋 `a9c7c18` (분기점 `b762928`)
 - 변경: `pipeline/tts.py`, `pipeline/video.py`, `scripts/batch_generate_lectures.py`,
   `tests/test_tts.py`, `tests/test_video.py`, `tests/test_batch_generate_lectures.py`(신규)
 

@@ -1,6 +1,6 @@
 # 제작 파이프라인 안정화 계획 (웹 인터페이스 이전 단계)
 
-작성: 2026-09-23 · 기준 HEAD `ad05c65` · 근거: `.claude/LECTURE_TTS_RESEARCH_HANDOFF.md`, `docs/260923_review.md`
+작성: 2026-09-23 · 기준 HEAD `9a240fb` · 근거: `.claude/LECTURE_TTS_RESEARCH_HANDOFF.md`, `docs/260923_review.md`
 
 ## 최종 목표와 이번 범위
 

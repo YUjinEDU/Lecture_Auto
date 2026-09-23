@@ -1,7 +1,7 @@
 # S2 SPEC — 승인 목록 + 타임라인 (웹 UI 데이터 계약)
 
 참조: `../../PLAN.md` S2, `../../00_context/VERIFIED_FACTS.md`, `../../decisions/DECISIONS.md` (D-04, D-05, D-06),
-S1 결과(`../S1_output_integrity/REVIEW.md`). 기준 커밋: master `bce1ef3` (S1·S4-a 병합됨).
+S1 결과(`../S1_output_integrity/REVIEW.md`). 기준 커밋: master `95bf7a4` (S1·S4-a 병합됨).
 
 ## 왜 필요한가
 S1 이후 기존 해시가 전부 무효라서 모든 영상이 `_DRAFT.mp4`가 되고, 교수님이 이미 들은 음성을 "최종"으로
