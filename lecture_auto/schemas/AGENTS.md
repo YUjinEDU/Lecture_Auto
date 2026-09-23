@@ -17,7 +17,7 @@ them. Change a model here and you change the contract for all four.
 | `script.py` | `ScriptUpdateRequest`, `ScriptResponse`, `ScriptApproveResponse` for the script CRUD endpoints. |
 | `tts.py` | `VoiceRegisterResponse`, `TTSStatusResponse`, `TTSRegenerateResponse`, `PackageResponse`. |
 | `request.py` | `UploadResponse` for file upload. |
-| `production.py` | Batch production contract (future web UI): `ApprovedSlide`/`ApprovalManifest` (`approved.json`) and `TimelineEntry`/`Timeline` (`*.timeline.json`). Written via `pipeline/approval.py`. |
+| `production.py` | Batch production contract (future web UI): `ApprovedSlide`/`ApprovalManifest` (`approved.json`) and `TimelineEntry`/`Timeline` (`*.timeline.json`, incl. optional `stt_status`/`cer`/`gate_ok`), `SlideQC`/`SegmentQC` (`*.wav.qc.json`), `TranscriptionCheck`. Written via `pipeline/approval.py`. |
 
 ## For AI Agents
 

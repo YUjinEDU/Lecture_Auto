@@ -26,8 +26,9 @@ demo layers resumable.
 | `vlm.py` | Qwen3-VL via vLLM offline inference. Builds **text-grounded** multimodal prompts, generates per-slide `VlmNote`, computes token overlap. |
 | `script_gen.py` | Lecture-script generation by calling `claude -p` as an asyncio subprocess; builds style/context prompts, parses JSON. |
 | `tts.py` | Qwen3-TTS voice-clone synthesis: per-slide WAV + silence handling. `merge_audio()` takes a directory (glob, legacy callers) **or an explicit ordered WAV list** (no glob). |
-| `raon_tts.py` | Raon-Speech-9B synthesis used by the production batch: segment splitting, seed retries, continuation, energy/silence quality gate, loudness normalization. `evaluate_transcription()` → `TranscriptionCheck` (`pass`/`fail`/`unavailable` + CER, recorded only — no CER threshold); `check_transcription_fidelity()` is its legacy `reasons` wrapper. |
+| `raon_tts.py` | Raon-Speech-9B synthesis used by the production batch: segment splitting, seed retries, continuation, energy/silence quality gate, loudness normalization. `evaluate_transcription()` → `TranscriptionCheck` (`pass`/`fail`/`unavailable` + CER, recorded only — no CER threshold); `check_transcription_fidelity()` is its legacy `reasons` wrapper. `synthesize_raon_slide(qc_path=...)` writes a per-slide `SlideQC` JSON (gate reasons, STT, segments with `continuation_from`, `boundary_review`). |
 | `approval.py` | Pure approval/timeline functions: `load_approvals`, `save_approvals`, `approve`, `verify_approved` (sha check), `promote_candidate` (cand → main, old kept as `.prev.wav`), `build_timeline`. |
+| `pronunciation.py` | `apply_pronunciation()` / `load_pronunciation_entries()` for `config/pronunciation.yaml`: only `approved: true` entries, ASCII word-boundary match, longest first. Applied to TTS input only — script JSON is never rewritten. |
 | `cache.py` | Content-hash sidecar cache (`content_hash`, `is_cache_valid`, `write_cache_hash`, `write_text_atomic`). |
 | `video.py` | `assemble_video()`: single ffmpeg pass (concat demuxer of slide PNGs + merged audio of exactly the resolved slide WAVs). `strict=True` raises on a missing WAV instead of skipping. |
 

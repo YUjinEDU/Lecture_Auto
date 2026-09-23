@@ -258,3 +258,5 @@ Hardening work is tracked in `docs/hardening/` (status board in its `README.md`)
 - `--approve`, `--approve-passing`, `--promote`, `--assemble-only` need `--only <lecture>` and load
   no TTS model / LLM. Unapproved + cache-invalid audio yields `<name>_DRAFT.mp4`; every assembly
   writes `<mp4 stem>.timeline.json`.
+- STT fidelity check is ON by default in the batch (`--no-stt` to skip); each WAV gets a `.qc.json`.
+  Pronunciation overrides live in `config/pronunciation.yaml` (only `approved: true` entries apply).
