@@ -7,7 +7,7 @@ Runs full end-to-end pipeline:
 4. Section-by-section script generation (4-8 slides per call, continuous story,
    carry-forward state) via gpt-5.6-luna vision
 5. Voice-cloned TTS Audio Synthesis via Raon-Speech-9B (segmented + quality-gated)
-6. Video Assembly via ffmpeg -> MP4 (30 minutes each)
+6. Video Assembly via ffmpeg -> MP4 (40 minutes each)
 
 Every LLM/TTS call is cached by a SHA-256 of its actual inputs (prompt text,
 image bytes, reference voice, model config) via lecture_auto.pipeline.cache --
@@ -81,7 +81,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("batch_generator")
 
-TARGET_MINUTES = 30.0  # 30분 영상 목표
+TARGET_MINUTES = 40.0  # 40분 영상 목표 (2026-09-23 사용자 결정, 종합설계 2026)
 # ref_combined.wav (47.7s) was never actually a "combined" reference at
 # inference time: PretrainedSpeakerEncoder.forward() front-truncates any
 # speaker_audio to SpeakerEncoderConfig.max_seconds (10.0s) before computing
