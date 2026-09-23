@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -19,7 +20,7 @@ from lecture_auto.pipeline.approval import (
     save_approvals,
     verify_approved,
 )
-from lecture_auto.pipeline.cache import cache_path_for
+from lecture_auto.pipeline.cache import cache_path_for, write_text_atomic
 from lecture_auto.schemas.production import ApprovalManifest
 
 
@@ -62,7 +63,10 @@ def test_save_load_roundtrip_uses_atomic_write(tmp_path):
     wav.write_bytes(b"BYTES")
 
     manifest = approve(ApprovalManifest(lecture_id="lec1"), audio_dir, 1, source="existing", gate_ok=None)
-    save_approvals(tmp_path, manifest)
+
+    with patch("lecture_auto.pipeline.approval.write_text_atomic", wraps=write_text_atomic) as mock_atomic:
+        save_approvals(tmp_path, manifest)
+    mock_atomic.assert_called_once()  # proves save_approvals goes through the atomic-write helper
 
     approved_path = tmp_path / "approved.json"
     assert approved_path.exists()

@@ -122,6 +122,10 @@ def promote_candidate(
         os.replace(wav_path, prev_wav)
     if hash_path.exists():
         os.replace(hash_path, cache_path_for(prev_wav))
+    else:
+        # No current hash -- don't let a stale hash from an earlier prev.wav
+        # linger and get paired with this (unhashed) prev.wav.
+        cache_path_for(prev_wav).unlink(missing_ok=True)
 
     os.replace(cand_wav, wav_path)
     if ok:

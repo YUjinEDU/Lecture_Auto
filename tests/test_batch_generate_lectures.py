@@ -497,23 +497,34 @@ def test_assemble_with_approvals_aborts_when_approved_audio_contaminated(tmp_pat
 # S2 test 10: CLI approval commands require --only and skip LLM/TTS model load
 # ---------------------------------------------------------------------------
 
-def test_cli_approve_without_only_errors(monkeypatch, tmp_path):
+_FAKE_LECTURE = {
+    "id": "testlec",
+    "name": "test",
+    "subject": "test",
+    "pdf": Path("does-not-matter.pdf"),
+    "output_mp4": Path("output/testlec.mp4"),
+}
+
+
+@pytest.mark.parametrize(
+    "argv_tail",
+    [
+        ["--approve", "1-3"],
+        ["--approve-passing"],
+        ["--promote", "1"],
+        ["--assemble-only"],
+    ],
+)
+def test_cli_approval_commands_without_only_error(monkeypatch, tmp_path, argv_tail):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--approve", "1-3"])
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", *argv_tail])
     with pytest.raises(SystemExit):
         main()
 
 
 def test_cli_approve_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    fake_lecture = {
-        "id": "testlec",
-        "name": "test",
-        "subject": "test",
-        "pdf": Path("does-not-matter.pdf"),
-        "output_mp4": Path("output/testlec.mp4"),
-    }
-    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [fake_lecture])
+    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
 
     audio_dir = tmp_path / "data" / "work_batch" / "testlec" / "audio"
     audio_dir.mkdir(parents=True)
@@ -526,8 +537,73 @@ def test_cli_approve_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
 
     mock_llm.assert_not_called()
     mock_tts.assert_not_called()
-
     manifest = json.loads(
         (tmp_path / "data" / "work_batch" / "testlec" / "approved.json").read_text(encoding="utf-8")
     )
     assert manifest["slides"]["1"]["source"] == "existing"
+
+
+def test_cli_promote_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+
+    audio_dir = tmp_path / "data" / "work_batch" / "testlec" / "audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "slide_001.cand.wav").write_bytes(b"CANDIDATE-AUDIO")
+    (audio_dir / "slide_001.cand.wav.json").write_text(
+        json.dumps({"ok": True, "cache_key": "k"}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--promote", "1"])
+    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
+         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts:
+        main()
+
+    mock_llm.assert_not_called()
+    mock_tts.assert_not_called()
+    assert (audio_dir / "slide_001.wav").read_bytes() == b"CANDIDATE-AUDIO"
+
+
+def test_cli_assemble_only_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+
+    work_dir = tmp_path / "data" / "work_batch" / "testlec"
+    rendered_dir = work_dir / "rendered"
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    rendered_dir.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+
+    (rendered_dir / "slide_001.png").write_bytes(b"PNG")
+    (scripts_dir / "script_001.json").write_text(
+        json.dumps({"target_seconds": 3.0, "script": "s1"}), encoding="utf-8"
+    )
+    wav1 = audio_dir / "slide_001.wav"
+    _write_real_wav(wav1, 1.0)
+    write_cache_hash(wav1, _tts_cache_key("s1", b"", 3.0))  # REF_VOICE doesn't exist -> b""
+
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--assemble-only"])
+    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
+         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts, \
+         patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+        main()
+
+    mock_llm.assert_not_called()
+    mock_tts.assert_not_called()
+    mock_assemble.assert_called_once()
+    assert (tmp_path / "output" / "testlec.timeline.json").exists()
+
+
+def test_cli_only_ambiguous_match_errors_for_approval_command(monkeypatch, tmp_path):
+    """--only must resolve to exactly one lecture for an approval command --
+    a substring matching several real lecture ids (e.g. shared '종합설계')
+    must not silently pick the first match and promote the wrong lecture's
+    audio."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "종합설계", "--approve", "1"])
+    with pytest.raises(SystemExit):
+        main()
+    # No approved.json should have been written for either matched lecture.
+    assert not (tmp_path / "data" / "work_batch").exists()

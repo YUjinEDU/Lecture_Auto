@@ -799,20 +799,29 @@ def main():
              "(--gpu 0 --shard 0/2 and --gpu 1 --shard 1/2), then once more "
              "unsharded to assemble the video from the cached audio.",
     )
-    parser.add_argument(
+    # Exactly one approval command per invocation -- spec: an approval command
+    # "modifies only the approval file, then exits" (no combining e.g.
+    # --approve with --assemble-only in one run).
+    approval_group = parser.add_mutually_exclusive_group()
+    approval_group.add_argument(
         "--approve", type=str, default=None,
         help="S2: approve the current slide_NNN.wav as-is for these slides (e.g. '1-48'), "
              "source=existing. Requires --only. Loads no TTS model/LLM client.",
     )
-    parser.add_argument(
+    approval_group.add_argument(
         "--approve-passing", action="store_true",
         help="S2: approve every slide whose current audio is valid for the current cache key "
              "(source=gate_pass). Requires --only. Loads no TTS model/LLM client.",
     )
-    parser.add_argument(
+    approval_group.add_argument(
         "--promote", type=str, default=None,
         help="S2: promote reviewed slide_NNN.cand.wav to the approved main WAV for these "
              "slides (e.g. '12,15'). Requires --only. Loads no TTS model/LLM client.",
+    )
+    approval_group.add_argument(
+        "--assemble-only", action="store_true",
+        help="S2: assemble the current on-disk PNGs/WAVs into a video + timeline.json "
+             "without synthesizing audio. Requires --only. Loads no TTS model/LLM client.",
     )
     parser.add_argument(
         "--allow-failed", action="store_true",
@@ -821,11 +830,6 @@ def main():
     parser.add_argument(
         "--note", type=str, default="",
         help="With --promote: note recorded on the approval entry.",
-    )
-    parser.add_argument(
-        "--assemble-only", action="store_true",
-        help="S2: assemble the current on-disk PNGs/WAVs into a video + timeline.json "
-             "without synthesizing audio. Requires --only. Loads no TTS model/LLM client.",
     )
     args = parser.parse_args()
 
@@ -843,9 +847,17 @@ def main():
     if args.only:
         if args.only.isdigit():
             idx = int(args.only) - 1
+            if not 0 <= idx < len(LECTURES):
+                parser.error(f"--only {args.only}: index must be in 1..{len(LECTURES)}")
             selected = [LECTURES[idx]]
         else:
             selected = [lec for lec in LECTURES if args.only in lec["id"]]
+
+    if approval_mode and len(selected) != 1:
+        parser.error(
+            f"--only {args.only!r} must match exactly one lecture for an approval command "
+            f"(matched: {[s['id'] for s in selected]})"
+        )
 
     if approval_mode:
         # Approval-only commands touch only approved.json / on-disk audio --
