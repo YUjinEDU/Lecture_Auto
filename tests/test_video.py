@@ -8,7 +8,9 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 import lecture_auto.pipeline.video as video_module
 from lecture_auto.pipeline.video import (
@@ -25,6 +27,16 @@ from lecture_auto.pipeline.video import (
 def _make_dummy_file(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\x00")
+    return path
+
+
+def _make_silence_wav(path: Path, duration_seconds: float = 0.1, sample_rate: int = 24000) -> Path:
+    """Write a real, readable silence WAV -- `assemble_video` reads WAV
+    duration/content for real (via `wave`/`soundfile`) even though ffmpeg
+    itself is mocked out, so a fake `\\x00` byte file fails those reads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    samples = np.zeros(int(sample_rate * duration_seconds), dtype=np.float32)
+    sf.write(str(path), samples, sample_rate)
     return path
 
 
@@ -160,29 +172,36 @@ def test_concat_clips_cleans_up_temp_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 3: assemble_video orchestrates clips then concatenation
+# Test 3: assemble_video does a single-pass ffmpeg slideshow encode
 # ---------------------------------------------------------------------------
+# NOTE: the current `assemble_video` builds one ffmpeg concat-demuxer manifest
+# (image durations from the WAVs) and does a single `subprocess.run` -- it no
+# longer calls `create_slide_clip`/`concat_clips` per pair. These tests were
+# written against an older per-clip implementation and mocked those instead,
+# which is why they only ever failed on the fake-WAV read (never on ffmpeg
+# actually running with garbage PNG bytes). Updated to mock `subprocess.run`,
+# matching how the sibling `create_slide_clip`/`concat_clips` tests above
+# already mock ffmpeg.
 
 def test_assemble_video_calls_create_and_concat(tmp_path):
-    """`assemble_video` must call create_slide_clip per pair and concat_clips once."""
+    """`assemble_video` must merge audio and do exactly one ffmpeg encode call."""
     png_dir = tmp_path / "rendered"
     wav_dir = tmp_path / "audio"
     video_dir = tmp_path / "video"
     out = tmp_path / "output" / "lecture_test.mp4"
 
     pngs = [_make_dummy_file(png_dir / f"slide_{i:03d}.png") for i in [1, 2]]
-    wavs = [_make_dummy_file(wav_dir / f"audio_{i:03d}.wav") for i in [1, 2]]
+    wavs = [_make_silence_wav(wav_dir / f"audio_{i:03d}.wav") for i in [1, 2]]
 
-    with patch.object(video_module, "create_slide_clip") as mock_create, \
-         patch.object(video_module, "concat_clips") as mock_concat:
-        mock_create.side_effect = lambda png, wav, clip_path: clip_path
-        mock_concat.side_effect = lambda clips, output_path: output_path
-
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        mock_run.return_value = _success_result()
         result = assemble_video(pngs, wavs, video_dir, out, job_id="test-job")
 
     assert result == out
-    assert mock_create.call_count == 2
-    assert mock_concat.call_count == 1
+    assert mock_run.call_count == 1
+    cmd = mock_run.call_args.args[0]
+    assert "ffmpeg" in cmd[0]
+    assert str(out) in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -192,14 +211,11 @@ def test_assemble_video_calls_create_and_concat(tmp_path):
 def test_assemble_video_output_path(tmp_path):
     """The output path passed into assemble_video is returned unchanged."""
     pngs = [_make_dummy_file(tmp_path / f"slide_{i:03d}.png") for i in [1]]
-    wavs = [_make_dummy_file(tmp_path / f"audio_{i:03d}.wav") for i in [1]]
+    wavs = [_make_silence_wav(tmp_path / f"audio_{i:03d}.wav") for i in [1]]
     out = tmp_path / "output" / "lecture_abc123.mp4"
 
-    with patch.object(video_module, "create_slide_clip") as mock_create, \
-         patch.object(video_module, "concat_clips") as mock_concat:
-        mock_create.side_effect = lambda png, wav, clip_path: clip_path
-        mock_concat.side_effect = lambda clips, output_path: output_path
-
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        mock_run.return_value = _success_result()
         result = assemble_video(pngs, wavs, tmp_path / "video", out, job_id="abc123")
 
     assert result == out
@@ -236,44 +252,133 @@ def test_assemble_video_skips_missing_wav(tmp_path):
         _make_dummy_file(tmp_path / "slide_002.png"),
     ]
     # Only WAV for slide 1; slide 2 has no audio
-    wavs = [_make_dummy_file(tmp_path / "audio_001.wav")]
+    wavs = [_make_silence_wav(tmp_path / "audio_001.wav")]
     out = tmp_path / "lecture.mp4"
 
-    with patch.object(video_module, "create_slide_clip") as mock_create, \
-         patch.object(video_module, "concat_clips") as mock_concat:
-        mock_create.side_effect = lambda png, wav, clip_path: clip_path
-        mock_concat.side_effect = lambda clips, output_path: output_path
-
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        mock_run.return_value = _success_result()
         result = assemble_video(pngs, wavs, tmp_path / "video", out, job_id="skip-test")
 
-    # Only one clip should have been created (slide 1)
-    assert mock_create.call_count == 1
-    # concat still called with the one clip
-    assert mock_concat.call_count == 1
+    assert result == out
+    # Only one ffmpeg encode call, covering the one resolved slide.
+    assert mock_run.call_count == 1
 
 
 # ---------------------------------------------------------------------------
-# Test 7: Intermediate clip files are cleaned up after concat
+# Test 7: Intermediate/temp files are cleaned up after assembly
 # ---------------------------------------------------------------------------
+# The current single-pass encoder never writes per-slide clip_*.mp4 files (it
+# builds one concat manifest + merges audio once) -- it cleans up the merged
+# audio temp file and the manifest temp file instead. Updated from the old
+# per-clip assumption to check the cleanup that actually happens now.
 
 def test_assemble_video_cleans_up_intermediate_clips(tmp_path):
-    """Intermediate per-slide clip files must be deleted after concat."""
+    """No per-slide clip files and no leftover merged-audio temp file."""
     video_dir = tmp_path / "video"
     pngs = [_make_dummy_file(tmp_path / "slide_001.png")]
-    wavs = [_make_dummy_file(tmp_path / "audio_001.wav")]
+    wavs = [_make_silence_wav(tmp_path / "audio_001.wav")]
     out = tmp_path / "lecture.mp4"
 
-    # Simulate create_slide_clip actually creating the file so unlink() works
-    def fake_create(png, wav, clip_path):
-        _make_dummy_file(clip_path)
-        return clip_path
-
-    with patch.object(video_module, "create_slide_clip", side_effect=fake_create), \
-         patch.object(video_module, "concat_clips") as mock_concat:
-        mock_concat.side_effect = lambda clips, output_path: output_path
-
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        mock_run.return_value = _success_result()
         assemble_video(pngs, wavs, video_dir, out, job_id="cleanup-test")
 
-    # All clip_*.mp4 files in video_dir should be removed
     remaining_clips = list(video_dir.glob("clip_*.mp4"))
     assert remaining_clips == [], f"Expected no clips, found: {remaining_clips}"
+    remaining_merged_audio = list(video_dir.glob("*_merged_audio.wav"))
+    assert remaining_merged_audio == [], f"merged audio temp file not cleaned up: {remaining_merged_audio}"
+
+
+# ---------------------------------------------------------------------------
+# S1-a: assemble_video merges exactly the resolved slide WAVs, not the whole dir
+# ---------------------------------------------------------------------------
+
+def test_assemble_video_merges_only_resolved_slides(tmp_path):
+    """An unrelated WAV in the same directory (e.g. a stale slide_999.wav)
+    must not be pulled into the merged audio track used for the video."""
+    png_dir = tmp_path / "rendered"
+    wav_dir = tmp_path / "audio"
+    video_dir = tmp_path / "video"
+    out = tmp_path / "lecture.mp4"
+
+    pngs = [_make_dummy_file(png_dir / f"slide_{i:03d}.png") for i in [1, 2]]
+    wavs = [
+        _make_silence_wav(wav_dir / "slide_001.wav", duration_seconds=0.1),
+        _make_silence_wav(wav_dir / "slide_002.wav", duration_seconds=0.2),
+    ]
+    # Unrelated file that would glob-match if assemble_video merged by directory.
+    _make_silence_wav(wav_dir / "slide_999.wav", duration_seconds=5.0)
+
+    real_merge_audio = video_module.merge_audio
+    merged_lengths: list[int] = []
+
+    def capturing_merge(source, output_path, **kwargs):
+        result = real_merge_audio(source, output_path, **kwargs)
+        data, _sr = sf.read(str(result))
+        merged_lengths.append(len(data))
+        return result
+
+    with patch.object(video_module, "merge_audio", side_effect=capturing_merge) as mock_merge, \
+         patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        mock_run.return_value = _success_result()
+        assemble_video(pngs, wavs, video_dir, out, job_id="s1a-test")
+
+    # merge_audio must be called with the explicit list, not the directory.
+    merge_source = mock_merge.call_args.args[0]
+    assert list(merge_source) == wavs
+
+    expected_len = int(24000 * 0.1) + int(24000 * 0.2)
+    assert merged_lengths == [expected_len]
+
+
+# ---------------------------------------------------------------------------
+# S1-b: strict mode raises on a missing WAV instead of skipping
+# ---------------------------------------------------------------------------
+
+def test_assemble_video_strict_raises_on_missing_wav(tmp_path):
+    """strict=True: a PNG with no matching WAV raises FileNotFoundError
+    (naming the slide) and ffmpeg is never invoked."""
+    pngs = [
+        _make_dummy_file(tmp_path / "slide_001.png"),
+        _make_dummy_file(tmp_path / "slide_002.png"),
+    ]
+    wavs = [_make_silence_wav(tmp_path / "audio_001.wav")]  # slide 2 missing
+    out = tmp_path / "lecture.mp4"
+
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        with pytest.raises(FileNotFoundError, match="2"):
+            assemble_video(pngs, wavs, tmp_path / "video", out, job_id="strict-test", strict=True)
+        mock_run.assert_not_called()
+
+
+def test_assemble_video_strict_raises_when_wav_path_resolved_but_file_absent(tmp_path):
+    """strict=True: a slide with a resolved WAV *path* whose file was never
+    actually written on disk must also raise, not just a slide with no path
+    at all (batch callers always resolve one path per slide number)."""
+    pngs = [_make_dummy_file(tmp_path / "slide_001.png")]
+    # Path is well-formed and slide-number-matched, but nothing was written there.
+    ghost_wav = tmp_path / "audio_001.wav"
+    out = tmp_path / "lecture.mp4"
+
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        with pytest.raises(FileNotFoundError, match="1"):
+            assemble_video(pngs, [ghost_wav], tmp_path / "video", out, job_id="ghost-test", strict=True)
+        mock_run.assert_not_called()
+
+
+def test_assemble_video_strict_false_still_skips(tmp_path):
+    """Default (strict=False) behavior is unchanged: missing WAV is skipped,
+    not an error."""
+    pngs = [
+        _make_dummy_file(tmp_path / "slide_001.png"),
+        _make_dummy_file(tmp_path / "slide_002.png"),
+    ]
+    wavs = [_make_silence_wav(tmp_path / "audio_001.wav")]
+    out = tmp_path / "lecture.mp4"
+
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        mock_run.return_value = _success_result()
+        result = assemble_video(pngs, wavs, tmp_path / "video", out, job_id="non-strict-test")
+
+    assert result == out
+    assert mock_run.call_count == 1

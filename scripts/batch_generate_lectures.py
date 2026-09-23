@@ -127,6 +127,141 @@ LECTURES = [
 ]
 
 
+def _tts_cache_key(script_text: str, ref_voice_bytes: bytes, target_seconds) -> str:
+    """TTS artifact cache key -- the single source of truth for what makes a
+    synthesized slide WAV valid.
+
+    Centralized so synthesis (writing the sidecar) and the pre-assembly
+    validity check (S1-e) hash the exact same inputs; two separate ad hoc
+    ``content_hash(...)`` call sites drifting apart is how a WAV that looks
+    "valid" to one check quietly isn't to the other.
+
+    ``target_seconds`` is included (S1-d): it's part of what
+    ``synthesize_raon_slide`` is asked to produce (``max_seconds``), so a
+    target-only edit must invalidate the cached audio. NOTE: this makes every
+    existing ``.hash`` sidecar in ``data/work_batch/**`` invalid the moment
+    this ships, even for slides whose script/voice/model config never
+    changed -- S1-c's ``.cand.wav`` candidate flow is what keeps that mass
+    invalidation from silently overwriting the already-reviewed WAVs.
+    """
+    return content_hash(
+        script_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION,
+        str(target_seconds),
+    )
+
+
+def _invalid_slides(
+    slide_numbers: list[int],
+    wav_by_number: dict[int, Path],
+    scripts: dict[int, dict],
+    ref_voice_bytes: bytes,
+) -> list[int]:
+    """Slide numbers whose assembly-bound WAV is not valid for the scripts'
+    *current* cache key: missing file, missing/stale ``.hash`` sidecar, or a
+    WAV that was never successfully synthesized. Used right before assembly
+    (S1-e) to decide whether the output must be a ``_DRAFT`` instead of the
+    final MP4.
+    """
+    invalid: list[int] = []
+    for n in slide_numbers:
+        sc = scripts[n]
+        key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
+        if not is_cache_valid(wav_by_number[n], key):
+            invalid.append(n)
+    return invalid
+
+
+def _run_slide_tts(
+    tts_pipe,
+    n: int,
+    sc: dict,
+    out_wav: Path,
+    cache_key: str,
+    force_regen: bool,
+) -> bool:
+    """Synthesize slide *n* audio if needed. Returns the quality-gate result
+    for whatever happened this run (``True`` if the existing cache was reused
+    without a synthesis call).
+
+    S1-c: if *out_wav* already exists, a re-synthesis (forced via ``--slides``
+    or because the cache key no longer matches) is written to a
+    ``slide_NNN.cand.wav`` sibling instead -- the existing WAV and its
+    ``.hash`` sidecar are **never** touched, success or failure. Only when
+    *out_wav* does not exist yet is it written to directly, same as before.
+
+    If a candidate for the *current* cache key already exists (same file +
+    recorded ``cache_key``) and ``force_regen`` is False, synthesis is
+    skipped and the recorded ``ok`` is returned -- otherwise every full
+    re-run after S1-d ships would re-synthesize all ~77 slides as candidates
+    every single time, since S1-d invalidates every existing ``.hash`` at
+    once. Seeds are fixed, so re-running an unforced, already-recorded
+    candidate (pass or fail) would just reproduce the same result.
+    """
+    script_text = sc.get("script", "")
+
+    if not force_regen and is_cache_valid(out_wav, cache_key):
+        logger.info("Slide %d audio cached, skipping...", n)
+        return True
+
+    if out_wav.exists():
+        cand_wav = out_wav.with_name(out_wav.stem + ".cand.wav")
+        cand_json = out_wav.with_name(out_wav.stem + ".cand.wav.json")
+
+        # A prior run may have already synthesized a candidate for this exact
+        # cache key (very likely right after S1-d ships, since that change
+        # invalidates every existing .hash at once). Seeds are fixed, so
+        # re-running would just reproduce the same result at real GPU cost --
+        # skip unless --slides explicitly forces it.
+        if not force_regen and cand_wav.exists() and cand_wav.stat().st_size > 0 and cand_json.exists():
+            try:
+                recorded = json.loads(cand_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                recorded = None
+            if recorded is not None and recorded.get("cache_key") == cache_key:
+                logger.info("Slide %d: candidate up to date, skipping", n)
+                return bool(recorded.get("ok"))
+
+        logger.info(
+            "Slide %d: existing audio present but cache invalid/forced -- "
+            "synthesizing candidate %s (existing %s left untouched)",
+            n, cand_wav, out_wav.name,
+        )
+        _, ok = synthesize_raon_slide(
+            tts_pipe, script_text, cand_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds")
+        )
+        write_text_atomic(
+            cand_json, json.dumps({"ok": ok, "cache_key": cache_key}, ensure_ascii=False, indent=2)
+        )
+        if ok:
+            logger.info("Slide %d candidate ready for review: %s", n, cand_wav)
+        else:
+            logger.error("Slide %d candidate audio FAILED quality gate: %s", n, cand_wav)
+        return ok
+
+    logger.info("Synthesizing slide %d audio (%d chars)...", n, len(script_text))
+    _, ok = synthesize_raon_slide(
+        tts_pipe, script_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds")
+    )
+    if ok:
+        write_cache_hash(out_wav, cache_key)
+    else:
+        # Deliberately NOT cached. The wav is kept so the video still
+        # assembles and can be listened to, but leaving the sidecar
+        # unwritten is what stops the next run from adopting audio that
+        # failed our own quality gate as a valid artifact.
+        logger.error("Slide %d audio FAILED quality gate -- not caching", n)
+    return ok
+
+
+def _draft_or_final_path(out_mp4: Path, invalid_slides: list[int]) -> Path:
+    """Final MP4 path unless any slide's audio is invalid (S1-e), in which
+    case the ``_DRAFT`` sibling is used so a bad/incomplete run never
+    silently overwrites the last good final video."""
+    if invalid_slides:
+        return out_mp4.with_name(out_mp4.stem + "_DRAFT.mp4")
+    return out_mp4
+
+
 def _llm_config_repr(llm_client) -> str:
     """The generation settings that change an LLM artifact, for the cache key.
 
@@ -393,32 +528,16 @@ def process_lecture(
             wav_paths.append(out_wav)
             continue
 
-        script_text = sc.get("script", "")
-        cache_key = content_hash(
-            script_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION
-        )
+        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))
         force_regen = target_slides is not None and n in target_slides
-        if not force_regen and is_cache_valid(out_wav, cache_key):
-            logger.info("Slide %d/%d audio cached, skipping...", n, slide_count)
-        else:
-            logger.info("Synthesizing slide %d/%d audio (%d chars)...", n, slide_count, len(script_text))
-            _, ok = synthesize_raon_slide(
-                tts_pipe, script_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds")
-            )
-            if ok:
-                write_cache_hash(out_wav, cache_key)
-            else:
-                # Deliberately NOT cached. The wav is kept so the video still
-                # assembles and can be listened to, but leaving the sidecar
-                # unwritten is what stops the next run from adopting audio that
-                # failed our own quality gate as a valid artifact.
-                failed_slides.append(n)
-                logger.error("Slide %d audio FAILED quality gate -- not caching", n)
+        ok = _run_slide_tts(tts_pipe, n, sc, out_wav, cache_key, force_regen)
+        if not ok:
+            failed_slides.append(n)
         wav_paths.append(out_wav)
 
     if failed_slides:
         logger.error(
-            "%d/%d slides failed the quality gate and were not cached: %s",
+            "%d/%d slides failed the quality gate this run (candidates or new audio): %s",
             len(failed_slides), slide_count, failed_slides,
         )
     else:
@@ -433,19 +552,28 @@ def process_lecture(
         logger.info("[6/6] Sharded run -- re-run without --shard to assemble the video.")
         return out_mp4
 
-    stale = [p.name for p, n in zip(wav_paths, range(1, slide_count + 1)) if n in failed_slides]
-    if stale:
+    # S1-e: decide DRAFT vs. final from whether each assembled WAV is
+    # actually valid for the scripts' *current* cache key -- not just from
+    # whether this run's own synthesis attempt failed. A slide whose WAV was
+    # never successfully produced in an earlier run (no hash, e.g. an
+    # interrupted run) must also block the final path, even if this run
+    # skipped it as "not in --slides".
+    wav_by_number = dict(zip(range(1, slide_count + 1), wav_paths))
+    invalid = _invalid_slides(list(range(1, slide_count + 1)), wav_by_number, scripts, ref_voice_bytes)
+    target_mp4 = _draft_or_final_path(out_mp4, invalid)
+    if invalid:
         logger.error(
-            "[6/6] Assembling a DRAFT: %d slides failed the quality gate (%s). "
-            "Fix or re-run those before treating this MP4 as final.",
-            len(stale), ", ".join(str(n) for n in failed_slides),
+            "[6/6] Assembling a DRAFT (%s): %d/%d slides have no valid cached audio "
+            "for the current cache key: %s. Fix or re-run those (--slides) before "
+            "treating this as final.",
+            target_mp4.name, len(invalid), slide_count, invalid,
         )
 
     # 6. Assemble Video
-    logger.info("[6/6] Assembling final MP4 video via ffmpeg...")
-    assemble_video(png_paths, wav_paths, video_dir, out_mp4, lec_id)
-    logger.info("Video successfully created at: %s", out_mp4)
-    return out_mp4
+    logger.info("[6/6] Assembling video via ffmpeg -> %s", target_mp4)
+    assemble_video(png_paths, wav_paths, video_dir, target_mp4, lec_id, strict=True)
+    logger.info("Video successfully created at: %s", target_mp4)
+    return target_mp4
 
 
 def _parse_slides_arg(arg: str | None) -> set[int] | None:

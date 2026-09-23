@@ -11,6 +11,7 @@ Sample rate: 24000 Hz (Qwen3-TTS native rate).
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -191,19 +192,22 @@ def synthesize_audio(
 
 
 def merge_audio(
-    audio_dir: Path,
+    audio_source: Path | Sequence[Path],
     output_path: Path,
     sample_rate: int = _SAMPLE_RATE,
 ) -> Path:
-    """Merge all per-slide WAV files into a single concatenated WAV.
-
-    Reads all ``audio_*.wav`` files from *audio_dir* in sorted order,
-    concatenates them, and writes the result to *output_path*.
+    """Merge per-slide WAV files into a single concatenated WAV.
 
     Parameters
     ----------
-    audio_dir:
-        Directory containing ``audio_NNN.wav`` files.
+    audio_source:
+        Either a directory containing ``audio_NNN.wav``/``slide_NNN.wav``
+        files (existing glob-based behavior -- all matching files in sorted
+        order), or an explicit, already-ordered list/tuple of WAV paths to
+        concatenate verbatim, with no globbing. The list form exists so a
+        caller (e.g. ``assemble_video``) can merge exactly the slides it
+        resolved, ignoring any unrelated ``*.wav`` file that happens to sit
+        in the same directory.
     output_path:
         Destination path for the merged WAV file.
     sample_rate:
@@ -217,18 +221,21 @@ def merge_audio(
     Raises
     ------
     FileNotFoundError
-        If no ``audio_*.wav`` files are found in *audio_dir*.
+        If no WAV files are found (directory form) or the list is empty.
     """
-    audio_dir = Path(audio_dir)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    sorted_files = sorted(audio_dir.glob("slide_*.wav")) or sorted(audio_dir.glob("audio_*.wav")) or sorted(audio_dir.glob("*.wav"))
-    # Exclude the merged file itself if it already exists in the directory.
-    sorted_files = [f for f in sorted_files if f.name != output_path.name]
+    if isinstance(audio_source, (list, tuple)):
+        sorted_files = [Path(f) for f in audio_source]
+    else:
+        audio_dir = Path(audio_source)
+        sorted_files = sorted(audio_dir.glob("slide_*.wav")) or sorted(audio_dir.glob("audio_*.wav")) or sorted(audio_dir.glob("*.wav"))
+        # Exclude the merged file itself if it already exists in the directory.
+        sorted_files = [f for f in sorted_files if f.name != output_path.name]
 
     if not sorted_files:
-        raise FileNotFoundError(f"No WAV files found in {audio_dir}")
+        raise FileNotFoundError(f"No WAV files found for merge (source={audio_source!r})")
 
     segments = [sf.read(str(f))[0] for f in sorted_files]
     merged = np.concatenate(segments)

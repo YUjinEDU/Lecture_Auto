@@ -19,6 +19,7 @@ import soundfile as sf
 
 def _make_silence_wav(path: Path, duration_seconds: float = 0.1, sample_rate: int = 24000) -> Path:
     """Write a real silence WAV to *path* so soundfile can read it in tests."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     samples = np.zeros(int(sample_rate * duration_seconds), dtype=np.float32)
     sf.write(str(path), samples, sample_rate)
     return path
@@ -34,6 +35,7 @@ from lecture_auto.pipeline.tts import (
     synthesize_audio,
     synthesize_slide,
     generate_silence,
+    merge_audio,
 )
 
 
@@ -220,3 +222,48 @@ def test_generate_silence(tmp_path):
     assert isinstance(result, np.ndarray)
     assert len(result) == 24000
     assert np.abs(result).max() < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# S1-a: merge_audio(list) merges exactly the given files, no glob
+# ---------------------------------------------------------------------------
+
+def test_merge_audio_list_form_ignores_unrelated_files_in_dir(tmp_path):
+    """When given an explicit WAV list, merge_audio must merge only those
+    files (in that order), even if the directory also contains an unrelated
+    WAV that would otherwise glob-match."""
+    audio_dir = tmp_path / "audio"
+    wav1 = _make_silence_wav(audio_dir / "slide_001.wav", duration_seconds=0.1)
+    wav2 = _make_silence_wav(audio_dir / "slide_002.wav", duration_seconds=0.2)
+    # Unrelated file in the same directory -- must NOT be included.
+    _make_silence_wav(audio_dir / "slide_999.wav", duration_seconds=5.0)
+
+    out = tmp_path / "merged.wav"
+    result = merge_audio([wav1, wav2], out)
+
+    assert result == out
+    merged, sr = sf.read(str(out))
+    expected_len = int(24000 * 0.1) + int(24000 * 0.2)
+    assert len(merged) == expected_len
+
+
+def test_merge_audio_directory_form_still_globs(tmp_path):
+    """Passing a directory (not a list) keeps the existing glob-based behavior."""
+    audio_dir = tmp_path / "audio"
+    _make_silence_wav(audio_dir / "slide_001.wav", duration_seconds=0.1)
+    _make_silence_wav(audio_dir / "slide_002.wav", duration_seconds=0.2)
+
+    out = tmp_path / "merged.wav"
+    merge_audio(audio_dir, out)
+
+    merged, sr = sf.read(str(out))
+    expected_len = int(24000 * 0.1) + int(24000 * 0.2)
+    assert len(merged) == expected_len
+
+
+def test_merge_audio_empty_list_raises(tmp_path):
+    """An empty explicit list has nothing to merge -- must raise, not write
+    an empty/garbage output file."""
+    out = tmp_path / "merged.wav"
+    with pytest.raises(FileNotFoundError):
+        merge_audio([], out)
