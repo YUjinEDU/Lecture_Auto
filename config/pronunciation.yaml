@@ -1,14 +1,15 @@
 # 화면 표기: TTS 발음. 교수님 확인된 항목만. 문맥에 따라 다르게 읽는 용어는 넣지 말 것.
+# 2026-09-23: 4건 사용자 승인(교수님 최종 확인 전 임시 승인).
 entries:
   - written: "API"
     spoken: "에이피아이"
-    approved: false
+    approved: true
   - written: "GPU"
     spoken: "지피유"
-    approved: false
+    approved: true
   - written: "SQL"
     spoken: "에스큐엘"
-    approved: false
+    approved: true
   - written: "CI/CD"
     spoken: "씨아이 씨디"
-    approved: false
+    approved: true
