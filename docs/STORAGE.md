@@ -53,7 +53,7 @@
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --gpu 1     # 04-1 제작(대본→음성→영상)
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --slides 12,15   # 일부 슬라이드 재생성(후보로)
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --promote 12     # 후보 채택
-.venv/bin/python scripts/batch_generate_lectures.py --only 6 --approve 1-46   # 현재 음성 승인
+.venv/bin/python scripts/batch_generate_lectures.py --only 6 --approve 1-23   # 현재 음성 승인
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --assemble-only  # 모델 없이 재조립
 ```
 강의 번호(`--only`): 1–3 AI현업, 4–5 종합설계 1차, 6 04-1, 7 04-2, 8 05, 9 06.
