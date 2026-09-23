@@ -155,6 +155,25 @@ def test_promote_candidate_success_replaces_main_and_keeps_prev(tmp_path):
     assert updated.slides[5].sha256 == __import__("hashlib").sha256(b"CANDIDATE-AUDIO").hexdigest()
 
 
+def test_promote_candidate_does_not_leave_stale_prev_hash(tmp_path):
+    """If the main WAV has no current .hash (e.g. it was itself a promoted
+    failure) but an earlier promotion's slide_NNN.prev.wav.hash still exists,
+    that stale hash must not get paired with the new prev.wav -- it would
+    otherwise look like a valid cache hash for audio it was never computed
+    from."""
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    wav = audio_dir / "slide_008.wav"
+    wav.write_bytes(b"MAIN-NO-HASH")  # no cache_path_for(wav) sidecar
+    stale_prev_hash = cache_path_for(audio_dir / "slide_008.prev.wav")
+    stale_prev_hash.write_text("stale-hash-from-an-earlier-promotion", encoding="utf-8")
+    _make_candidate(audio_dir, 8, ok=True, cache_key="new-key")
+
+    promote_candidate(ApprovalManifest(lecture_id="lec1"), audio_dir, 8)
+
+    assert not stale_prev_hash.exists()
+
+
 def test_promote_candidate_failed_without_allow_failed_raises_and_leaves_files(tmp_path):
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir()

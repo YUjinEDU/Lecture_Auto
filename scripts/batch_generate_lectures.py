@@ -733,7 +733,13 @@ def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str) -> None:
 
 def _cli_approve_passing(item: dict, base_work_dir: Path) -> None:
     """``--approve-passing``: approve every slide whose current WAV is still
-    valid for the current TTS cache key (``source="gate_pass"``)."""
+    valid for the current TTS cache key (``source="gate_pass"``).
+
+    Slides already approved (by any source, e.g. a prior ``--promote``) are
+    left alone -- this command is for picking up slides nobody has reviewed
+    yet, not for silently downgrading/overwriting an existing approval
+    record (and its note) with a plain gate-pass one.
+    """
     lec_id = item["id"]
     work_dir = base_work_dir / lec_id
     scripts_dir = work_dir / "scripts"
@@ -744,6 +750,8 @@ def _cli_approve_passing(item: dict, base_work_dir: Path) -> None:
     approved_count = 0
     for script_path in sorted(scripts_dir.glob("script_*.json")):
         n = int(script_path.stem.rsplit("_", 1)[1])
+        if n in manifest.slides:
+            continue
         sc = json.loads(script_path.read_text(encoding="utf-8"))
         out_wav = audio_dir / f"slide_{n:03d}.wav"
         cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"))

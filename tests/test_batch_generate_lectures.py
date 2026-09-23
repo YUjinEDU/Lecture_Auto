@@ -17,11 +17,12 @@ import pytest
 import numpy as np
 import soundfile as sf
 
-from lecture_auto.pipeline.approval import approve, save_approvals, verify_approved
+from lecture_auto.pipeline.approval import approve, load_approvals, save_approvals, verify_approved
 from lecture_auto.pipeline.cache import write_cache_hash
 from lecture_auto.schemas.production import ApprovalManifest
 from scripts.batch_generate_lectures import (
     _assemble_with_approvals,
+    _cli_approve_passing,
     _draft_or_final_path,
     _invalid_slides,
     _run_slide_tts,
@@ -480,8 +481,13 @@ def test_assemble_with_approvals_aborts_when_approved_audio_contaminated(tmp_pat
     manifest = approve(ApprovalManifest(lecture_id=lec_id), audio_dir, 1, source="existing", gate_ok=True)
     save_approvals(work_dir, manifest)
 
-    # Tamper the approved WAV after approval.
-    wav1.write_bytes(b"TAMPERED-BYTES")
+    # Tamper the approved WAV after approval -- a real, valid WAV of a
+    # different length, so the mutation-verification below (guard removed)
+    # exercises the RuntimeError guard itself rather than an unrelated
+    # soundfile read error on garbage bytes (both happen to be RuntimeError
+    # subclasses, which would let the guard-removed test pass for the wrong
+    # reason).
+    _write_real_wav(wav1, 2.0)
 
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
     out_mp4 = tmp_path / "lecture.mp4"
@@ -607,3 +613,33 @@ def test_cli_only_ambiguous_match_errors_for_approval_command(monkeypatch, tmp_p
         main()
     # No approved.json should have been written for either matched lecture.
     assert not (tmp_path / "data" / "work_batch").exists()
+
+
+def test_cli_approve_passing_does_not_overwrite_existing_approval(tmp_path):
+    """A slide already approved (e.g. via --promote, with a note) is left
+    alone by --approve-passing -- it must not be silently downgraded to a
+    bare gate_pass record with the note wiped."""
+    item = {"id": "lec1"}
+    work_dir = tmp_path / "lec1"
+    scripts_dir = work_dir / "scripts"
+    audio_dir = work_dir / "audio"
+    scripts_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+
+    sc = {"script": "s1", "target_seconds": 5.0}
+    (scripts_dir / "script_001.json").write_text(json.dumps(sc), encoding="utf-8")
+    out_wav = audio_dir / "slide_001.wav"
+    out_wav.write_bytes(b"AUDIO")
+    write_cache_hash(out_wav, _tts_cache_key("s1", b"", 5.0))  # REF_VOICE doesn't exist -> b""
+
+    manifest = approve(
+        ApprovalManifest(lecture_id="lec1"), audio_dir, 1,
+        source="candidate", gate_ok=True, note="professor reviewed by ear",
+    )
+    save_approvals(work_dir, manifest)
+
+    _cli_approve_passing(item, tmp_path)
+
+    reloaded = load_approvals(work_dir, "lec1")
+    assert reloaded.slides[1].source == "candidate"
+    assert reloaded.slides[1].note == "professor reviewed by ear"
