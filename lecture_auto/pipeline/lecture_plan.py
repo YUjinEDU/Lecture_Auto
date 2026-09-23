@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from pathlib import Path
 
 from lecture_auto.llm import LLMClient
@@ -53,11 +54,93 @@ _PLAN_SYSTEM_PROMPT = (
 )
 
 
+# --- S3-b: professor-authored reference scripts (D-11) --------------------
+# The *_강의스크립트.md files under data/PDF/.../ are reference material, not
+# something fed straight to TTS: they carry the professor's own examples,
+# flow and emphasis, which the existing plan/section generators above should
+# be nudged with, not replaced by. `reference_outline`/`reference_notes` are
+# optional everywhere below -- omitted (None), every prompt this module
+# builds must stay byte-identical to before this module knew reference
+# scripts existed, so existing lecture caches (keyed by prompt text) stay
+# valid.
+
+_REF_SLIDE_MARKER_RE = re.compile(r"^\*\*\[슬라이드\s*(\d+)(?:\s*[–-]\s*(\d+))?\]")
+_REF_ANNOTATION_RE = re.compile(r"\*\([^)]*\)\*")
+
+
+def parse_reference_script(md_text: str) -> dict[int, str]:
+    """Parse a professor-authored reference lecture script into per-slide
+    description text.
+
+    Format (S3 SPEC): each slide's block starts with a ``**[슬라이드 N]**``
+    (or ``**[슬라이드 N–M]**`` range) header line and runs until the next
+    such header, any ``#``-heading (SPEC names ``## ``, but a ``### 1단계`` or
+    ``### 녹화 참고`` sub-heading between two slide markers has the same
+    intent and must not leak into the previous slide's text), or a ``---``
+    divider. Italic parenthetical stage directions (``*(⏱ ...)*``,
+    ``*(연출...)*``) are stripped from the body. Text before the first marker
+    (title/legend preamble) has no slide number and is dropped here -- it is
+    what ``summarize_reference_outline`` extracts instead.
+    """
+    lines = md_text.splitlines()
+
+    def is_boundary(line: str) -> bool:
+        s = line.strip()
+        return s.startswith("#") or s == "---" or _REF_SLIDE_MARKER_RE.match(s) is not None
+
+    markers: list[tuple[int, int, int | None]] = []
+    for i, line in enumerate(lines):
+        m = _REF_SLIDE_MARKER_RE.match(line.strip())
+        if m:
+            markers.append((i, int(m.group(1)), int(m.group(2)) if m.group(2) else None))
+
+    result: dict[int, str] = {}
+    for line_idx, start, end in markers:
+        block_end = len(lines)
+        for j in range(line_idx + 1, len(lines)):
+            if is_boundary(lines[j]):
+                block_end = j
+                break
+        body = "\n".join(lines[line_idx + 1:block_end])
+        body = _REF_ANNOTATION_RE.sub("", body)
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+        for n in range(start, (end or start) + 1):
+            result[n] = body
+    return result
+
+
+def summarize_reference_outline(md_text: str) -> str:
+    """Summarize a reference script's preamble (구성/시간 배분) and its
+    ``## Part`` section titles -- everything ``build_lecture_plan_prompt``
+    needs to nudge the plan, without handing over the full slide-by-slide
+    text (that's ``reference_notes``, scoped per section instead).
+    """
+    preamble: list[str] = []
+    part_titles: list[str] = []
+    for line in md_text.splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            part_titles.append(s[3:].strip())
+            continue
+        if part_titles:
+            continue  # body/heading text after the first Part heading
+        if not s or s.startswith("# ") or s == "---":
+            continue
+        preamble.append(s)
+    parts: list[str] = []
+    if preamble:
+        parts.append("\n".join(preamble))
+    if part_titles:
+        parts.append("구성: " + " / ".join(part_titles))
+    return "\n".join(parts)
+
+
 def build_lecture_plan_prompt(
     slides: list[SlideRecord],
     subject: str,
     lecture_name: str,
     total_minutes: float,
+    reference_outline: str | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"[과목명] {subject}")
@@ -71,6 +154,13 @@ def build_lecture_plan_prompt(
         text = _extract_all_text(slide)
         lines.append(f"- 슬라이드 {slide.slide_number} [{title}]: {text}")
     lines.append("")
+    if reference_outline:
+        lines.append(
+            "[참고용 구성 — 교수님이 준비한 기존 강의안 요약. 참고용 구성이며, "
+            "슬라이드 범위는 실제 슬라이드 기준으로 다시 나눈다]"
+        )
+        lines.append(reference_outline)
+        lines.append("")
     lines.append("[출력 형식] 아래 JSON 형식으로만 출력하세요. 다른 텍스트는 포함하지 마세요.")
     lines.append(
         json.dumps(
@@ -99,8 +189,9 @@ def generate_lecture_plan(
     subject: str,
     lecture_name: str,
     total_minutes: float,
+    reference_outline: str | None = None,
 ) -> LecturePlan:
-    prompt = build_lecture_plan_prompt(slides, subject, lecture_name, total_minutes)
+    prompt = build_lecture_plan_prompt(slides, subject, lecture_name, total_minutes, reference_outline)
     messages = [
         {"role": "system", "content": _PLAN_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
@@ -138,6 +229,7 @@ def build_section_prompt(
     carry_forward: CarryForward | None,
     is_last_section: bool,
     correction: str | None = None,
+    reference_notes: dict[int, str] | None = None,
 ) -> str:
     lines: list[str] = []
     if correction:
@@ -211,6 +303,18 @@ def build_section_prompt(
         lines.append(f"- 슬라이드 {slide.slide_number}: {_extract_all_text(slide)}")
     lines.append("")
 
+    if reference_notes:
+        section_notes = [(n, reference_notes[n]) for n in section.slides if n in reference_notes]
+        if section_notes:
+            lines.append("[교수님이 준비한 참고 설명 — 이번 섹션 슬라이드]")
+            lines.append(
+                "아래는 교수님이 준비한 참고 설명이다. 내용·사례·강조점은 반영하되 문장을 그대로 "
+                "복사하지 말고 기존 규칙(말투·분량)에 맞춰 다시 쓴다."
+            )
+            for n, note in section_notes:
+                lines.append(f"- 슬라이드 {n}: {note}")
+            lines.append("")
+
     lines.append("[출력 형식] 아래 JSON 형식으로만 출력하세요. 다른 텍스트는 포함하지 마세요.")
     lines.append(
         json.dumps(
@@ -269,6 +373,7 @@ def generate_section_scripts(
     png_paths: list[Path],
     carry_forward: CarryForward | None,
     is_last_section: bool,
+    reference_notes: dict[int, str] | None = None,
 ) -> SectionScriptResult:
     """Generate one section's slides as a single continuous script.
 
@@ -290,7 +395,8 @@ def generate_section_scripts(
 
     def run(correction: str | None) -> SectionScriptResult:
         prompt_text = build_section_prompt(
-            plan, section, slides, carry_forward, is_last_section, correction=correction
+            plan, section, slides, carry_forward, is_last_section,
+            correction=correction, reference_notes=reference_notes,
         )
         messages = [
             {"role": "system", "content": get_professor_system_prompt()},
