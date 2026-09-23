@@ -23,6 +23,7 @@ from lecture_auto.pipeline.cache import content_hash, qc_path_for, write_cache_h
 from lecture_auto.schemas.lecture_plan import LecturePlan
 from lecture_auto.schemas.manifest import FontInfo, ShapeRecord, SlideRecord, TextParagraph, TextRun
 from lecture_auto.schemas.production import ApprovalManifest
+from lecture_auto.pipeline.raon_tts import TTS_RESEED_SEEDS
 from scripts.batch_generate_lectures import (
     LECTURES,
     _assemble_with_approvals,
@@ -305,6 +306,37 @@ def test_run_slide_tts_no_stt_flag_passes_verify_stt_false(tmp_path):
         )
 
     assert mock_synth.call_args.kwargs["verify_stt"] is False
+
+
+def test_run_slide_tts_force_regen_uses_reseed_seeds(tmp_path):
+    """S9-d/D-15: --slides-forced regeneration must draw TTS_RESEED_SEEDS,
+    not the default TTS_SEEDS -- seeds are otherwise fixed, so a forced
+    re-run would reproduce byte-identical audio to the run it replaces."""
+    out_wav = tmp_path / "slide_009.wav"
+    sc = {"script": "ninth slide", "target_seconds": 10.0}
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        mock_synth.return_value = (out_wav, True)
+        _run_slide_tts(
+            tts_pipe=object(), n=9, sc=sc, out_wav=out_wav, cache_key="key-9", force_regen=True,
+        )
+
+    assert mock_synth.call_args.kwargs["seeds"] == TTS_RESEED_SEEDS
+
+
+def test_run_slide_tts_normal_synthesis_uses_default_seeds(tmp_path):
+    """Unforced synthesis must NOT pass the reseed set -- synthesize_raon_slide
+    falls back to its own default (TTS_SEEDS) when seeds is None."""
+    out_wav = tmp_path / "slide_010.wav"
+    sc = {"script": "tenth slide", "target_seconds": 10.0}
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        mock_synth.return_value = (out_wav, True)
+        _run_slide_tts(
+            tts_pipe=object(), n=10, sc=sc, out_wav=out_wav, cache_key="key-10", force_regen=False,
+        )
+
+    assert mock_synth.call_args.kwargs["seeds"] is None
 
 
 def test_run_slide_tts_direct_write_failure_leaves_no_hash(tmp_path):
@@ -796,14 +828,15 @@ def _plan_section_slides_for_cache_test(tmp_path):
 
 
 def _section_response(section) -> str:
-    # section.minutes=1.0 -> budget 342 chars (1.0*60*5.7); 170 chars/slide
-    # keeps both slides combined (340) inside the no-retry window (0.90-1.12x)
-    # so this test only exercises cache invalidation, not the budget retry.
+    # section.minutes=1.0 -> budget 420 chars (1.0*60*7.0, S9/D-15); 210
+    # chars/slide keeps both slides combined (420) inside the no-retry window
+    # (0.90-1.12x) so this test only exercises cache invalidation, not the
+    # budget retry.
     return json.dumps(
         {
             "section_summary": "요약",
             "carry_forward": {"explained": [], "active_example": "", "next_question": ""},
-            "slides": [{"slide_number": n, "target_seconds": 30.0, "script": "가" * 170} for n in section.slides],
+            "slides": [{"slide_number": n, "target_seconds": 30.0, "script": "가" * 210} for n in section.slides],
         },
         ensure_ascii=False,
     )

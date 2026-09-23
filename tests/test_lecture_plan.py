@@ -226,9 +226,9 @@ def _plan_and_section():
 
 
 def test_generate_section_scripts_retries_when_over_budget(tmp_path):
-    # Budget is the SECTION PLAN's 1.0 min: 60s * 5.7 = 342 chars.
-    over = _section_result_json([250, 250], [1, 2])   # 500/342 = 1.46x
-    within = _section_result_json([170, 170], [1, 2]) # 340/342 = 0.99x
+    # Budget is the SECTION PLAN's 1.0 min: 60s * 7.0 (S9/D-15) = 420 chars.
+    over = _section_result_json([306, 306], [1, 2])   # 612/420 = 1.46x
+    within = _section_result_json([208, 208], [1, 2]) # 416/420 = 0.99x
     client = MagicMock()
     client.chat.side_effect = [over, within]
 
@@ -240,7 +240,7 @@ def test_generate_section_scripts_retries_when_over_budget(tmp_path):
     result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
 
     assert client.chat.call_count == 2
-    assert sum(len(s.script) for s in result.slides) == 340
+    assert sum(len(s.script) for s in result.slides) == 416
 
 
 def test_generate_section_scripts_keeps_first_attempt_if_retry_is_worse(tmp_path):
@@ -261,7 +261,7 @@ def test_generate_section_scripts_keeps_first_attempt_if_retry_is_worse(tmp_path
 
 def test_generate_section_scripts_does_not_retry_when_within_budget(tmp_path):
     client = MagicMock()
-    client.chat.side_effect = [_section_result_json([170, 170], [1, 2])]  # 0.99x
+    client.chat.side_effect = [_section_result_json([210, 210], [1, 2])]  # 420/420 = 1.0x
 
     plan, section = _plan_and_section()
     png = tmp_path / "s.png"
@@ -275,7 +275,7 @@ def test_generate_section_scripts_does_not_retry_when_within_budget(tmp_path):
 def test_budget_is_measured_against_the_plan_not_the_models_own_target_seconds(tmp_path):
     # The model hands itself 10s/slide where the plan allots 1.0 min for the
     # section. Measured against its own numbers 114 chars looks perfect; against
-    # the plan's 342 it is 0.33x and must trigger a retry.
+    # the plan's 420 (S9/D-15: 60s * 7.0) it is 0.27x and must trigger a retry.
     starved = _section_result_json([57, 57], [1, 2])
     full = _section_result_json([170, 170], [1, 2])
     client = MagicMock()
