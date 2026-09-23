@@ -26,6 +26,16 @@ def cache_path_for(artifact_path: Path) -> Path:
     return artifact_path.with_name(artifact_path.name + ".hash")
 
 
+def qc_path_for(artifact_path: Path) -> Path:
+    """Sidecar path for a slide's quality-record JSON (S6-a's ``SlideQC``).
+
+    Lives here (not in ``pipeline/raon_tts.py``, which produces the QC data)
+    so ``pipeline/approval.py`` can move QC sidecars alongside the WAV/hash on
+    promote without importing raon_tts.py's torch/soundfile dependency chain.
+    """
+    return artifact_path.with_name(artifact_path.name + ".qc.json")
+
+
 def is_cache_valid(artifact_path: Path, expected_hash: str) -> bool:
     """True if artifact_path exists, is non-empty, and its sidecar hash matches.
 

@@ -268,6 +268,41 @@ def test_run_slide_tts_direct_write_when_out_wav_missing(tmp_path):
     assert not out_wav.with_name("slide_002.cand.wav.json").exists()
 
 
+def test_run_slide_tts_defaults_verify_stt_true_and_sets_qc_path(tmp_path):
+    """S6 SPEC S6-a: batch's STT check is on by default (unlike
+    synthesize_raon_slide's own verify_stt=False default) -- disabling this
+    (e.g. hardcoding verify_stt=False inside _run_slide_tts, or dropping the
+    kwarg) makes this test fail."""
+    out_wav = tmp_path / "slide_005.wav"
+    sc = {"script": "fifth slide", "target_seconds": 10.0}
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        mock_synth.return_value = (out_wav, True)
+        _run_slide_tts(
+            tts_pipe=object(), n=5, sc=sc, out_wav=out_wav, cache_key="key-5", force_regen=False,
+        )
+
+    assert mock_synth.call_args.kwargs["verify_stt"] is True
+    assert mock_synth.call_args.kwargs["qc_path"] == out_wav.with_name(out_wav.name + ".qc.json")
+
+
+def test_run_slide_tts_no_stt_flag_passes_verify_stt_false(tmp_path):
+    """--no-stt threads verify_stt=False all the way to synthesize_raon_slide.
+    Reverting this (e.g. ignoring the verify_stt param) makes this test
+    fail -- pairs with the default-True test above."""
+    out_wav = tmp_path / "slide_006.wav"
+    sc = {"script": "sixth slide", "target_seconds": 10.0}
+
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+        mock_synth.return_value = (out_wav, True)
+        _run_slide_tts(
+            tts_pipe=object(), n=6, sc=sc, out_wav=out_wav, cache_key="key-6", force_regen=False,
+            verify_stt=False,
+        )
+
+    assert mock_synth.call_args.kwargs["verify_stt"] is False
+
+
 def test_run_slide_tts_direct_write_failure_leaves_no_hash(tmp_path):
     out_wav = tmp_path / "slide_003.wav"
 

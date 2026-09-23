@@ -20,7 +20,7 @@ from lecture_auto.pipeline.approval import (
     save_approvals,
     verify_approved,
 )
-from lecture_auto.pipeline.cache import cache_path_for, write_text_atomic
+from lecture_auto.pipeline.cache import cache_path_for, qc_path_for, write_text_atomic
 from lecture_auto.schemas.production import ApprovalManifest
 
 
@@ -212,6 +212,48 @@ def test_promote_candidate_failed_with_allow_failed_promotes_without_hash(tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# S6-a #3: promote_candidate moves the .qc.json sidecar too, keeping the old
+# one as .prev.wav.qc.json (mirrors the .hash handling above).
+# ---------------------------------------------------------------------------
+
+def test_promote_candidate_moves_qc_sidecar_and_keeps_prev(tmp_path):
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    wav = audio_dir / "slide_009.wav"
+    wav.write_bytes(b"OLD-MAIN-AUDIO")
+    qc_path_for(wav).write_text(json.dumps({"ok": True, "note": "old"}), encoding="utf-8")
+    _make_candidate(audio_dir, 9, ok=True, cache_key="promoted-key")
+    cand_qc = qc_path_for(audio_dir / "slide_009.cand.wav")
+    cand_qc.write_text(json.dumps({"ok": True, "note": "new"}), encoding="utf-8")
+
+    promote_candidate(ApprovalManifest(lecture_id="lec1"), audio_dir, 9)
+
+    # Candidate's QC is now the main QC.
+    main_qc = qc_path_for(wav)
+    assert json.loads(main_qc.read_text(encoding="utf-8"))["note"] == "new"
+    # Old main QC kept alongside prev.wav.
+    prev_qc = qc_path_for(audio_dir / "slide_009.prev.wav")
+    assert json.loads(prev_qc.read_text(encoding="utf-8"))["note"] == "old"
+    # Candidate QC file itself is gone (moved, not copied).
+    assert not cand_qc.exists()
+
+
+def test_promote_candidate_without_qc_files_does_not_error(tmp_path):
+    """Neither side has a QC sidecar (e.g. synthesized without qc_path) --
+    promotion must not require one."""
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    wav = audio_dir / "slide_010.wav"
+    wav.write_bytes(b"OLD-MAIN")
+    _make_candidate(audio_dir, 10, ok=True, cache_key="k")
+
+    promote_candidate(ApprovalManifest(lecture_id="lec1"), audio_dir, 10)
+
+    assert not qc_path_for(wav).exists()
+    assert not qc_path_for(audio_dir / "slide_010.prev.wav").exists()
+
+
+# ---------------------------------------------------------------------------
 # 9. build_timeline: known-duration WAVs -> correct start/duration/total
 # ---------------------------------------------------------------------------
 
@@ -243,3 +285,31 @@ def test_build_timeline_start_duration_total(tmp_path):
     assert timeline.entries[0].approved is False
     assert timeline.entries[1].approved is True
     assert timeline.entries[2].approved is False
+
+
+# ---------------------------------------------------------------------------
+# S6-a #4: build_timeline reflects each WAV's .qc.json (stt_status/cer/
+# gate_ok), and is None for a slide with no QC sidecar.
+# ---------------------------------------------------------------------------
+
+def test_build_timeline_reads_qc_sidecar_none_when_missing(tmp_path):
+    wav1 = tmp_path / "slide_001.wav"
+    wav2 = tmp_path / "slide_002.wav"
+    _write_wav(wav1, 2.0)
+    _write_wav(wav2, 2.0)
+    qc_path_for(wav1).write_text(
+        json.dumps({"ok": False, "stt": {"status": "fail", "cer": 0.42}}), encoding="utf-8"
+    )
+    # wav2 has no .qc.json at all.
+
+    timeline = build_timeline(
+        "lec1", "lec1.mp4", draft=False, slide_wavs=[(1, wav1), (2, wav2)], approved=set()
+    )
+
+    e1, e2 = timeline.entries
+    assert e1.gate_ok is False
+    assert e1.stt_status == "fail"
+    assert e1.cer == pytest.approx(0.42)
+    assert e2.gate_ok is None
+    assert e2.stt_status is None
+    assert e2.cer is None

@@ -1,6 +1,8 @@
 """Tests for lecture_auto.pipeline.raon_tts pure-Python helpers (no GPU/model needed)."""
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import soundfile as sf
 
@@ -8,6 +10,7 @@ from lecture_auto.pipeline.raon_tts import (
     _MAX_INTERNAL_SILENCE_S,
     _MIN_VOICED_RATIO,
     TTS_SEEDS,
+    TranscriptionCheck,
     _integrated_lufs,
     _longest_silence_seconds,
     _loudness_normalize,
@@ -748,5 +751,159 @@ def test_verify_stt_off_leaves_trace_fields_null(tmp_path, monkeypatch):
     finally:
         monkeypatch.delenv("RAON_TRACE", raising=False)
         importlib.reload(mod)
+
+
+# ---------------------------------------------------------------------------
+# S6-a (#1, #9): qc_path writes a SlideQC; None writes nothing; return value
+# unchanged either way. TranscriptionCheck's old import path still works.
+# ---------------------------------------------------------------------------
+
+def test_qc_path_none_writes_no_file_and_return_value_is_unchanged(tmp_path):
+    pipe = _FakePipe([_tone(5.0)] * 50)
+    out = tmp_path / "slide.wav"
+    result = synthesize_raon_slide(pipe, "첫 문장입니다.", out)
+    assert result == (out, True)
+    assert not (tmp_path / "slide.wav.qc.json").exists()
+
+
+def test_qc_path_given_writes_slide_qc_with_segment_fields(tmp_path):
+    import json as _json
+
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    pipe = _FakePipe([_tone(10.0)] * 10)
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+
+    result = synthesize_raon_slide(pipe, text, out, max_seconds=60.0, qc_path=qc_path)
+    assert result == (out, True)  # (path, ok) unchanged by adding qc_path
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    assert data["ok"] is True
+    assert data["gate_reasons"] == []
+    assert data["synth_version"]
+    assert data["created_at"]
+    assert data["spoken_text_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert len(data["segments"]) == 2
+    seg0, seg1 = data["segments"]
+    assert seg0["index"] == 0 and seg1["index"] == 1
+    assert seg0["seed"] in TTS_SEEDS
+    assert seg0["call"] == "tts"
+    assert seg0["continuation_from"] is None
+    # Second segment continues from the first (both passed on the first draw).
+    assert seg1["call"] == "tts_continuation"
+    assert seg1["continuation_from"] == 0
+    assert data["boundary_review"] == []
+
+
+def test_qc_path_written_even_for_empty_text(tmp_path):
+    import json as _json
+
+    pipe = _FakePipe([])
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    result = synthesize_raon_slide(pipe, "   ", out, qc_path=qc_path)
+    assert result == (out, True)
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    assert data == {
+        "ok": True,
+        "gate_reasons": [],
+        "stt": None,
+        "spoken_text_sha256": data["spoken_text_sha256"],
+        "segments": [],
+        "boundary_review": [],
+        "synth_version": data["synth_version"],
+        "created_at": data["created_at"],
+    }
+
+
+def test_transcription_check_import_path_from_raon_tts_is_the_schema_class():
+    from lecture_auto.schemas.production import TranscriptionCheck as SchemaCheck
+
+    assert TranscriptionCheck is SchemaCheck
+
+
+# ---------------------------------------------------------------------------
+# S6-c / F6 (#7): redrawing a continuation source after a later segment
+# already continued from it must flag that later segment in boundary_review.
+#
+# raon_tts.py's own second pass (search "Second pass" in synthesize_raon_slide)
+# is exactly this case: it redraws a piece against the whole-slide reference
+# AFTER every segment (including ones that used it as a tts_continuation
+# prefill) has already been generated. This is not a hypothetical -- it is
+# the shipped redraw path, evidenced by test_quiet_segment_is_redrawn_against_
+# the_slide_level above triggering the same code path.
+# ---------------------------------------------------------------------------
+
+def test_boundary_review_flags_downstream_continuation_after_redraw(tmp_path):
+    """Segment 0 passes quiet (self-relative gate), segment 1 continues from
+    it. The whole-slide reference then reads segment 0 as silence and redraws
+    it -- segment 1's join partner is gone, so it must land in boundary_review.
+    """
+    import json as _json
+
+    sr = 24000
+    quiet = _tone(10.0, sr, amp=0.005)
+    loud = _tone(10.0, sr, amp=0.3)
+    # 1: segment 0's only draw (quiet, passes self-relative).
+    # 2: segment 1's tts_continuation draw (loud, passes; continues off segment 0).
+    # 3: segment 0's redraw (loud, passes against the real reference).
+    pipe = _FakePipe([quiet, loud, loud] + [loud] * 10)
+
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    assert len(split_into_segments(s1 + " " + s2)) == 2, "test assumes exactly 2 top-level segments"
+
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    synthesize_raon_slide(pipe, s1 + " " + s2, out, max_seconds=60.0, qc_path=qc_path)
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    seg0, seg1 = data["segments"]
+    assert seg0["fallback"] is False  # the redraw was adopted, not left failing
+    assert seg1["call"] == "tts_continuation"
+    assert seg1["continuation_from"] == 0
+    assert data["boundary_review"] == [1]
+
+
+def test_boundary_review_empty_when_no_redraw_replaces_a_continuation_source(tmp_path):
+    """Same shape, but both segments come out loud on the first pass -- no
+    redraw fires, so nothing needs re-listening to. Proves boundary_review
+    isn't populated unconditionally."""
+    import json as _json
+
+    sr = 24000
+    loud = _tone(10.0, sr, amp=0.3)
+    pipe = _FakePipe([loud] * 6)
+
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    synthesize_raon_slide(pipe, s1 + " " + s2, out, max_seconds=60.0, qc_path=qc_path)
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    assert data["boundary_review"] == []
+
+
+def test_verify_stt_requested_but_pipe_has_no_stt_records_unavailable(tmp_path):
+    """verify_stt=True on a pipe without .stt (e.g. a fake in tests, or a real
+    pipe built without the STT head) must record status=unavailable in the QC
+    file, not silently leave stt=None as if it was never asked for."""
+    import json as _json
+
+    pipe = _FakePipe([_tone(5.0)] * 50)
+    assert not hasattr(pipe, "stt")
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    _, ok = synthesize_raon_slide(pipe, "첫 문장입니다.", out, verify_stt=True, qc_path=qc_path)
+    assert ok is True  # unavailable has no gate_reasons, doesn't fail the slide
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    assert data["stt"] == {"status": "unavailable", "reasons": [], "transcript": None, "cer": None}
 
 
