@@ -172,6 +172,7 @@ def assemble_video(
     video_dir: Path,
     output_path: Path,
     job_id: str,
+    strict: bool = False,
 ) -> Path:
     """Assemble the final lecture MP4 in a single encode pass.
 
@@ -191,11 +192,21 @@ def assemble_video(
         Final lecture MP4 output path (e.g. ``output/lecture_{job_id}.mp4``).
     job_id:
         Job identifier — used only for logging.
+    strict:
+        When True, a PNG with no matching WAV raises ``FileNotFoundError``
+        (naming the missing slide number(s)) instead of being silently
+        skipped with a warning. Batch production runs want this; interactive/
+        demo drivers keep the permissive default.
 
     Returns
     -------
     Path
         The ``output_path`` that was written.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``strict=True`` and one or more PNGs have no matching WAV.
     """
     video_dir = Path(video_dir)
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -215,15 +226,29 @@ def assemble_video(
 
     all_slide_numbers = sorted(png_by_number.keys())
     slide_pairs: list[tuple[Path, Path]] = []
+    missing_slides: list[int] = []
     for slide_number in all_slide_numbers:
         png = png_by_number[slide_number]
         wav = wav_by_number.get(slide_number)
-        if wav is None:
+        # In strict mode also treat a resolved-but-nonexistent WAV path as
+        # missing: batch callers pre-build one wav_path per slide number
+        # unconditionally, so "no entry for this slide" alone never fires --
+        # the on-disk check is what actually protects a caller that resolved
+        # a path whose file was never written.
+        if wav is None or (strict and not wav.exists()):
+            missing_slides.append(slide_number)
+            continue
+        slide_pairs.append((png, wav))
+
+    if missing_slides:
+        if strict:
+            raise FileNotFoundError(
+                f"No WAV found for slide(s) {missing_slides} (job_id={job_id})"
+            )
+        for slide_number in missing_slides:
             logger.warning(
                 "Slide %d: no WAV found — skipping (job_id=%s)", slide_number, job_id
             )
-            continue
-        slide_pairs.append((png, wav))
 
     if not slide_pairs:
         raise RuntimeError("No slide/audio pairs were found — cannot assemble video.")
@@ -233,7 +258,9 @@ def assemble_video(
     total_duration = 0.0
 
     try:
-        merge_audio(slide_pairs[0][1].parent, merged_audio_path)
+        # Merge exactly the WAVs resolved above, in slide order -- not
+        # everything glob-matches in the directory (S1-a).
+        merge_audio([wav for _, wav in slide_pairs], merged_audio_path)
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as manifest_file:
             slideshow_manifest_path = Path(manifest_file.name)
