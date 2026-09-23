@@ -91,9 +91,10 @@ def load_raon_pipeline(
         "ras_repetition_threshold": 0.5,
     }
     pipe.task_params["tts"].update(tuned)
-    # tts_continuation (used to join segments after the first -- see
-    # synthesize_raon_slide) needs the same tuning; it has its own task_params
-    # entry in the model's defaults, identical to "tts" but independently set.
+    # tts_continuation has its own task_params entry in the model's defaults,
+    # identical to "tts" but independently set, so it needs the same tuning
+    # even though S9-b/D-15 retired it from the actual synthesis path (see
+    # plan_attempts) -- keep both tuned rather than assume nothing still calls it.
     pipe.task_params["tts_continuation"].update(tuned)
     logger.info("RaonPipeline loaded successfully (tts/tts_continuation task_params tuned: %s)", tuned)
     return pipe
@@ -284,25 +285,26 @@ _MAX_MAX_NEW_TOKENS = 640  # ~51s, comfortably over the longest real segment
 # while 80-100 chars achieves optimal 15% failure rate).
 _SEGMENT_MIN_CHARS = 75
 _SEGMENT_MAX_CHARS = 105
-# S9/D-15: the 5.7 above was itself an artifact of the length-based segment
-# gate it fed -- that gate only ever accepted the SLOWEST takes (anything
-# faster tripped its lower duration bound), so the "measured" rate was
-# selection-biased. The S9 diagnostic experiment (see
-# docs/hardening/stages/S9_stt_gate/EXPERIMENT.md) removed the length floor
-# from the pass/fail decision and found the model's real median rate on
-# content-correct (STT-verified) plain-tts segments is ~7.5 chars/s; 7.0
-# keeps a small margin under that. Not the professor's own rate (6.46 chars/s
-# over his 32min recording); only the TTS rate sets video length.
+# S9/D-15: this constant's prior value (5.7) was measured against the
+# length-based segment gate it then fed. EXPERIMENT.md: of 20 plain-tts
+# segments that gate rejected as "too short", 19 were content-complete
+# narration at 7.3-9.7 chars/s, and the model's real median rate over
+# content-correct (STT-verified) plain-tts segments is 7.5 chars/s -- 7.0
+# keeps a small margin under that rather than chasing it exactly. Not the
+# professor's own rate (6.46 chars/s over his 32min recording); only the TTS
+# rate sets video length.
 # Must stay in sync with SPEECH_CHARS_PER_SECOND in script_gen.py: the scripts
 # are budgeted at this rate and the gate's duration window is sized by it, so a
 # mismatch either loosens the gate or makes every clean clip look overlong.
 _CHARS_PER_SECOND = 7.0
 _PAUSE_MS = 200
 # Order matters and the first three must not move: they are what the shipped
-# lecture-01 audio was drawn from, so a slide that passed on one of them
-# regenerates byte-identically and its cache stays honest. The extra two exist
-# because a re-run is otherwise pointless -- seeding is deterministic, so a
-# failing slide redrawn from the same three fails identically forever.
+# lecture-01 audio was drawn from, so an ordinary (unforced) re-run at a given
+# TTS_SYNTH_VERSION still regenerates byte-identically and its cache stays
+# honest -- torch.manual_seed + pipe.tts() is deterministic per (seed, text).
+# S9-d/D-15: forced re-synthesis no longer draws from here at all -- see
+# TTS_RESEED_SEEDS below, which replaced the "extra two seeds so a forced
+# re-run isn't pointless" reasoning this list used to carry alone.
 TTS_SEEDS = (17, 29, 43, 61, 79)
 # S9-d: forced re-synthesis (batch's --slides) used to draw the same
 # TTS_SEEDS as ordinary synthesis, so a re-run of an already-cached slide
@@ -334,8 +336,10 @@ _MIN_DURATION_RATIO = 0.78
 
 # S9/D-15: per-segment pass now requires evaluate_transcription().status ==
 # "pass" AND cer <= this, replacing the length floor above. EXPERIMENT.md:
-# real defects among plain-tts attempts all measured CER >= 0.28; 0.25 sits
-# just under that observed failure floor.
+# real defects among plain-tts attempts were separated by internal silence
+# > 2.8s OR cer >= 0.28 (not cer alone -- some defects were pure-silence
+# failures the length floor never distinguished either); 0.25 sits just under
+# that measured CER side of the boundary.
 _MAX_SEGMENT_CER = 0.25
 
 # On gate failure, the same seeds regenerate bit-identically -- torch.manual_seed
@@ -530,14 +534,15 @@ def _integrated_lufs(wav: np.ndarray, sr: int) -> float:
     return meter.integrated_loudness(wav.astype(np.float64))
 
 
-def _passes_quality_gate(
+def _gate_reasons(
     wav: np.ndarray,
     sr: int,
     expected_seconds: float,
     min_seconds: float = 0.0,
     energy_reference: float | None = None,
-) -> bool:
-    """Content-quality gate on a segment's raw (pre-normalization) audio.
+) -> list[str]:
+    """Ordered content-quality check failures on a segment's raw (pre-
+    normalization) audio: ``long``, ``short``, ``voiced``, ``silence``.
 
     No absolute loudness floor here: `synthesize_raon_slide` runs a single
     `_loudness_normalize` pass over the whole joined slide at the end, so a
@@ -547,30 +552,14 @@ def _passes_quality_gate(
     1.2-2.0s) but were rejected purely because raw LUFS was -28 to -41,
     nowhere near a real quality signal. Kept `_integrated_lufs` only for
     `_loudness_normalize`'s own use.
-    """
-    if len(wav) == 0:
-        return False
-    duration = len(wav) / sr
-    if duration > expected_seconds * _MAX_DURATION_RATIO:
-        return False
-    if duration < min_seconds:
-        return False
-    if _voiced_ratio(wav, sr, reference=energy_reference) < _MIN_VOICED_RATIO:
-        return False
-    return _longest_silence_seconds(wav, sr, reference=energy_reference) <= _MAX_INTERNAL_SILENCE_S
 
-
-def _cheap_gate_reasons(
-    wav: np.ndarray, sr: int, expected_seconds: float, energy_reference: float | None = None
-) -> list[str]:
-    """The pre-STT checks from `_passes_quality_gate`, minus the length floor.
-
-    S9-a/D-15: run before spending an STT call on an attempt -- overlong,
-    under-voiced, or long-internal-silence audio is never going to be a
-    content match, so there's nothing for STT to confirm. The length LOWER
-    bound is deliberately absent (see `_MIN_DURATION_RATIO`'s comment): it is
-    still computed by the caller, but only for the STT-unavailable fallback
-    and for trace/reporting, per D-15.
+    ``min_seconds`` defaults to 0.0, which makes the ``short`` check a no-op
+    -- S9-a/D-15's per-segment STT path calls this with the default to get
+    the cheap pre-STT checks alone (overlong/under-voiced/too-silent audio is
+    never going to be a content match, so there's nothing for STT to
+    confirm); the STT-unavailable/disabled fallback passes the real floor to
+    reproduce the original length-inclusive gate. See `_MIN_DURATION_RATIO`'s
+    comment for why the length floor isn't part of the STT-mode decision.
     """
     if len(wav) == 0:
         return ["voiced"]
@@ -578,6 +567,8 @@ def _cheap_gate_reasons(
     reasons = []
     if duration > expected_seconds * _MAX_DURATION_RATIO:
         reasons.append("long")
+    if duration < min_seconds:
+        reasons.append("short")
     if _voiced_ratio(wav, sr, reference=energy_reference) < _MIN_VOICED_RATIO:
         reasons.append("voiced")
     if _longest_silence_seconds(wav, sr, reference=energy_reference) > _MAX_INTERNAL_SILENCE_S:
@@ -585,26 +576,15 @@ def _cheap_gate_reasons(
     return reasons
 
 
-def _legacy_gate_reason(
-    wav: np.ndarray, sr: int, expected_seconds: float, min_seconds: float, energy_reference: float | None = None
-) -> str:
-    """Which check in `_passes_quality_gate`'s own order failed, for the trace.
-
-    Used only on the STT-unavailable/disabled path (verify_stt off, no STT on
-    the pipe, or evaluate_transcription itself came back "unavailable"),
-    where `_passes_quality_gate` (length floor included) is still the actual
-    pass/fail decision -- this just names which of its checks was the reason.
-    """
-    if len(wav) == 0:
-        return "voiced"
-    duration = len(wav) / sr
-    if duration > expected_seconds * _MAX_DURATION_RATIO:
-        return "long"
-    if duration < min_seconds:
-        return "short"
-    if _voiced_ratio(wav, sr, reference=energy_reference) < _MIN_VOICED_RATIO:
-        return "voiced"
-    return "silence"
+def _passes_quality_gate(
+    wav: np.ndarray,
+    sr: int,
+    expected_seconds: float,
+    min_seconds: float = 0.0,
+    energy_reference: float | None = None,
+) -> bool:
+    """True iff `_gate_reasons` found nothing wrong. See its docstring."""
+    return not _gate_reasons(wav, sr, expected_seconds, min_seconds, energy_reference)
 
 
 def _slide_gate_failures(
@@ -702,13 +682,14 @@ def _synthesize_segment_with_gate(
 
     S9-a/D-15: pass/fail is STT-based, not length-based, whenever
     ``verify_stt`` is True and ``pipe`` has an ``.stt`` method. An attempt
-    first clears the cheap checks (``_cheap_gate_reasons``: overlong,
-    under-voiced, long internal silence -- no length floor); only then is it
-    transcribed (``evaluate_transcription``, written to a temp wav) and
-    required to be ``status == "pass"`` with ``cer <= _MAX_SEGMENT_CER``. When
-    STT can't be used (``verify_stt=False``, no ``.stt`` on ``pipe``, or the
-    transcription itself comes back "unavailable"), this falls back to the
-    original length-inclusive ``_passes_quality_gate`` unchanged.
+    first clears the cheap checks (``_gate_reasons`` with its default
+    ``min_seconds=0.0``: overlong, under-voiced, long internal silence -- no
+    length floor); only then is it transcribed (``evaluate_transcription``,
+    written to a temp wav) and required to be ``status == "pass"`` with
+    ``cer <= _MAX_SEGMENT_CER``. When STT can't be used (``verify_stt=False``,
+    no ``.stt`` on ``pipe``, or the transcription itself comes back
+    "unavailable"), this falls back to ``_gate_reasons`` with the real length
+    floor -- the original ``_passes_quality_gate`` decision, unchanged.
 
     ``record`` (S6-a), if given, is mutated in place with ``{"seed": ...,
     "call": "tts" | "tts_continuation" | None}`` for whichever attempt is
@@ -725,8 +706,9 @@ def _synthesize_segment_with_gate(
             _MAX_MAX_NEW_TOKENS,
         )
     )
-    # Both task entries: a segment that starts on tts_continuation can fall back
-    # to plain tts mid-loop, and the cap has to follow it there.
+    # Both task entries kept in sync even though S9-b/D-15 retired
+    # tts_continuation from the attempts this function actually draws (see
+    # plan_attempts) -- avoids a stale cap on the unused entry.
     for key in ("tts", "tts_continuation"):
         pipe.task_params[key]["max_new_tokens"] = max_new_tokens
 
@@ -786,7 +768,9 @@ def _synthesize_segment_with_gate(
         stt_status: str | None = None
         reason: str | None = None
         if use_stt:
-            cheap_reasons = _cheap_gate_reasons(trimmed, sr, expected_seconds, energy_reference)
+            # Default min_seconds=0.0 -- the cheap pre-STT checks only
+            # (long/voiced/silence), length floor excluded per D-15.
+            cheap_reasons = _gate_reasons(trimmed, sr, expected_seconds, energy_reference=energy_reference)
             if cheap_reasons:
                 # Overlong/under-voiced/too-silent audio is never a content
                 # match -- don't spend an STT call confirming that.
@@ -812,9 +796,10 @@ def _synthesize_segment_with_gate(
                 else:
                     passed = True
         else:
-            passed = _passes_quality_gate(trimmed, sr, expected_seconds, min_seconds, energy_reference)
+            legacy_reasons = _gate_reasons(trimmed, sr, expected_seconds, min_seconds, energy_reference)
+            passed = not legacy_reasons
             if not passed:
-                reason = _legacy_gate_reason(trimmed, sr, expected_seconds, min_seconds, energy_reference)
+                reason = legacy_reasons[0]
 
         _trace(
             event="attempt", call="tts_continuation" if use_continuation else "tts",
@@ -832,17 +817,25 @@ def _synthesize_segment_with_gate(
         # one tried -- an early seed's babble shouldn't beat a later seed's
         # near-miss just because it went first. D-15: in STT mode, rank by
         # CER (lowest wins, ties broken by internal silence) -- content
-        # fidelity is what actually distinguishes these attempts now. In
-        # non-STT mode, keep the original score: truncation penalised
-        # alongside silence, since ranking on silence alone would crown a
-        # clip that stopped after one sentence (no silence, no content) over
-        # a complete one with a single long pause.
+        # fidelity is what actually distinguishes these attempts now. Truncation
+        # is still penalised alongside silence (the non-STT score, unchanged)
+        # for any attempt with no CER to rank by -- one that never reached STT
+        # (cheap-gate fail) or where STT itself came back "unavailable";
+        # ranking those on silence alone would crown a clip that stopped
+        # after one sentence (no silence, no content) over a complete one
+        # with a single long pause.
         silence_s = _longest_silence_seconds(trimmed, sr, reference=energy_reference)
-        if use_stt:
-            fallback_key = (cer if cer is not None else float("inf"), silence_s)
+        shortfall = max(0.0, min_seconds - len(trimmed) / sr)
+        non_stt_score = silence_s + shortfall
+        if use_stt and cer is not None:
+            fallback_key = (cer, silence_s)
+        elif use_stt:
+            # No CER for this attempt (cheap-gate fail, or STT came back
+            # "unavailable") -- rank below every CER-scored attempt, and
+            # among themselves by the non-STT score, not silence alone.
+            fallback_key = (float("inf"), non_stt_score)
         else:
-            shortfall = max(0.0, min_seconds - len(trimmed) / sr)
-            fallback_key = (silence_s + shortfall, 0.0)
+            fallback_key = (non_stt_score, non_stt_score)
         if fallback_key < best_fallback_key:
             best_fallback_key = fallback_key
             best_fallback = (trimmed, sr)
