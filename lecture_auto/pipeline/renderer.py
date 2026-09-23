@@ -51,7 +51,7 @@ def pptx_to_pdf(
                 "--headless",
                 "--norestore",
                 "--nofirststartwizard",
-                f"--env:UserInstallation=file://{user_install}",
+                f"-env:UserInstallation={user_install.as_uri()}",
                 "--convert-to",
                 "pdf",
                 "--outdir",
@@ -63,8 +63,11 @@ def pptx_to_pdf(
             timeout=timeout,
         )
         if result.returncode != 0:
+            stderr = (result.stderr or "")[:2000]
+            stdout = (result.stdout or "")[:2000]
             raise RuntimeError(
-                f"soffice failed (exit {result.returncode}): {result.stderr}"
+                f"soffice failed (exit {result.returncode}): "
+                f"stderr={stderr!r} stdout={stdout!r}"
             )
     finally:
         shutil.rmtree(user_install, ignore_errors=True)

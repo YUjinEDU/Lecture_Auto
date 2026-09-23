@@ -21,7 +21,8 @@ from lecture_auto.pipeline.renderer import pdf_to_pngs, pptx_to_pdf, render_slid
 
 def test_pptx_to_pdf_calls_correct_soffice_args(tmp_path):
     """pptx_to_pdf calls subprocess with correct soffice args including
-    --headless, --norestore, and --env:UserInstallation."""
+    --headless, --norestore, and -env:UserInstallation (single dash — LibreOffice
+    rejects the --env: double-dash form as an unknown option)."""
     pptx = tmp_path / "lecture.pptx"
     pptx.write_bytes(b"fake pptx")
     output_dir = tmp_path / "out"
@@ -40,13 +41,16 @@ def test_pptx_to_pdf_calls_correct_soffice_args(tmp_path):
     args = mock_run.call_args[0][0]
     assert "--headless" in args
     assert "--norestore" in args
-    assert any("UserInstallation" in a for a in args)
+    assert any(a.startswith("-env:UserInstallation=file://") for a in args)
+    assert not any(a.startswith("--env:") for a in args)
     assert "--convert-to" in args
     assert "pdf" in args
 
 
 def test_pptx_to_pdf_raises_on_nonzero_exit(tmp_path):
-    """pptx_to_pdf raises RuntimeError if soffice exits non-zero."""
+    """pptx_to_pdf raises RuntimeError if soffice exits non-zero, and the
+    message includes stdout text (soffice reports option errors on stdout,
+    not stderr)."""
     pptx = tmp_path / "lecture.pptx"
     pptx.write_bytes(b"fake pptx")
     output_dir = tmp_path / "out"
@@ -55,10 +59,14 @@ def test_pptx_to_pdf_raises_on_nonzero_exit(tmp_path):
     mock_result = MagicMock()
     mock_result.returncode = 1
     mock_result.stderr = "soffice crashed"
+    mock_result.stdout = "Error in option: --env:UserInstallation=...\nUsage: soffice ..."
 
     with patch("subprocess.run", return_value=mock_result):
-        with pytest.raises(RuntimeError, match="soffice failed"):
+        with pytest.raises(RuntimeError, match="soffice failed") as exc_info:
             pptx_to_pdf(pptx, output_dir, "job123")
+
+    assert "Error in option" in str(exc_info.value)
+    assert "soffice crashed" in str(exc_info.value)
 
 
 def test_pptx_to_pdf_cleans_up_user_install_on_failure(tmp_path):
@@ -71,6 +79,7 @@ def test_pptx_to_pdf_cleans_up_user_install_on_failure(tmp_path):
     mock_result = MagicMock()
     mock_result.returncode = 1
     mock_result.stderr = "error"
+    mock_result.stdout = ""
 
     with patch("subprocess.run", return_value=mock_result):
         with patch("shutil.rmtree") as mock_rmtree:
@@ -78,6 +87,29 @@ def test_pptx_to_pdf_cleans_up_user_install_on_failure(tmp_path):
                 pptx_to_pdf(pptx, output_dir, "job-cleanup")
             # rmtree must be called (cleanup in finally)
             assert mock_rmtree.called
+
+
+def test_pptx_to_pdf_url_encodes_user_install_path(tmp_path):
+    """The UserInstallation file:// URL is built via Path.as_uri(), so a
+    job_id containing a space is percent-encoded rather than producing a
+    broken/ambiguous URL."""
+    pptx = tmp_path / "lecture.pptx"
+    pptx.write_bytes(b"fake pptx")
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    (output_dir / "lecture.pdf").write_bytes(b"fake pdf")
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stderr = ""
+
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
+        pptx_to_pdf(pptx, output_dir, "job with space")
+
+    args = mock_run.call_args[0][0]
+    env_arg = next(a for a in args if a.startswith("-env:UserInstallation="))
+    assert "%20" in env_arg
+    assert " " not in env_arg
 
 
 def test_pptx_to_pdf_raises_if_pdf_missing_after_conversion(tmp_path):
