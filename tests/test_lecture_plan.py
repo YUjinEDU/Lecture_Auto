@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -19,11 +18,8 @@ from lecture_auto.pipeline.lecture_plan import (
 from lecture_auto.schemas.lecture_plan import CarryForward, LecturePlan, LectureSection
 from lecture_auto.schemas.manifest import FontInfo, ShapeRecord, SlideRecord, TextParagraph, TextRun
 
-# S3 base commit (see docs/hardening/stages/S3_new_lecture_inputs/SPEC.md): the
-# pre-S3-b lecture_plan.py, used below to prove the reference-args-omitted
-# prompt output stayed byte-identical.
-_S3_BASE_COMMIT = "5a83baf"
 _MAIN_REPO_ROOT = Path("/home/dbsdosdb/workspace/Lecture_Auto")
+_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
 def _make_slide(number: int, title: str, body: str) -> SlideRecord:
@@ -379,20 +375,18 @@ def test_parse_reference_script_real_files():
 
 # ---------------------------------------------------------------------------
 # S3-b: reference_notes / reference_outline optional args (required tests 3, 4)
+#
+# The "omitted-args output is byte-identical to before S3" expected values
+# are frozen golden files under tests/fixtures/, generated once from the S3
+# base commit (5a83baf)'s build_lecture_plan_prompt/build_section_prompt for
+# the exact inputs the tests below build (see the generator note at the top
+# of each fixture's sibling comment here). No git/subprocess at test time --
+# a shallow clone or a future history rewrite (already happened once, D-09)
+# can't break these.
 # ---------------------------------------------------------------------------
 
-def _load_base_build_section_prompt():
-    """The pre-S3-b build_section_prompt, loaded straight from the S3 base
-    commit -- used as the "current implementation" expected value the SPEC
-    asks for (test 3), without hand-duplicating the whole function body."""
-    src = subprocess.run(
-        ["git", "show", f"{_S3_BASE_COMMIT}:lecture_auto/pipeline/lecture_plan.py"],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    ns: dict = {}
-    exec(compile(src, "lecture_plan_s3_base.py", "exec"), ns)  # noqa: S102
-    return ns["build_section_prompt"]
+def _read_fixture(name: str) -> str:
+    return (_FIXTURES_DIR / name).read_text(encoding="utf-8")
 
 
 def test_build_section_prompt_reference_notes_none_matches_baseline():
@@ -403,10 +397,7 @@ def test_build_section_prompt_reference_notes_none_matches_baseline():
 
     got = build_section_prompt(plan, section, slides, carry_forward, is_last_section=False, reference_notes=None)
 
-    baseline_fn = _load_base_build_section_prompt()
-    expected = baseline_fn(plan, section, slides, carry_forward, is_last_section=False)
-
-    assert got == expected
+    assert got == _read_fixture("section_prompt_baseline.txt")
 
 
 def test_build_section_prompt_reference_notes_scopes_to_section():
@@ -434,13 +425,4 @@ def test_build_lecture_plan_prompt_reference_outline_none_matches_baseline():
 
     got = build_lecture_plan_prompt(slides, "AI활용현업문제해결", "디자인씽킹 개요", 30.0, reference_outline=None)
 
-    src = subprocess.run(
-        ["git", "show", f"{_S3_BASE_COMMIT}:lecture_auto/pipeline/lecture_plan.py"],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    ns: dict = {}
-    exec(compile(src, "lecture_plan_s3_base.py", "exec"), ns)  # noqa: S102
-    expected = ns["build_lecture_plan_prompt"](slides, "AI활용현업문제해결", "디자인씽킹 개요", 30.0)
-
-    assert got == expected
+    assert got == _read_fixture("lecture_plan_prompt_baseline.txt")

@@ -805,6 +805,29 @@ def test_reference_script_change_invalidates_section_cache(tmp_path):
 # S3-c: LECTURES entries point at real files (required test 7)
 # ---------------------------------------------------------------------------
 
+def test_lectures_all_entries_reference_real_files():
+    """Every LECTURES entry's input (pdf or pptx) and reference_script (when
+    present) must point at a real file -- not just the 4 new S3-c entries.
+    Caught a stale path here during review: entries 04/05 pointed at
+    data/PDF/종합설계/... after the user moved those files under
+    data/PDF/종합설계 2026/1차/...; fixed by updating those two "pdf" paths.
+    Skips entirely when data/PDF isn't present in this worktree (gitignored
+    -- only in the main repo checkout)."""
+    data_pdf_dir = _MAIN_REPO_ROOT / "data" / "PDF"
+    if not data_pdf_dir.is_dir():
+        pytest.skip(f"{data_pdf_dir} not present in this worktree (gitignored data)")
+
+    assert len(LECTURES) == 9
+    for lec in LECTURES:
+        assert "pdf" in lec or "pptx" in lec, lec["id"]
+        if "pdf" in lec:
+            assert (_MAIN_REPO_ROOT / lec["pdf"]).is_file(), (lec["id"], lec["pdf"])
+        if "pptx" in lec:
+            assert (_MAIN_REPO_ROOT / lec["pptx"]).is_file(), (lec["id"], lec["pptx"])
+        if "reference_script" in lec:
+            assert (_MAIN_REPO_ROOT / lec["reference_script"]).is_file(), (lec["id"], lec["reference_script"])
+
+
 def test_lectures_new_entries_reference_real_files():
     real_dir = _MAIN_REPO_ROOT / "data" / "PDF" / "종합설계 2026"
     if not real_dir.is_dir():
