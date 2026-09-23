@@ -1,7 +1,7 @@
 # S6 SPEC — 품질 지표 실제 적용 + F3 + F6 + 발음 사전
 
 참조: 인수인계 F1·F3·F6(`../../00_context/LECTURE_TTS_RESEARCH_HANDOFF.md`), 리뷰 "발음 표현"(`../../00_context/260923_review.md`),
-`../../decisions/DECISIONS.md` (D-04, D-08), S1·S2·S3 REVIEW. 기준: S3 병합 후 master HEAD(감독이 지정).
+`../../decisions/DECISIONS.md` (D-04, D-08), S1·S2·S3 REVIEW. 기준: master `faf55a3` 이후(S0·S3 병합됨, 전체 pytest 365 passed / 0 failed).
 
 ## 왜 필요한가 (감독 확인 사실)
 - S4-a로 `evaluate_transcription()`(pass/fail/unavailable + CER)은 생겼지만, 배치는 `synthesize_raon_slide`를
