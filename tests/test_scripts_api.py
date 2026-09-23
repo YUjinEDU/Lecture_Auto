@@ -246,7 +246,13 @@ class TestApproveScripts:
 
     def test_approve_succeeds_with_all_scripts(self, client):
         """Returns 200 with status=approved when all scripts are non-empty."""
-        resp = client.post("/jobs/test-job/scripts/approve")
+        mock_task = MagicMock()
+        mock_task.id = "task-123"
+
+        with patch("lecture_auto.api.routes.scripts.synthesize_job_task") as mock_synth:
+            mock_synth.apply_async.return_value = mock_task
+            resp = client.post("/jobs/test-job/scripts/approve")
+
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "approved"

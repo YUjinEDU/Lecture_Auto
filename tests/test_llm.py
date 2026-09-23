@@ -24,6 +24,27 @@ from lecture_auto.llm.openai_client import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_real_dotenv(monkeypatch):
+    """OpenAILLMClient.__init__ calls dotenv.load_dotenv(), which walks up
+    parent directories and picks up the real repo-root .env (FACTCHAT_*/
+    OPENAI_* keys) even when tests run from a worktree. Stub it out so these
+    tests only ever see the env vars they set themselves via monkeypatch, and
+    also clear any of those keys the *outer shell* already exported (e.g. a
+    CI/dev env var), since load_dotenv() only fills in missing keys -- it
+    can't unset ones a real environment already set.
+    """
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+    for key in (
+        "FACTCHAT_API_KEY",
+        "FACTCHAT_BASE_URL",
+        "FACTCHAT_MODEL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def _fake_openai(content: str = "hi") -> MagicMock:
     """A fake openai.OpenAI whose chat.completions.create returns ``content``."""
     fake = MagicMock()
