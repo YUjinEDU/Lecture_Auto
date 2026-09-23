@@ -9,6 +9,7 @@ import soundfile as sf
 from lecture_auto.pipeline.raon_tts import (
     _MAX_INTERNAL_SILENCE_S,
     _MIN_VOICED_RATIO,
+    TTS_RESEED_SEEDS,
     TTS_SEEDS,
     TranscriptionCheck,
     _integrated_lufs,
@@ -1052,5 +1053,108 @@ def test_speech_rate_constants_stay_in_sync_with_script_gen():
     from lecture_auto.pipeline.script_gen import SPEECH_CHARS_PER_SECOND
 
     assert _CHARS_PER_SECOND == SPEECH_CHARS_PER_SECOND == 7.0
+
+
+def test_verify_stt_unavailable_status_falls_back_to_length_floor():
+    """D-15 item 4's third case: not verify_stt=False, not a missing .stt
+    attribute (both covered above), but evaluate_transcription itself coming
+    back "unavailable" at runtime (pipe.stt raises). Same short-but-complete
+    audio as the STT-accepts-it test above, but here it must still be
+    rejected by the length floor -- confirms the fallback actually engages
+    per attempt, not just at the has-no-.stt call-site check."""
+    from unittest.mock import MagicMock
+
+    sr = 24000
+    text = "학생들이 여러 가지 문제를 함께 해결해 나가는 과정이 정말 중요합니다"
+    audio = _tone(3.0, sr)  # under the (still-computed) length floor
+    attempts = len(plan_attempts(has_continuation=False))
+    pipe = _FakePipe([audio] * attempts)
+    pipe.stt = MagicMock(side_effect=RuntimeError("stt boom"))
+
+    _, _sr, ok = _synthesize_segment_with_gate(pipe, text, None, expected_seconds=5.0, verify_stt=True)
+
+    assert ok is False
+    assert pipe.stt.call_count == attempts, "STT must actually be attempted on every draw"
+
+
+def test_seeds_override_propagates_to_every_segment_draw(tmp_path):
+    """S9-d/D-15: seeds=TTS_RESEED_SEEDS passed into synthesize_raon_slide
+    must reach the actual per-segment draw (through _synthesize_with_splitting
+    down to _synthesize_segment_with_gate/plan_attempts), not just be accepted
+    and dropped -- verified via each segment's recorded seed in the QC file."""
+    import json as _json
+
+    text = "첫 문장입니다. 두 번째 문장입니다."
+    pipe = _FakePipe([_tone(5.0)] * 50)
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+
+    synthesize_raon_slide(pipe, text, out, qc_path=qc_path, seeds=TTS_RESEED_SEEDS)
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    seeds_used = [seg["seed"] for seg in data["segments"]]
+    assert seeds_used, "expected at least one segment"
+    assert all(seed in TTS_RESEED_SEEDS for seed in seeds_used)
+    assert not any(seed in TTS_SEEDS for seed in seeds_used)
+
+
+def test_trace_records_cer_reason_on_fail_and_silence_reason_without_stt(tmp_path, monkeypatch):
+    """S9-a item 6: trace rows carry cer/stt_status/reason. A high-CER
+    failure names reason="cer" with its cer value and stt_status="pass"
+    (content mismatch, not a repetition/length-ratio "fail"); a cheap-gate
+    silence failure never reaches STT, so it names reason="silence" with
+    stt_status/cer both still null."""
+    import importlib
+    import json as _json
+    from unittest.mock import MagicMock
+
+    trace = tmp_path / "trace.jsonl"
+    monkeypatch.setenv("RAON_TRACE", str(trace))
+    mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
+    try:
+        sr = 24000
+        text = "우리가 오늘 배운 핵심 개념을 정리하고 다음 단계로 넘어가겠습니다"
+        good_audio = _tone(9.0, sr)
+        pipe = _FakePipe([good_audio, good_audio])
+        transcripts = iter([
+            "우리가 오늘 배운 것과는 전혀 상관없는 이야기를 한참 길게 늘어놓겠습니다",  # cer ~0.68 -> fail
+            text,  # exact match -> pass
+        ])
+        pipe.stt = lambda audio_path: next(transcripts)
+
+        mod._synthesize_segment_with_gate(pipe, text, None, expected_seconds=10.0, verify_stt=True)
+
+        rows = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+        attempt_rows = [r for r in rows if r.get("event") == "attempt"]
+        assert len(attempt_rows) == 2
+        assert attempt_rows[0]["outcome"] == "gate_fail"
+        assert attempt_rows[0]["reason"] == "cer"
+        assert attempt_rows[0]["stt_status"] == "pass"
+        assert attempt_rows[0]["cer"] > 0.25
+        assert attempt_rows[1]["outcome"] == "pass"
+        assert attempt_rows[1]["reason"] is None
+
+        # Separate case: a cheap-gate (silence) failure must never reach STT.
+        # Enough real speech either side (voiced ratio stays well over the
+        # 0.45 floor) that the internal 6s gap is what actually fails it --
+        # _speech_then_gap's own 0.3s/side would also trip the voiced check
+        # first and this test wants "silence" specifically.
+        tone, gap = _tone(5.0, sr), np.zeros(int(sr * 6.0), dtype=np.float32)
+        bad = np.concatenate([tone, gap, tone])
+        pipe2 = _FakePipe([bad] * len(mod.plan_attempts(has_continuation=False)))
+        pipe2.stt = MagicMock()
+        mod._synthesize_segment_with_gate(
+            pipe2, "짧은 문장 하나입니다.", None, expected_seconds=15.0, verify_stt=True,
+        )
+
+        rows2 = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+        silence_rows = [r for r in rows2 if r.get("event") == "attempt" and r.get("reason") == "silence"]
+        assert silence_rows, "expected at least one silence-reason row"
+        assert silence_rows[0]["stt_status"] is None
+        assert silence_rows[0]["cer"] is None
+        pipe2.stt.assert_not_called()
+    finally:
+        monkeypatch.delenv("RAON_TRACE", raising=False)
+        importlib.reload(mod)
 
 
