@@ -623,7 +623,7 @@ def _passes_quality_gate(
 
 
 def _slide_gate_failures(
-    wav: np.ndarray, sr: int, char_count: int, max_seconds: float | None
+    wav: np.ndarray, sr: int, char_count: int, max_seconds: float | None, check_short: bool = True
 ) -> list[str]:
     """Gate the joined slide, naming every reason it should not be cached.
 
@@ -657,7 +657,11 @@ def _slide_gate_failures(
                 "not a TTS defect",
                 duration, _MAX_DURATION_RATIO, max_seconds * _MAX_DURATION_RATIO, cap,
             )
-    if duration < expected * _MIN_DURATION_RATIO:
+    # 05 slides 8/24 failed short by 1s (91s<92s) with every segment
+    # STT-verified: once segment STT (D-15) has confirmed the content, the
+    # length floor is the same false-truncation proxy it was at segment level,
+    # so the caller turns it off (check_short=False) in that mode.
+    if check_short and duration < expected * _MIN_DURATION_RATIO:
         reasons.append(f"short({duration:.0f}s<{expected * _MIN_DURATION_RATIO:.0f}s)")
     voiced = _voiced_ratio(wav, sr)
     if voiced < _MIN_VOICED_RATIO:
@@ -1492,7 +1496,7 @@ def synthesize_raon_slide(
     sf.write(str(output_path), normalized, sr)
 
     duration = len(normalized) / sr
-    reasons = _slide_gate_failures(normalized, sr, len(text), max_seconds)
+    reasons = _slide_gate_failures(normalized, sr, len(text), max_seconds, check_short=not segment_stt_active)
     # Segment failures are advisory: the per-segment gate picks the best of the
     # seeds, but it cannot decide whether the slide is usable. S10-a normalizes
     # each piece before it's joined, which fixes the "uniformly quiet segment

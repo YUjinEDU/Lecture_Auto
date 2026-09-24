@@ -1496,3 +1496,13 @@ def test_redraw_candidate_is_normalized_before_being_judged_against_the_slide(tm
     assert pipe.calls == 6, "redraw candidate normalized to match the reference -- adopted on the first draw"
     data = _json.loads(qc_path.read_text(encoding="utf-8"))
     assert data["segments"][0]["fallback"] is False, "the redraw must have been adopted, not left failing"
+
+
+def test_slide_gate_short_check_can_be_disabled_when_segments_are_stt_verified():
+    sr = 24000
+    char_count = int(30 * 7.0)
+    clip = _tone(20.0, sr)  # 20s < 30s*0.78 -> short under the length floor
+    assert any(r.startswith("short") for r in _slide_gate_failures(clip, sr, char_count, 30.0))
+    assert not any(
+        r.startswith("short") for r in _slide_gate_failures(clip, sr, char_count, 30.0, check_short=False)
+    )
