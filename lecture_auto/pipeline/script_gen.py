@@ -29,11 +29,16 @@ logger = logging.getLogger(__name__)
 # length-based segment gate it then fed. EXPERIMENT.md (pipeline/raon_tts.py
 # has the full citation): of 20 plain-tts segments that gate rejected as
 # "too short", 19 were content-complete narration at 7.3-9.7 chars/s, and the
-# model's real median rate over content-correct segments is 7.5 chars/s --
-# 7.0 keeps a small margin under that rather than chasing it exactly.
-# Keep in sync with _CHARS_PER_SECOND in pipeline/raon_tts.py, which sizes the
-# quality gate's duration window around the same rate.
-SPEECH_CHARS_PER_SECOND = 7.0
+# model's real median rate over content-correct segments is 7.5 chars/s.
+# S10-c/D-16: bumped from 7.0 to that measured 7.5 -- 04-1's shipped lecture
+# measured 15,873 script chars / 2,116s final audio = 7.5 chars/s including
+# 200ms inter-segment pauses, so the script BUDGET should target the rate the
+# final video actually renders at. Deliberately NOT kept in sync with
+# _CHARS_PER_SECOND in pipeline/raon_tts.py any more: that constant sizes the
+# per-SEGMENT gate's duration window, calibrated separately against
+# segment-level truncation/overrun behaviour, and stays at 7.0. See
+# test_speech_rate_constants_are_intentionally_separated in test_raon_tts.py.
+SPEECH_CHARS_PER_SECOND = 7.5
 
 _PREV_SCRIPT_CONTEXT_CHARS = 100
 
