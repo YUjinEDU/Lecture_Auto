@@ -1026,8 +1026,10 @@ def test_segment_stt_failure_marks_slide_stt_fail_with_seg_index_reason(tmp_path
     assert seg0["stt_status"] == "fail"
     assert seg0["fallback"] is True, "every draw failed STT -- never passed its own gate"
     assert data["stt"]["status"] == "fail"
-    assert any(r.startswith("seg0:") for r in data["stt"]["reasons"]), data["stt"]["reasons"]
-    assert any(r.startswith("seg0:") for r in data["gate_reasons"]), data["gate_reasons"]
+    # The underlying evaluate_transcription() reason, not just the generic
+    # "stt" tag -- as diagnosable as the old whole-audio path's gate_reasons.
+    assert any(r.startswith("seg0:stt_repetition") for r in data["stt"]["reasons"]), data["stt"]["reasons"]
+    assert any(r.startswith("seg0:stt_repetition") for r in data["gate_reasons"]), data["gate_reasons"]
     assert data["ok"] is False
 
 
