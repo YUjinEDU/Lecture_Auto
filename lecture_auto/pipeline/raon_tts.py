@@ -312,6 +312,9 @@ _SEGMENT_MAX_CHARS = 105
 # (see the comment above _MIN_DURATION_RATIO/_MAX_DURATION_RATIO) -- moving it
 # to 7.5 would loosen that gate, not just the script budget. See
 # test_speech_rate_constants_are_intentionally_separated.
+# S11-b: also sizes _slide_gate_failures' "long" cap (the char-count half of
+# max(max_seconds, char_count/_CHARS_PER_SECOND)) -- moving it to 7.5 would
+# tighten the slide-level "long" check too, not just loosen the segment one.
 _CHARS_PER_SECOND = 7.0
 _PAUSE_MS = 200
 # Order matters and the first three must not move: they are what the shipped
@@ -646,10 +649,12 @@ def _slide_gate_failures(
         if duration > cap:
             reasons.append(f"long({duration:.0f}s>{cap:.0f}s)")
         elif duration > max_seconds * _MAX_DURATION_RATIO:
+            # SPEC.md's own wording, kept verbatim so the supervisor can grep
+            # batch logs for it directly.
             logger.warning(
-                "Slide audio %.0fs exceeds planned max_seconds*%.2f (%.0fs) but is within "
-                "its script's own char-based budget (cap %.0fs) -- script ran longer than "
-                "planned, not a TTS defect",
+                "대본이 계획 분량보다 김: slide audio %.0fs exceeds planned max_seconds*%.2f "
+                "(%.0fs) but is within its script's own char-based budget (cap %.0fs) -- "
+                "not a TTS defect",
                 duration, _MAX_DURATION_RATIO, max_seconds * _MAX_DURATION_RATIO, cap,
             )
     if duration < expected * _MIN_DURATION_RATIO:
@@ -865,9 +870,12 @@ def _synthesize_segment_with_gate(
     # original silence+shortfall score in the primary slot.
     best_fallback_key: tuple[float, float] = (float("inf"), float("inf"))
     best_fallback_attempt: tuple[int, bool] | None = None  # (seed, use_continuation) that produced it
-    # S11-a: (stt_status, cer, reason, transcript) for the attempt currently
-    # kept as best_fallback -- carried into `record` the same way seed/call is.
-    best_fallback_stt: tuple[str | None, float | None, str | None, str | None] = (None, None, None, None)
+    # S11-a: (stt_status, cer, reason, transcript, stt_reasons) for the
+    # attempt currently kept as best_fallback -- carried into `record` the
+    # same way seed/call is.
+    best_fallback_stt: tuple[str | None, float | None, str | None, str | None, list[str]] = (
+        None, None, None, None, [],
+    )
     # S9-b/D-15: tts_continuation is retired -- plan_attempts always returns
     # four plain-tts draws now (see its own docstring for why).
     attempts = plan_attempts(continuation_ref is not None, seeds=seeds)
@@ -913,6 +921,11 @@ def _synthesize_segment_with_gate(
         stt_status: str | None = None
         reason: str | None = None
         transcript: str | None = None
+        # S11-a: the underlying evaluate_transcription() reasons (e.g.
+        # "stt_short(0.53)"), kept alongside the generic `reason == "stt"`
+        # tag so SlideQC.stt's seg{index}:{reason} entries stay as
+        # diagnosable as the old whole-audio path's gate_reasons were.
+        stt_reasons: list[str] = []
         if use_stt:
             # Default min_seconds=0.0 -- the cheap pre-STT checks only
             # (long/voiced/silence), length floor excluded per D-15.
@@ -936,6 +949,7 @@ def _synthesize_segment_with_gate(
                 elif stt_status == "fail":
                     passed = False
                     reason = "stt"
+                    stt_reasons = check.reasons
                 elif cer is None or cer > _MAX_SEGMENT_CER:
                     passed = False
                     reason = "cer"
@@ -965,6 +979,7 @@ def _synthesize_segment_with_gate(
                 record["cer"] = cer
                 record["reason"] = reason
                 record["transcript"] = transcript
+                record["stt_reasons"] = stt_reasons
             return trimmed, sr, True
         # Keep the least-bad failed attempt as fallback, not just the first
         # one tried -- an early seed's babble shouldn't beat a later seed's
@@ -993,7 +1008,7 @@ def _synthesize_segment_with_gate(
             best_fallback_key = fallback_key
             best_fallback = (trimmed, sr)
             best_fallback_attempt = (seed, use_continuation)
-            best_fallback_stt = (stt_status, cer, reason, transcript)
+            best_fallback_stt = (stt_status, cer, reason, transcript, stt_reasons)
 
     if best_fallback is None:
         # Every seed raised -- no audio was ever produced for this segment.
@@ -1012,7 +1027,10 @@ def _synthesize_segment_with_gate(
         fb_seed, fb_use_continuation = best_fallback_attempt
         record["seed"] = fb_seed
         record["call"] = "tts_continuation" if fb_use_continuation else "tts"
-        record["stt_status"], record["cer"], record["reason"], record["transcript"] = best_fallback_stt
+        (
+            record["stt_status"], record["cer"], record["reason"],
+            record["transcript"], record["stt_reasons"],
+        ) = best_fallback_stt
     return best_fallback[0], best_fallback[1], False
 
 
@@ -1054,12 +1072,14 @@ def _meta_for_leaf(record: dict, continuation_ref, own_path, fallback: bool) -> 
         "continuation_from_path": continuation_ref[0] if (used_continuation and continuation_ref is not None) else None,
         "own_path": own_path,
         # S11-a: adopted attempt's per-segment STT verdict -- stt_status/cer
-        # land in SegmentQC; reason/transcript are transient (schema doesn't
-        # carry them) and used only by _slide_stt_from_segments below.
+        # land in SegmentQC; reason/transcript/stt_reasons are transient
+        # (schema doesn't carry them) and used only by
+        # _slide_stt_from_segments below.
         "stt_status": record.get("stt_status"),
         "cer": record.get("cer"),
         "reason": record.get("reason"),
         "transcript": record.get("transcript"),
+        "stt_reasons": record.get("stt_reasons") or [],
     }
 
 
@@ -1182,7 +1202,11 @@ def _slide_stt_from_segments(segments_qc: list[SegmentQC], metas: list[dict]) ->
     checks before STT ran, or STT itself came back "unavailable"), else
     "pass". cer is the char-count-weighted average over segments that have
     one; transcript is every segment's own STT transcript joined with a
-    space; reasons are ``seg{index}:{reason}`` for each failed segment.
+    space; reasons are ``seg{index}:{reason}`` for each failed segment --
+    one entry per underlying ``evaluate_transcription`` reason (e.g.
+    ``"seg0:stt_short(0.53)"``) when available, falling back to the generic
+    ``"seg0:stt"`` tag otherwise (e.g. a segment CER-rejected as too
+    dissimilar, which has no repetition/ratio reason of its own).
     """
     reasons: list[str] = []
     any_missing = False
@@ -1194,7 +1218,8 @@ def _slide_stt_from_segments(segments_qc: list[SegmentQC], metas: list[dict]) ->
             any_missing = True
             continue
         if seg.stt_status == "fail":
-            reasons.append(f"seg{seg.index}:{meta.get('reason')}")
+            for r in meta.get("stt_reasons") or [meta.get("reason")]:
+                reasons.append(f"seg{seg.index}:{r}")
         if seg.cer is not None:
             weighted_sum += seg.cer * len(seg.text)
             weighted_chars += len(seg.text)
@@ -1285,6 +1310,9 @@ def synthesize_raon_slide(
     ``max_seconds`` is the slide's own script budget (``target_seconds``). The
     joined result is checked against it: per-segment gating alone let a slide
     accumulate many individually-tolerable overruns into a 2x-long clip.
+    S11-b: the actual "long" cap is ``max(max_seconds, char_count /
+    _CHARS_PER_SECOND) * _MAX_DURATION_RATIO``, not ``max_seconds`` alone --
+    see ``_slide_gate_failures``.
 
     Returns ``(output_path, ok)``. ``ok`` is False when any segment failed its
     gate after splitting, or the joined slide blew its duration budget. The
@@ -1443,6 +1471,7 @@ def synthesize_raon_slide(
                     metas[leaf_idx]["cer"] = redraw_record.get("cer")
                     metas[leaf_idx]["reason"] = redraw_record.get("reason")
                     metas[leaf_idx]["transcript"] = redraw_record.get("transcript")
+                    metas[leaf_idx]["stt_reasons"] = redraw_record.get("stt_reasons") or []
                     adopted_redraw_indices.add(leaf_idx)
             joined = np.concatenate(pieces)
 
