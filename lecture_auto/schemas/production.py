@@ -82,6 +82,14 @@ class SegmentQC(BaseModel):
     continuation_from: int | None = None  # index of the prior SegmentQC used as
     # tts_continuation's audio reference, or None if this piece used plain tts.
     fallback: bool = False  # True if this piece never passed its own quality gate.
+    # S11-a/D-15: the adopted attempt's own per-segment STT verdict/CER, when
+    # segment-level STT (verify_stt=True and pipe has .stt) was used. None
+    # when segment STT wasn't used, or this piece never reached the STT call
+    # (rejected by the cheap pre-STT checks first) -- see raon_tts.py's
+    # _slide_stt_from_segments, which rolls these up into SlideQC.stt instead
+    # of re-transcribing the whole joined slide.
+    stt_status: str | None = None
+    cer: float | None = None
 
 
 class SlideQC(BaseModel):

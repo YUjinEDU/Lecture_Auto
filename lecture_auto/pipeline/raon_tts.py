@@ -50,6 +50,13 @@ TTS_TEMPERATURE = 0.85
 # docs/hardening/stages/S10_loudness_length/SPEC.md. Old audio's cache is
 # intentionally invalidated by this bump too.
 TTS_SYNTH_VERSION = "v13-seg-loudnorm-pausecap"
+# S11/D-15 (slide-gate false-failure fixes): SlideQC.stt now reuses the
+# per-segment STT results instead of re-transcribing the joined slide, and
+# _slide_gate_failures' "long" check accounts for scripts that ran longer
+# than planned -- see _slide_stt_from_segments and _slide_gate_failures.
+# Deliberately NOT bumped: the synthesized bytes are unchanged, only which
+# slides PASS the gate changes, and bumping would mark 04-2's 16 already-
+# passing slides stale and queue them all for pointless re-synthesis.
 
 
 def load_raon_pipeline(
@@ -627,8 +634,24 @@ def _slide_gate_failures(
     reasons = []
     duration = len(wav) / sr
     expected = char_count / _CHARS_PER_SECOND
-    if max_seconds is not None and duration > max_seconds * _MAX_DURATION_RATIO:
-        reasons.append(f"long({duration:.0f}s>{max_seconds:.0f}s)")
+    if max_seconds is not None:
+        # S11-b/04-2: a script that ran longer than its planned target_seconds
+        # is not a TTS defect on its own (slide 15: 253 chars read at a normal
+        # pace took 37s against a 20s plan) -- only flag "long" when the audio
+        # also overruns what the script's own char count would justify. Below
+        # that cap but still over the plain plan*ratio line, log a warning
+        # instead of failing the gate; a real runaway (babble/stretching) is
+        # still caught because the char-based floor doesn't move with it.
+        cap = max(max_seconds, expected) * _MAX_DURATION_RATIO
+        if duration > cap:
+            reasons.append(f"long({duration:.0f}s>{cap:.0f}s)")
+        elif duration > max_seconds * _MAX_DURATION_RATIO:
+            logger.warning(
+                "Slide audio %.0fs exceeds planned max_seconds*%.2f (%.0fs) but is within "
+                "its script's own char-based budget (cap %.0fs) -- script ran longer than "
+                "planned, not a TTS defect",
+                duration, _MAX_DURATION_RATIO, max_seconds * _MAX_DURATION_RATIO, cap,
+            )
     if duration < expected * _MIN_DURATION_RATIO:
         reasons.append(f"short({duration:.0f}s<{expected * _MIN_DURATION_RATIO:.0f}s)")
     voiced = _voiced_ratio(wav, sr)
@@ -807,7 +830,12 @@ def _synthesize_segment_with_gate(
     actually returned (the passing one, or the least-bad fallback) -- this is
     how the caller learns *which* draw was kept without changing this
     function's return shape, which existing tests unpack as a plain 3-tuple.
-    ``seed``/``call`` are ``None`` only when every attempt raised.
+    ``seed``/``call`` are ``None`` only when every attempt raised. S11-a/D-15
+    adds ``"stt_status"``/``"cer"``/``"reason"``/``"transcript"`` to the same
+    dict, from that same kept attempt's STT check (all ``None`` when STT
+    wasn't used, or this attempt never reached STT because the cheap pre-STT
+    checks rejected it first) -- see ``_meta_for_leaf``/
+    ``_slide_stt_from_segments``, which roll these up into ``SlideQC.stt``.
     """
     # +8 tokens of slack for the audio-end marker so a clip that is exactly
     # long enough is not cut off mid-word by its own budget.
@@ -837,6 +865,9 @@ def _synthesize_segment_with_gate(
     # original silence+shortfall score in the primary slot.
     best_fallback_key: tuple[float, float] = (float("inf"), float("inf"))
     best_fallback_attempt: tuple[int, bool] | None = None  # (seed, use_continuation) that produced it
+    # S11-a: (stt_status, cer, reason, transcript) for the attempt currently
+    # kept as best_fallback -- carried into `record` the same way seed/call is.
+    best_fallback_stt: tuple[str | None, float | None, str | None, str | None] = (None, None, None, None)
     # S9-b/D-15: tts_continuation is retired -- plan_attempts always returns
     # four plain-tts draws now (see its own docstring for why).
     attempts = plan_attempts(continuation_ref is not None, seeds=seeds)
@@ -881,6 +912,7 @@ def _synthesize_segment_with_gate(
         cer: float | None = None
         stt_status: str | None = None
         reason: str | None = None
+        transcript: str | None = None
         if use_stt:
             # Default min_seconds=0.0 -- the cheap pre-STT checks only
             # (long/voiced/silence), length floor excluded per D-15.
@@ -894,7 +926,7 @@ def _synthesize_segment_with_gate(
                 with tempfile.NamedTemporaryFile(suffix=".wav") as tmpf:
                     sf.write(tmpf.name, trimmed, sr)
                     check = evaluate_transcription(pipe, tmpf.name, text)
-                stt_status, cer = check.status, check.cer
+                stt_status, cer, transcript = check.status, check.cer, check.transcript
                 if stt_status == "unavailable":
                     # D-15 item 4: STT itself couldn't judge this attempt --
                     # fall back to the length floor alone (the other cheap
@@ -926,6 +958,13 @@ def _synthesize_segment_with_gate(
             if record is not None:
                 record["seed"] = seed
                 record["call"] = "tts_continuation" if use_continuation else "tts"
+                # S11-a/D-15: carried through _meta_for_leaf into SlideQC.stt's
+                # per-segment aggregate (see _slide_stt_from_segments) instead
+                # of a second whole-audio STT pass.
+                record["stt_status"] = stt_status
+                record["cer"] = cer
+                record["reason"] = reason
+                record["transcript"] = transcript
             return trimmed, sr, True
         # Keep the least-bad failed attempt as fallback, not just the first
         # one tried -- an early seed's babble shouldn't beat a later seed's
@@ -954,6 +993,7 @@ def _synthesize_segment_with_gate(
             best_fallback_key = fallback_key
             best_fallback = (trimmed, sr)
             best_fallback_attempt = (seed, use_continuation)
+            best_fallback_stt = (stt_status, cer, reason, transcript)
 
     if best_fallback is None:
         # Every seed raised -- no audio was ever produced for this segment.
@@ -972,6 +1012,7 @@ def _synthesize_segment_with_gate(
         fb_seed, fb_use_continuation = best_fallback_attempt
         record["seed"] = fb_seed
         record["call"] = "tts_continuation" if fb_use_continuation else "tts"
+        record["stt_status"], record["cer"], record["reason"], record["transcript"] = best_fallback_stt
     return best_fallback[0], best_fallback[1], False
 
 
@@ -1012,6 +1053,13 @@ def _meta_for_leaf(record: dict, continuation_ref, own_path, fallback: bool) -> 
         "fallback": fallback,
         "continuation_from_path": continuation_ref[0] if (used_continuation and continuation_ref is not None) else None,
         "own_path": own_path,
+        # S11-a: adopted attempt's per-segment STT verdict -- stt_status/cer
+        # land in SegmentQC; reason/transcript are transient (schema doesn't
+        # carry them) and used only by _slide_stt_from_segments below.
+        "stt_status": record.get("stt_status"),
+        "cer": record.get("cer"),
+        "reason": record.get("reason"),
+        "transcript": record.get("transcript"),
     }
 
 
@@ -1115,6 +1163,54 @@ def _synthesize_with_splitting(
     return [(text, audio, sr)], False, continuation_ref
 
 
+def _slide_stt_from_segments(segments_qc: list[SegmentQC], metas: list[dict]) -> TranscriptionCheck:
+    """Build the slide's ``SlideQC.stt`` from the per-segment STT results
+    already computed during synthesis (S11-a/D-15), instead of re-transcribing
+    the whole joined clip.
+
+    04-2 evidence: whole-slide STT on a long joined clip silently truncates
+    its own transcript (870/835 chars back for 1,654/2,365-char scripts),
+    which then misreads a content-complete slide as ``stt_short`` -- see
+    ``docs/hardening/stages/S11_slide_gate/SPEC.md``. Only called when
+    segment-level STT was actually used for every segment in this slide
+    (``synthesize_raon_slide``'s ``segment_stt_active``); the STT-unavailable
+    path (``verify_stt=False`` or the pipe has no ``.stt``) still runs the
+    original whole-audio ``evaluate_transcription`` instead.
+
+    status: "fail" if any adopted segment's own STT failed, else "unavailable"
+    if any segment has no usable STT verdict (rejected by the cheap pre-STT
+    checks before STT ran, or STT itself came back "unavailable"), else
+    "pass". cer is the char-count-weighted average over segments that have
+    one; transcript is every segment's own STT transcript joined with a
+    space; reasons are ``seg{index}:{reason}`` for each failed segment.
+    """
+    reasons: list[str] = []
+    any_missing = False
+    weighted_sum = 0.0
+    weighted_chars = 0
+    transcripts: list[str] = []
+    for seg, meta in zip(segments_qc, metas):
+        if seg.stt_status is None or seg.stt_status == "unavailable":
+            any_missing = True
+            continue
+        if seg.stt_status == "fail":
+            reasons.append(f"seg{seg.index}:{meta.get('reason')}")
+        if seg.cer is not None:
+            weighted_sum += seg.cer * len(seg.text)
+            weighted_chars += len(seg.text)
+        transcript = meta.get("transcript")
+        if transcript:
+            transcripts.append(transcript)
+
+    status = "fail" if reasons else ("unavailable" if any_missing else "pass")
+    return TranscriptionCheck(
+        status=status,
+        reasons=reasons,
+        transcript=" ".join(transcripts) if transcripts else None,
+        cer=weighted_sum / weighted_chars if weighted_chars else None,
+    )
+
+
 def _write_slide_qc(
     qc_path: Path,
     *,
@@ -1162,9 +1258,13 @@ def synthesize_raon_slide(
     doesn't draw the identical seeds (and therefore the identical audio) as
     the run it's replacing. ``None`` (the default) keeps ``TTS_SEEDS``.
 
-    ``verify_stt`` now also gates each *segment* (S9-a/D-15), not just the
-    whole joined slide's advisory check below -- see
-    ``_synthesize_segment_with_gate``.
+    ``verify_stt`` now also gates each *segment* (S9-a/D-15) -- see
+    ``_synthesize_segment_with_gate``. S11-a/D-15: when that per-segment STT
+    was actually used, the whole joined slide's own advisory STT check below
+    is skipped entirely and ``SlideQC.stt`` is built from the per-segment
+    results instead (see ``_slide_stt_from_segments``); the whole-audio check
+    only still runs when segment-level STT wasn't used (``verify_stt=False``
+    or the pipe has no ``.stt``).
 
     A single pipe.tts() call over a whole slide script (250+ chars) is what
     caused audio collapse: long internal silences and 2-4x runaway duration,
@@ -1215,6 +1315,11 @@ def synthesize_raon_slide(
         return output_path, True
 
     effective_seeds = seeds if seeds is not None else TTS_SEEDS
+    # S11-a/D-15: mirrors `use_stt` inside _synthesize_segment_with_gate --
+    # when true, every segment call below actually used per-segment STT, so
+    # SlideQC.stt is built from those results (_slide_stt_from_segments)
+    # instead of a second whole-audio STT pass.
+    segment_stt_active = verify_stt and hasattr(pipe, "stt")
     segments = split_into_segments(text)
     pause = np.zeros(int(_SAMPLE_RATE * _PAUSE_MS / 1000), dtype=np.float32)
 
@@ -1332,6 +1437,12 @@ def synthesize_raon_slide(
                     metas[leaf_idx]["call"] = redraw_record.get("call")
                     metas[leaf_idx]["fallback"] = False
                     metas[leaf_idx]["continuation_from"] = None
+                    # S11-a: the redraw's own STT verdict replaces the
+                    # discarded first-pass piece's.
+                    metas[leaf_idx]["stt_status"] = redraw_record.get("stt_status")
+                    metas[leaf_idx]["cer"] = redraw_record.get("cer")
+                    metas[leaf_idx]["reason"] = redraw_record.get("reason")
+                    metas[leaf_idx]["transcript"] = redraw_record.get("transcript")
                     adopted_redraw_indices.add(leaf_idx)
             joined = np.concatenate(pieces)
 
@@ -1363,10 +1474,35 @@ def synthesize_raon_slide(
     # substitutions below.
     if substituted:
         reasons.append(f"{substituted}-silent-substitutions")
+
+    # Built unconditionally (not just under qc_path) -- S11-a's STT block
+    # below needs it too, whether or not the caller asked for a QC file.
+    segments_qc = [
+        SegmentQC(
+            index=i,
+            text=seg_spans[i][0],
+            seed=m.get("seed"),
+            call=m.get("call"),
+            continuation_from=m.get("continuation_from"),
+            fallback=bool(m.get("fallback", False)),
+            stt_status=m.get("stt_status"),
+            cer=m.get("cer"),
+        )
+        for i, m in enumerate(metas)
+    ]
+
     stt_status: str | None = None
     stt_cer: float | None = None
     stt_check: TranscriptionCheck | None = None
-    if verify_stt or os.environ.get("RAON_VERIFY_STT") == "1":
+    if segment_stt_active:
+        # S11-a/D-15: reuse the per-segment STT results instead of a second
+        # whole-audio STT pass -- see _slide_stt_from_segments' own docstring
+        # for why (04-2: whole-slide STT truncates on long audio).
+        stt_check = _slide_stt_from_segments(segments_qc, metas)
+        reasons.extend(stt_check.reasons)
+        stt_status = stt_check.status
+        stt_cer = stt_check.cer
+    elif verify_stt or os.environ.get("RAON_VERIFY_STT") == "1":
         if hasattr(pipe, "stt"):
             stt_check = evaluate_transcription(pipe, output_path, text)
         else:
@@ -1400,17 +1536,6 @@ def synthesize_raon_slide(
     )
 
     if qc_path is not None:
-        segments_qc = [
-            SegmentQC(
-                index=i,
-                text=seg_spans[i][0],
-                seed=m.get("seed"),
-                call=m.get("call"),
-                continuation_from=m.get("continuation_from"),
-                fallback=bool(m.get("fallback", False)),
-            )
-            for i, m in enumerate(metas)
-        ]
         _write_slide_qc(
             qc_path, ok=ok, gate_reasons=reasons, stt=stt_check,
             spoken_text=text, segments=segments_qc, boundary_review=boundary_review,
