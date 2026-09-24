@@ -367,26 +367,39 @@ def test_silence_substitution_always_fails_the_slide(tmp_path):
     assert not ok
 
 
-def test_quiet_segment_is_redrawn_against_the_slide_level(tmp_path):
-    """The 018/019/038 root cause: a quiet segment never consumed a retry.
+def test_quiet_segment_no_longer_needs_a_redraw_after_per_piece_loudnorm(tmp_path):
+    """The 018/019/038 root cause, now fixed at generation time (S10-a/D-16).
 
-    Judged against itself it is fully voiced, so its gate passed, so no seed
-    after the first was ever tried -- adding seeds changed nothing and the
-    slide came back byte-identical. The second pass re-judges it against the
-    slide's real speech and redraws it.
+    Before S10-a: judged against itself the quiet piece is fully voiced, so
+    its gate passed, so no seed after the first was ever tried, and only the
+    slide-level second pass (comparing it to the real speech level) caught
+    and redrew it -- this test used to assert exactly that (``pipe.calls >
+    3``). S10-a now loudness-normalizes every piece to the same target
+    (inside ``_synthesize_segment_with_gate``) before it's ever joined, so
+    the previously-quiet piece already matches its neighbours by the time
+    the second pass looks at it -- no redraw needed, one draw per segment.
     """
     sr = 24000
-    loud, quiet = _tone(9.0, sr, amp=0.3), _tone(9.0, sr, amp=0.005)
-    # First pass: segment 2 comes out quiet. Redraw returns a loud take.
-    pipe = _FakePipe([loud, quiet, loud] + [loud] * 12)
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    loud, quiet = _tone(10.0, sr, amp=0.3), _tone(10.0, sr, amp=0.005)
+    # Extra loud waveforms after the first 2: if a redraw fires, _FakePipe has
+    # enough to let it succeed, so `pipe.calls == 2` below is real evidence no
+    # redraw happened -- not just an artifact of a starved fake raising
+    # IndexError (which never increments .calls) on a would-be redraw draw.
+    pipe = _FakePipe([loud, quiet] + [loud] * 4)
     out = tmp_path / "slide.wav"
-    text = "첫 번째 문장입니다. " * 3 + "두 번째 문장입니다. " * 3 + "세 번째 문장입니다. " * 3
-    synthesize_raon_slide(pipe, text, out, max_seconds=90.0)
+    _, ok = synthesize_raon_slide(pipe, text, out, max_seconds=60.0)
+
+    assert ok is True
+    assert pipe.calls == 2, "quiet piece is lifted at generation time -- no redraw draw needed"
 
     wav, got_sr = sf.read(str(out))
     ref = _speech_reference(wav, got_sr)
     assert _voiced_ratio(wav, got_sr, reference=ref) >= _MIN_VOICED_RATIO
-    assert pipe.calls > 3, "the quiet segment must have been redrawn, not accepted"
 
 
 def test_speech_reference_makes_a_quiet_clip_read_as_silence():
@@ -824,6 +837,8 @@ def test_qc_path_written_even_for_empty_text(tmp_path):
         "spoken_text_sha256": data["spoken_text_sha256"],
         "segments": [],
         "boundary_review": [],
+        "pauses_shortened": 0,
+        "pause_seconds_removed": 0.0,
         "synth_version": data["synth_version"],
         "created_at": data["created_at"],
     }
@@ -851,18 +866,18 @@ def test_boundary_review_stays_empty_even_in_its_old_trigger_scenario(tmp_path):
     """S9-b/D-15: tts_continuation is retired, so continuation_from is always
     None and boundary_review can never be populated -- not even in the exact
     setup that used to trigger it (a redraw replacing a piece a later piece
-    was recorded as continuing from). Segment 0 still gets redrawn here (it
-    reads as silence against the whole-slide reference), but segment 1 was
-    never actually joined to it -- both are plain tts, independent draws.
+    was recorded as continuing from). Segment 1 was never actually joined to
+    segment 0 -- both are plain tts, independent draws -- so this stays true
+    whether or not segment 0 needs a redraw. S10-a/D-16: it no longer does
+    (quiet is loudness-normalized to match its neighbours before either
+    segment is even joined), but the assertions below hold either way, so
+    the extra fallback waveforms are simply unused.
     """
     import json as _json
 
     sr = 24000
     quiet = _tone(10.0, sr, amp=0.005)
     loud = _tone(10.0, sr, amp=0.3)
-    # 1: segment 0's only draw (quiet, passes self-relative).
-    # 2: segment 1's only draw (loud, passes).
-    # 3: segment 0's redraw (loud, passes against the real reference).
     pipe = _FakePipe([quiet, loud, loud] + [loud] * 10)
 
     s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
@@ -1002,10 +1017,12 @@ def test_verify_stt_fallback_prefers_lowest_cer_when_all_fail():
     sr = 24000
     text = "우리가 오늘 배운 핵심 개념을 정리하고 다음 단계로 넘어가겠습니다"
     attempts_n = len(plan_attempts(has_continuation=False))
-    # Distinguishable by peak amplitude so the returned audio identifies
-    # which attempt won.
-    amps = [0.1, 0.2, 0.3, 0.4][:attempts_n]
-    waveforms = [_tone(9.0, sr, amp=a) for a in amps]
+    # Distinguishable by length so the returned audio identifies which
+    # attempt won. S10-a normalizes every attempt's loudness before it's
+    # even ranked, so peak amplitude (the pre-S10 marker here) is no longer
+    # distinguishable -- length survives normalization untouched.
+    durations = [9.00, 9.01, 9.02, 9.03][:attempts_n]
+    waveforms = [_tone(d, sr, amp=0.3) for d in durations]
     pipe = _FakePipe(waveforms)
     # cer: 0.93, 0.57 (lowest -- must win), 0.89, 0.82 -- all fail (>0.25).
     transcripts = iter([
@@ -1019,7 +1036,7 @@ def test_verify_stt_fallback_prefers_lowest_cer_when_all_fail():
     audio, _sr, ok = _synthesize_segment_with_gate(pipe, text, None, expected_seconds=10.0, verify_stt=True)
 
     assert ok is False
-    assert abs(np.abs(audio).max() - 0.2) < 1e-6, "the lowest-CER (second) attempt must be kept as the fallback"
+    assert len(audio) == int(durations[1] * sr), "the lowest-CER (second) attempt must be kept as the fallback"
 
 
 def test_synthesize_slide_never_calls_tts_continuation(tmp_path):
@@ -1044,15 +1061,20 @@ def test_synthesize_slide_never_calls_tts_continuation(tmp_path):
     pipe.tts_continuation.assert_not_called()
 
 
-def test_speech_rate_constants_stay_in_sync_with_script_gen():
-    """_CHARS_PER_SECOND (raon_tts.py) and SPEECH_CHARS_PER_SECOND
-    (script_gen.py) must move together -- a mismatch either loosens the
-    gate or makes every clean clip look overlong (see both constants'
-    own comments)."""
+def test_speech_rate_constants_are_intentionally_separated():
+    """S10-c/D-16: _CHARS_PER_SECOND (raon_tts.py, the per-segment quality
+    gate's duration window) and SPEECH_CHARS_PER_SECOND (script_gen.py, the
+    script budget) used to move together and are now deliberately split:
+    04-1 measured 7.5 chars/s over the final joined-and-paused audio, which
+    is what the script budget should target, while the segment gate's own
+    rate stays at 7.0, calibrated separately against segment-level
+    truncation/overrun behavior (see both constants' own comments)."""
     from lecture_auto.pipeline.raon_tts import _CHARS_PER_SECOND
     from lecture_auto.pipeline.script_gen import SPEECH_CHARS_PER_SECOND
 
-    assert _CHARS_PER_SECOND == SPEECH_CHARS_PER_SECOND == 7.0
+    assert _CHARS_PER_SECOND == 7.0
+    assert SPEECH_CHARS_PER_SECOND == 7.5
+    assert _CHARS_PER_SECOND != SPEECH_CHARS_PER_SECOND
 
 
 def test_verify_stt_unavailable_status_falls_back_to_length_floor():
@@ -1158,3 +1180,180 @@ def test_trace_records_cer_reason_on_fail_and_silence_reason_without_stt(tmp_pat
         importlib.reload(mod)
 
 
+
+
+# ---------------------------------------------------------------------------
+# S10-a/S10-b (D-16): per-piece loudness normalization + long-pause cap.
+# ---------------------------------------------------------------------------
+
+def test_joined_segments_share_loudness_after_per_piece_normalization(tmp_path):
+    """S10-a/D-16: 04-1's raw per-segment LUFS ranged -28..-41 while only the
+    whole joined slide was ever normalized, so a segment recorded quieter
+    than its neighbours kept that gap in the shipped audio (spec test #1).
+    Each piece is now loudness-normalized before it's joined (inside
+    _synthesize_segment_with_gate), so two segments drawn at very different
+    raw levels end up close together in the final file, not just on
+    average. The amplitudes below (ratio 2x, ~6dB) are deliberately mild
+    enough that neither piece trips the redraw's own voiced/silence
+    threshold (0.25x reference) -- this isolates the loudness fix from the
+    redraw path tested elsewhere.
+    """
+    sr = 24000
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    loud = _tone(10.0, sr, amp=0.3)
+    quiet = _tone(10.0, sr, amp=0.15)  # ~6dB quieter raw, real content either way
+    # Extra loud waveforms padded on: see the same note in
+    # test_quiet_segment_no_longer_needs_a_redraw_after_per_piece_loudnorm --
+    # without them a would-be redraw draw would IndexError (never incrementing
+    # .calls) instead of actually succeeding, making the calls==2 check below
+    # pass even if a redraw wrongly fired.
+    pipe = _FakePipe([loud, quiet] + [loud] * 4)
+    out = tmp_path / "slide.wav"
+
+    synthesize_raon_slide(pipe, text, out, max_seconds=60.0)
+    assert pipe.calls == 2, "both segments must pass on the first draw -- no redraw involved"
+
+    wav, got_sr = sf.read(str(out))
+    first = wav[: int(9.0 * got_sr)]  # well inside piece 1 (0-10s)
+    second = wav[int(10.5 * got_sr):int(19.5 * got_sr)]  # well inside piece 2 (10.2-20.2s)
+    gap = abs(_integrated_lufs(first, got_sr) - _integrated_lufs(second, got_sr))
+    assert gap < 1.5, f"segments should be within 1.5dB after per-piece normalization, got {gap:.1f}dB"
+
+
+def test_shorten_long_pauses_caps_long_gaps_and_leaves_short_ones_alone():
+    """S10-b/D-16 spec test #2: gaps over _MAX_PAUSE_S(1.0s) are cut down to
+    it; gaps at or under it are untouched."""
+    from lecture_auto.pipeline.raon_tts import _MAX_PAUSE_S, _shorten_long_pauses
+
+    sr = 24000
+    tone = _tone(1.0, sr, amp=0.3)
+    long_gap = np.zeros(int(sr * 2.5), dtype=np.float32)   # over the cap
+    short_gap = np.zeros(int(sr * 0.5), dtype=np.float32)  # under the cap, must survive
+    wav = np.concatenate([tone, long_gap, tone, short_gap, tone])
+
+    out, count, removed_seconds = _shorten_long_pauses(wav, sr)
+
+    assert count == 1
+    # 2.5s gap - 1.0s cap = 1.5s middle removed, plus the ~10ms crossfade
+    # overlap at the one splice -- exact given the sample-integer math above.
+    assert abs(removed_seconds - 1.51) < 1e-9
+    # Length accounting: only the long gap shrank -- if the short gap had
+    # also been touched, this would not match count=1's worth alone.
+    assert abs((len(wav) - len(out)) / sr - removed_seconds) < 1e-9
+    assert _longest_silence_seconds(out, sr) <= _MAX_PAUSE_S + 0.05
+
+    unchanged = np.concatenate([tone, short_gap, tone])
+    out2, count2, removed2 = _shorten_long_pauses(unchanged, sr)
+    assert count2 == 0 and removed2 == 0.0
+    assert np.array_equal(out2, unchanged)
+
+
+def test_slide_qc_records_pauses_shortened(tmp_path):
+    """S10-b/D-16 spec test #2 (qc bookkeeping): a slide whose only piece
+    holds a 1.5s internal gap (under the segment-level 2.8s floor, so it
+    passes its own gate untouched) gets that gap capped by the post-join
+    pass, and the count/seconds land in SlideQC."""
+    import json as _json
+
+    sr = 24000
+    tone = _tone(2.0, sr, amp=0.3)
+    gap = np.zeros(int(sr * 1.5), dtype=np.float32)
+    audio = np.concatenate([tone, gap, tone])  # 5.5s, 1.5s internal gap
+    text = "가" * 35  # single segment; length picked so 5.5s clears its duration floor/ceiling
+    assert len(split_into_segments(text)) == 1
+    pipe = _FakePipe([audio])
+
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    synthesize_raon_slide(pipe, text, out, max_seconds=30.0, qc_path=qc_path)
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    assert data["pauses_shortened"] == 1
+    assert 0.3 < data["pause_seconds_removed"] < 0.6
+
+    wav, got_sr = sf.read(str(out))
+    assert _longest_silence_seconds(wav, got_sr) <= 1.05
+
+
+def test_quiet_segment_no_longer_fails_the_slide_gate_as_silence(tmp_path):
+    """S10-a/D-16 spec test #3: an input that used to fail the slide gate as
+    "silence" (a content-complete but quiet segment sitting between loud
+    neighbours) no longer does, once each piece is loudness-normalized
+    before joining."""
+    sr = 24000
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    loud = _tone(10.0, sr, amp=0.3)
+    quiet = _tone(10.0, sr, amp=0.01)  # 30x quieter raw -- same amplitude used
+    # by test_quiet_segment_passes_alone_but_sinks_the_slide to demonstrate
+    # the old "reads as silence once joined" failure on _slide_gate_failures
+    # directly, without going through synthesize_raon_slide.
+    pipe = _FakePipe([loud, quiet])
+    out = tmp_path / "slide.wav"
+
+    _, ok = synthesize_raon_slide(pipe, text, out, max_seconds=60.0)
+
+    assert ok is True
+    wav, got_sr = sf.read(str(out))
+    assert _slide_gate_failures(wav, got_sr, char_count=len(text), max_seconds=60.0) == []
+    # This must hold because loudness normalization made the quiet piece read
+    # as real speech, not because S10-b's pause cap happened to shrink it:
+    # both pieces are pure uniform tones with no internal gap of their own,
+    # so if the joined result is materially shorter than 10 + 0.2 + 10 = 20.2s,
+    # something (wrongly) treated the quiet piece as a pause to cut instead of
+    # content to keep.
+    assert abs(len(wav) / got_sr - 20.2) < 0.05
+
+
+def test_redraw_candidate_is_normalized_before_being_judged_against_the_slide(tmp_path):
+    """S10-a/D-16: the redraw pass's candidate is loudness-normalized (inside
+    _synthesize_segment_with_gate) before it's compared to the slide's real
+    reference -- which is itself built from normalized pieces -- so the
+    comparison is apples-to-apples. Before S10-a, a genuinely-quiet-but-
+    complete redraw candidate was judged raw against a raw (louder)
+    reference and lost on every seed, no matter how many it was given.
+
+    Segment 0 (s1, exactly _MIN_SPLIT_WORTH_CHARS chars so it never splits)
+    has a real internal dead stretch -- a piece with actual silence in it
+    isn't fixed by loudness gain alone -- so it fails every draw on its own
+    ``silence`` check and becomes the fallback, which triggers a redraw.
+    The redraw candidate itself is uniformly quiet but has no internal gap:
+    on new code it's normalized to match the reference and adopted on the
+    first draw (calls == 6); on base code it's judged raw against the raw
+    loud reference, fails every draw the same way, and falls through all 4
+    redraw attempts too (calls == 9).
+    """
+    import json as _json
+
+    sr = 24000
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(s1) == 60, "s1 must sit at _MIN_SPLIT_WORTH_CHARS so it stays unsplittable"
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    # Real internal dead stretch: 3s loud, 4s near-silent, 3s loud (10s
+    # total) -- fails its own self-relative silence check every time,
+    # identically, since every draw uses the same waveform.
+    bad = np.concatenate([_tone(3.0, sr, amp=0.3), _tone(4.0, sr, amp=0.004), _tone(3.0, sr, amp=0.3)])
+    loud = _tone(10.0, sr, amp=0.3)
+    quiet_redraw = _tone(10.0, sr, amp=0.02)  # uniformly quiet, no internal gap
+    # 4 draws for segment 0 (all `bad`), 1 for segment 1 (`loud`), then up to
+    # 4 redraw draws -- exactly enough for base code's worst case (9 calls)
+    # so it doesn't IndexError; new code only uses the first redraw draw.
+    pipe = _FakePipe([bad, bad, bad, bad, loud] + [quiet_redraw] * 4)
+
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    synthesize_raon_slide(pipe, text, out, max_seconds=60.0, qc_path=qc_path)
+
+    assert pipe.calls == 6, "redraw candidate normalized to match the reference -- adopted on the first draw"
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    assert data["segments"][0]["fallback"] is False, "the redraw must have been adopted, not left failing"

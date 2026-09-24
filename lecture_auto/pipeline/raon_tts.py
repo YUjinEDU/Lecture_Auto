@@ -45,7 +45,11 @@ TTS_TEMPERATURE = 0.85
 # S9/D-15: segment gate is now STT-based (not length-based) and tts_continuation
 # is retired -- see docs/hardening/stages/S9_stt_gate/EXPERIMENT.md. Old audio's
 # cache is intentionally invalidated by this bump.
-TTS_SYNTH_VERSION = "v12-stt-gate-plain"
+# S10/D-16: each piece is now loudness-normalized before joining and long
+# internal pauses are capped after joining -- see
+# docs/hardening/stages/S10_loudness_length/SPEC.md. Old audio's cache is
+# intentionally invalidated by this bump too.
+TTS_SYNTH_VERSION = "v13-seg-loudnorm-pausecap"
 
 
 def load_raon_pipeline(
@@ -293,9 +297,14 @@ _SEGMENT_MAX_CHARS = 105
 # keeps a small margin under that rather than chasing it exactly. Not the
 # professor's own rate (6.46 chars/s over his 32min recording); only the TTS
 # rate sets video length.
-# Must stay in sync with SPEECH_CHARS_PER_SECOND in script_gen.py: the scripts
-# are budgeted at this rate and the gate's duration window is sized by it, so a
-# mismatch either loosens the gate or makes every clean clip look overlong.
+# S10-c/D-16: deliberately NOT kept in sync with SPEECH_CHARS_PER_SECOND in
+# script_gen.py any more. That constant now budgets scripts at 7.5 chars/s,
+# the measured rate of the FINAL joined-and-paused audio (04-1: 15,873 chars /
+# 2,116s). This constant sizes the per-SEGMENT gate's duration window instead,
+# calibrated separately against segment-level truncation/overrun behaviour
+# (see the comment above _MIN_DURATION_RATIO/_MAX_DURATION_RATIO) -- moving it
+# to 7.5 would loosen that gate, not just the script budget. See
+# test_speech_rate_constants_are_intentionally_separated.
 _CHARS_PER_SECOND = 7.0
 _PAUSE_MS = 200
 # Order matters and the first three must not move: they are what the shipped
@@ -312,6 +321,17 @@ TTS_SEEDS = (17, 29, 43, 61, 79)
 # separate seed set gives --slides a real second attempt instead of a no-op.
 TTS_RESEED_SEEDS = (97, 113, 131, 151)
 _TARGET_LUFS = -20.0
+
+# S10-b/D-16: any internal silent run longer than this in the final joined
+# slide is cut down to it (see _shorten_long_pauses). 04-1 evidence: all 4
+# failed "silence" slides, 5 spans total -- 3 were quiet-but-complete
+# sentences (5th slide 7.5s, 16th slide 4.8s, 23rd slide 3.0s, all -18~-20dB)
+# that S10-a's per-piece normalization now fixes at the source; the other 2
+# were genuine silence loudness gain can't fix (21st slide 2.9s/-27dB, 16th
+# slide 2.0s/-33dB). Every segment's content is STT-verified (D-15), so a
+# residual gap this long is dead air a listener would notice, not a sentence
+# boundary worth preserving whole.
+_MAX_PAUSE_S = 1.0
 
 # Calibrated quality gate thresholds:
 # Voiced ratio 0.45, max internal silence tightened to 2.8s (catches slide 023's
@@ -541,13 +561,18 @@ def _gate_reasons(
     min_seconds: float = 0.0,
     energy_reference: float | None = None,
 ) -> list[str]:
-    """Ordered content-quality check failures on a segment's raw (pre-
-    normalization) audio: ``long``, ``short``, ``voiced``, ``silence``.
+    """Ordered content-quality check failures on a segment's (already
+    per-piece loudness-normalized, S10-a) audio: ``long``, ``short``,
+    ``voiced``, ``silence``.
 
-    No absolute loudness floor here: `synthesize_raon_slide` runs a single
-    `_loudness_normalize` pass over the whole joined slide at the end, so a
-    segment's native gain is corrected regardless -- gating on it too was
-    measured to reject good speech. 2 of 6 samples in a live check had
+    No absolute loudness floor here: `_synthesize_segment_with_gate` runs
+    `_loudness_normalize` on every attempt before this is called (S10-a/D-16
+    -- previously only the whole joined slide got one normalize pass at the
+    end, which let an individually-quiet-but-complete segment ship as near-
+    silence, see 04-1 slides 5/16/23), and `synthesize_raon_slide` normalizes
+    the joined slide once more, so a segment's native gain is corrected
+    regardless of when this runs -- gating on the raw level too was measured
+    to reject good speech. 2 of 6 samples in a live check had
     voiced_ratio/longest_silence within the content thresholds (0.38-0.47,
     1.2-2.0s) but were rejected purely because raw LUFS was -28 to -41,
     nowhere near a real quality signal. Kept `_integrated_lufs` only for
@@ -626,6 +651,80 @@ def _loudness_normalize(wav: np.ndarray, sr: int, target_lufs: float = _TARGET_L
     return normalized.astype(np.float32)
 
 
+def _crossfade_concat(a: np.ndarray, b: np.ndarray, fade_samples: int) -> np.ndarray:
+    """Concatenate ``a`` then ``b``, linearly cross-fading their splice.
+
+    Overlaps (not just butts) the last ``fade_samples`` of ``a`` with the
+    first ``fade_samples`` of ``b`` so a cut lands without a click, at the
+    cost of shortening the result by ``fade_samples``.
+    """
+    fade = min(fade_samples, len(a), len(b))
+    if fade <= 0:
+        return np.concatenate([a, b])
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+    a = a.astype(np.float32, copy=True)
+    a[-fade:] = a[-fade:] * (1.0 - ramp) + b[:fade].astype(np.float32) * ramp
+    return np.concatenate([a, b[fade:]])
+
+
+def _shorten_long_pauses(
+    wav: np.ndarray, sr: int, max_pause_s: float = _MAX_PAUSE_S, frame_ms: float = 50
+) -> tuple[np.ndarray, int, float]:
+    """Cut every internal silent run longer than ``max_pause_s`` down to it.
+
+    S10-b/D-16. Same silence definition as the rest of the gate (50ms frames,
+    energy < ``_RELATIVE_VOICED_THRESHOLD`` * the wav's own 90th-percentile
+    frame energy) so this only touches spans the gate itself would call dead
+    air, not an ordinary sentence-boundary pause. Runs at or under the cap
+    are left completely untouched.
+
+    Cuts the *middle* out of each over-long run, keeping both edges (where
+    the speech-to-pause and pause-to-speech transitions actually are), and
+    cross-fades every splice (~10ms) to avoid a click. Returns
+    ``(new_wav, pauses_shortened, seconds_removed)``.
+    """
+    energies = _frame_energies(wav, sr, frame_ms)
+    if len(energies) == 0:
+        return wav, 0, 0.0
+    reference = float(np.percentile(energies, 90))
+    if reference < 1e-6:
+        return wav, 0, 0.0
+    silent = energies < _RELATIVE_VOICED_THRESHOLD * reference
+
+    frame_len = int(sr * frame_ms / 1000)
+    keep_samples = int(max_pause_s * sr)
+    fade_samples = max(1, int(sr * 0.01))
+
+    runs: list[tuple[int, int]] = []
+    run_start = None
+    for i, is_silent in enumerate(silent):
+        if is_silent and run_start is None:
+            run_start = i
+        elif not is_silent and run_start is not None:
+            runs.append((run_start * frame_len, i * frame_len))
+            run_start = None
+    if run_start is not None:
+        runs.append((run_start * frame_len, len(wav)))
+
+    long_runs = [(s, min(e, len(wav))) for s, e in runs if min(e, len(wav)) - s > keep_samples]
+    if not long_runs:
+        return wav, 0, 0.0
+
+    keep_half = keep_samples // 2
+    result: np.ndarray | None = None
+    cursor = 0
+    for start_sample, end_sample in long_runs:
+        cut_left = max(cursor, start_sample + keep_half)
+        cut_right = max(cut_left, end_sample - (keep_samples - keep_half))
+        segment = wav[cursor:cut_left]
+        result = segment if result is None else _crossfade_concat(result, segment, fade_samples)
+        cursor = cut_right
+    result = _crossfade_concat(result, wav[cursor:], fade_samples)
+
+    removed_seconds = (len(wav) - len(result)) / sr
+    return result.astype(np.float32, copy=False), len(long_runs), removed_seconds
+
+
 # Set RAON_TRACE to a path to record one JSON line per generation call. Off by
 # default: this is diagnostic instrumentation, not something a batch should pay
 # for. Records only what the call actually reports -- there is deliberately no
@@ -690,6 +789,18 @@ def _synthesize_segment_with_gate(
     no ``.stt`` on ``pipe``, or the transcription itself comes back
     "unavailable"), this falls back to ``_gate_reasons`` with the real length
     floor -- the original ``_passes_quality_gate`` decision, unchanged.
+
+    S10-a/D-16: every attempt's trimmed audio is loudness-normalized to
+    ``_TARGET_LUFS`` right here, before any gate check or STT -- raw
+    per-segment output measured -28 to -41 LUFS, and only normalizing the
+    whole joined slide at the end let an individually-quiet-but-complete
+    segment ship as near-silence (04-1 slides 5/16/23). This is safe for the
+    gate: every check below is relative to the clip's own or the passed-in
+    ``energy_reference``'s energy, so a uniform gain cancels out and first-
+    pass pass/fail is unchanged. It matters for the *second* (redraw) pass in
+    ``synthesize_raon_slide``, whose ``energy_reference`` is measured off the
+    now-normalized joined slide -- normalizing here keeps a redraw candidate
+    on the same loudness scale as what it's being judged against.
 
     ``record`` (S6-a), if given, is mutated in place with ``{"seed": ...,
     "call": "tts" | "tts_continuation" | None}`` for whichever attempt is
@@ -762,7 +873,10 @@ def _synthesize_segment_with_gate(
                 seconds=round(time.monotonic() - started, 2), outcome="raised",
             )
             continue
-        trimmed = _trim_lead_tail_silence(_to_numpy(audio_tensor, sr), sr)
+        # S10-a/D-16: normalize per attempt, before any gate/STT check -- see
+        # this function's own docstring for why this is scale-invariant for
+        # the checks below and why it matters for the redraw pass.
+        trimmed = _loudness_normalize(_trim_lead_tail_silence(_to_numpy(audio_tensor, sr), sr), sr)
 
         cer: float | None = None
         stt_status: str | None = None
@@ -1010,8 +1124,11 @@ def _write_slide_qc(
     spoken_text: str,
     segments: list[SegmentQC],
     boundary_review: list[int],
+    pauses_shortened: int = 0,
+    pause_seconds_removed: float = 0.0,
 ) -> None:
-    """Write ``qc_path`` atomically as a ``SlideQC`` (S6-a)."""
+    """Write ``qc_path`` atomically as a ``SlideQC`` (S6-a; S10-b adds the
+    two pause-shortening fields)."""
     qc = SlideQC(
         ok=ok,
         gate_reasons=gate_reasons,
@@ -1019,6 +1136,8 @@ def _write_slide_qc(
         spoken_text_sha256=hashlib.sha256(spoken_text.encode("utf-8")).hexdigest(),
         segments=segments,
         boundary_review=boundary_review,
+        pauses_shortened=pauses_shortened,
+        pause_seconds_removed=pause_seconds_removed,
         synth_version=TTS_SYNTH_VERSION,
         created_at=datetime.now(timezone.utc),
     )
@@ -1051,8 +1170,12 @@ def synthesize_raon_slide(
     caused audio collapse: long internal silences and 2-4x runaway duration,
     because generation isn't reliable at that length. Instead each ~1-2
     sentence segment (see split_into_segments) is synthesized and gate-checked
-    independently, retried on a different seed if it fails, then joined with a
-    short pause and loudness-normalized once as a whole.
+    independently, retried on a different seed if it fails. Each piece is
+    loudness-normalized as soon as it's generated (S10-a/D-16, inside
+    ``_synthesize_segment_with_gate``) before being joined with a short pause;
+    the joined result is loudness-normalized once more as a whole, then any
+    remaining internal silent run over ``_MAX_PAUSE_S`` is cut down to it
+    (S10-b/D-16, see ``_shorten_long_pauses``).
 
     When every seed fails the gate on a segment, the segment is split near its
     midpoint and the halves are retried (up to ``_MAX_SPLIT_DEPTH``) -- fixed
@@ -1153,7 +1276,15 @@ def synthesize_raon_slide(
         # -- that is why slides 018/019/038 came back byte-identical no matter
         # how many seeds were added. Now that the whole slide exists, re-judge
         # each segment against the slide's real speech level and redraw the
-        # ones that are only quiet next to their neighbours.
+        # ones that read poorly against it.
+        # S10-a/D-16: every piece is now loudness-normalized to the same
+        # target before it ever lands in `pieces` (see
+        # `_synthesize_segment_with_gate`), so a segment that was merely
+        # recorded quieter than its neighbours no longer shows up here at
+        # all -- that case is fixed at generation time instead. What this
+        # pass still catches is a piece with a genuine internal dead stretch
+        # (uniform gain can't fix silence that's actually silent) or one
+        # whose own draws all happened to fail against the real reference.
         reference = _speech_reference(joined, sr)
         if reference > 1e-6:
             for leaf_idx, (seg_text, idx) in enumerate(seg_spans):
@@ -1212,16 +1343,24 @@ def synthesize_raon_slide(
     )
 
     normalized = _loudness_normalize(joined, sr)
+    # S10-b/D-16: cut any remaining internal silent run down to _MAX_PAUSE_S,
+    # before the slide gate judges the audio and before it's written -- every
+    # segment's content is now STT-verified (D-15), so a gap this long left
+    # over is dead air, not narration worth keeping whole. Run last, on the
+    # fully joined+normalized audio, so it sees exactly what a listener would.
+    normalized, pauses_shortened, pause_seconds_removed = _shorten_long_pauses(normalized, sr)
     sf.write(str(output_path), normalized, sr)
 
     duration = len(normalized) / sr
     reasons = _slide_gate_failures(normalized, sr, len(text), max_seconds)
     # Segment failures are advisory: the per-segment gate picks the best of the
-    # seeds, but it cannot decide whether the slide is usable. Its threshold is
-    # relative to each segment's own 95th percentile, so a uniformly quiet
-    # segment always passes -- it is only quiet compared to its neighbours. That
-    # is how slides 018/019/031 shipped with 17-20s of near-inaudible mumbling
-    # while every segment reported ok. Only the joined wav can see it.
+    # seeds, but it cannot decide whether the slide is usable. S10-a normalizes
+    # each piece before it's joined, which fixes the "uniformly quiet segment
+    # always passes its own gate" case at the source (018/019/031's 17-20s of
+    # near-inaudible mumbling); what's still only visible on the joined wav is
+    # everything else a per-segment view can't see -- accumulated duration
+    # overrun, internal dead stretches a redraw didn't fix, silent
+    # substitutions below.
     if substituted:
         reasons.append(f"{substituted}-silent-substitutions")
     stt_status: str | None = None
@@ -1244,16 +1383,19 @@ def synthesize_raon_slide(
     # and reading it as "no retries" is what hid where the time was going.
     logger.info(
         "Saved slide audio: %s (%.2fs in %.0fs, %d segments, %d ended on fallback, "
-        "%d redraws %d adopted costing %.0fs, ok=%s%s)",
+        "%d redraws %d adopted costing %.0fs, %d pauses shortened (-%.1fs), ok=%s%s)",
         output_path.name, duration, time.monotonic() - slide_started, generated,
-        failures, redraws, redraws_adopted, redraw_seconds, ok,
+        failures, redraws, redraws_adopted, redraw_seconds,
+        pauses_shortened, pause_seconds_removed, ok,
         "" if ok else f", rejected: {','.join(reasons)}",
     )
     _trace(
         event="slide", slide=output_path.name, chars=len(text), segments=generated,
         seconds=round(time.monotonic() - slide_started, 1), duration=round(duration, 1),
         fallbacks=failures, redraws=redraws, redraws_adopted=redraws_adopted,
-        redraw_seconds=round(redraw_seconds, 1), ok=ok, rejected=reasons,
+        redraw_seconds=round(redraw_seconds, 1),
+        pauses_shortened=pauses_shortened, pause_seconds_removed=round(pause_seconds_removed, 1),
+        ok=ok, rejected=reasons,
         stt_status=stt_status, stt_cer=stt_cer,
     )
 
@@ -1272,6 +1414,7 @@ def synthesize_raon_slide(
         _write_slide_qc(
             qc_path, ok=ok, gate_reasons=reasons, stt=stt_check,
             spoken_text=text, segments=segments_qc, boundary_review=boundary_review,
+            pauses_shortened=pauses_shortened, pause_seconds_removed=pause_seconds_removed,
         )
 
     return output_path, ok

@@ -24,7 +24,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 # every prior cache entry. What this test still guards is narrower: given
 # the current TTS_SYNTH_VERSION, an all-unapproved/omitted pronunciation
 # dictionary must stay a byte-identical no-op for the cache key.
-_GOLDEN_CACHE_KEY = "58f25729b3128f43bfc4d91b4acc0a0dc7558e3ba9a4cbac610d584ba4643878"
+# Recaptured again for S10/D-16: TTS_SYNTH_VERSION bumped to
+# "v13-seg-loudnorm-pausecap" (per-piece loudness normalization + long-pause
+# cap -- see docs/hardening/stages/S10_loudness_length/SPEC.md), which this
+# key also legitimately includes and which also intentionally invalidates
+# every prior cache entry.
+_GOLDEN_CACHE_KEY = "ab24a080f39144fb536f1cefe8c723653a3e65bff5c4833d3a135b214dfedad4"
 
 
 # ---------------------------------------------------------------------------

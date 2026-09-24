@@ -86,6 +86,11 @@ logging.basicConfig(
 logger = logging.getLogger("batch_generator")
 
 TARGET_MINUTES = 40.0  # 40분 영상 목표 (2026-09-23 사용자 결정, 종합설계 2026)
+# S10-c/D-16: 04-1 실측 -- 대본 글자 수 15,873자가 계획 예산(40분*60*7.0자/초=
+# 16,800자) 대비 94.5%. 대본 생성이 계획 예산에 꾸준히 못 미쳐서 생긴 부족분을,
+# 계획 자체에 넘기는 목표 분을 미리 부풀려 보정한다. TARGET_MINUTES(사용자에게
+# 보여주는/기록하는 목표)는 그대로 40.0 유지.
+PLAN_LENGTH_CALIBRATION = 1.06
 # ref_combined.wav (47.7s) was never actually a "combined" reference at
 # inference time: PretrainedSpeakerEncoder.forward() front-truncates any
 # speaker_audio to SpeakerEncoderConfig.max_seconds (10.0s) before computing
@@ -500,7 +505,12 @@ def _generate_lecture_plan_cached(
     llm_client, slides, subject: str, name: str, plan_path: Path,
     reference_outline: str | None = None,
 ) -> LecturePlan:
-    prompt_text = build_lecture_plan_prompt(slides, subject, name, TARGET_MINUTES, reference_outline)
+    # S10-c/D-16: the plan gets a calibrated (inflated) minutes figure, not
+    # raw TARGET_MINUTES -- see PLAN_LENGTH_CALIBRATION's own comment. Same
+    # value at both call sites below so the cache key matches what was
+    # actually generated.
+    plan_minutes = TARGET_MINUTES * PLAN_LENGTH_CALIBRATION
+    prompt_text = build_lecture_plan_prompt(slides, subject, name, plan_minutes, reference_outline)
     cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text, _llm_config_repr(llm_client))
 
     if is_cache_valid(plan_path, cache_key):
@@ -508,7 +518,7 @@ def _generate_lecture_plan_cached(
         return LecturePlan(**json.loads(plan_path.read_text(encoding="utf-8")))
 
     logger.info("Generating lecture plan (whole-slide-set analysis)...")
-    plan = generate_lecture_plan(llm_client, slides, subject, name, TARGET_MINUTES, reference_outline)
+    plan = generate_lecture_plan(llm_client, slides, subject, name, plan_minutes, reference_outline)
     write_text_atomic(plan_path, json.dumps(plan.model_dump(), ensure_ascii=False, indent=2))
     write_cache_hash(plan_path, cache_key)
     logger.info("Lecture plan: %d sections covering %d slides", len(plan.sections), len(slides))

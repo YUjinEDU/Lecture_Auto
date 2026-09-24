@@ -98,5 +98,10 @@ class SlideQC(BaseModel):
     # were already generated from it -- the join no longer reflects the take
     # that shipped, so these are worth re-listening to. See raon_tts.py.
     boundary_review: list[int] = Field(default_factory=list)
+    # S10-b/D-16: how many internal silent runs _shorten_long_pauses cut down
+    # to _MAX_PAUSE_S, and how many seconds it removed in total. 0/0.0 when
+    # nothing needed shortening.
+    pauses_shortened: int = 0
+    pause_seconds_removed: float = 0.0
     synth_version: str
     created_at: datetime
