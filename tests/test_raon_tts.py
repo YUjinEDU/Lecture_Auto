@@ -273,9 +273,12 @@ def test_synthesize_slide_reports_success_on_clean_audio(tmp_path):
 
 
 def test_synthesize_slide_fails_when_joined_audio_blows_its_budget(tmp_path):
-    # Each segment passes its own gate, but they sum past max_seconds * 1.8 --
-    # the whole-slide check review item 2 asked for.
-    pipe = _FakePipe([_tone(5.0)] * 50)
+    # S11-b: max_seconds=2.0 is unrealistically small for this ~32-char script
+    # (char-based budget ~4.6s), so a 30s clip is a genuine runaway even under
+    # the new max(max_seconds, char_count/_CHARS_PER_SECOND) cap -- unlike a
+    # 5s clip, which the S11-b fix now correctly reads as "script ran longer
+    # than its (too-small) plan", not a TTS defect, and would no longer fail.
+    pipe = _FakePipe([_tone(30.0)] * 50)
     out = tmp_path / "slide.wav"
     _, ok = synthesize_raon_slide(
         pipe, "첫 문장입니다. 두 번째 문장입니다. 세 번째 문장입니다.", out, max_seconds=2.0
@@ -335,8 +338,13 @@ def test_slide_gate_flags_truncation_and_overrun():
     sr = 24000
     short = _tone(5.0, sr)
     assert any(r.startswith("short") for r in _slide_gate_failures(short, sr, int(30 * 5.7), 30.0))
+    # S11-b: char_count must match the script actually budgeted for max_seconds
+    # (not the runaway output's own duration) -- otherwise the char-based half
+    # of max(max_seconds, char_count/_CHARS_PER_SECOND) absorbs the overrun as
+    # "script ran long", not a real defect. Reusing the short case's char_count
+    # keeps this a genuine runaway: a 30s-budgeted script that came out 70s.
     long = _tone(70.0, sr)
-    assert any(r.startswith("long") for r in _slide_gate_failures(long, sr, int(70 * 5.7), 30.0))
+    assert any(r.startswith("long") for r in _slide_gate_failures(long, sr, int(30 * 5.7), 30.0))
 
 
 def test_marginal_segment_does_not_sink_an_otherwise_good_slide(tmp_path):
@@ -735,7 +743,13 @@ def test_verify_stt_records_status_and_cer_in_slide_trace(tmp_path, monkeypatch)
     monkeypatch.setenv("RAON_TRACE", str(trace))
     mod = importlib.reload(importlib.import_module("lecture_auto.pipeline.raon_tts"))
     try:
-        pipe = _FakePipe([_tone(5.0)] * 50)
+        # S11-a: 3.0s, not 5.0s -- "첫 문장입니다." is 8 chars, so its segment
+        # expected_seconds floors at 3.0 and the cheap "long" cap is 3.0*1.35
+        # = 4.05s. At 5.0s the segment never reaches its own STT (rejected by
+        # the cheap pre-check first), which now correctly reads as
+        # stt_status="unavailable" on the segment-STT aggregate (S11-a) instead
+        # of silently falling back to a whole-audio STT pass.
+        pipe = _FakePipe([_tone(3.0)] * 50)
         pipe.stt = lambda audio_path: "첫 문장입니다."  # clean STT match
         out = tmp_path / "slide.wav"
 
@@ -932,6 +946,129 @@ def test_verify_stt_requested_but_pipe_has_no_stt_records_unavailable(tmp_path):
 
     data = _json.loads(qc_path.read_text(encoding="utf-8"))
     assert data["stt"] == {"status": "unavailable", "reasons": [], "transcript": None, "cer": None}
+
+
+# ---------------------------------------------------------------------------
+# S11-a (D-15): SlideQC.stt is built from the per-segment STT results already
+# computed during synthesis, instead of re-transcribing the whole joined
+# slide -- 04-2 evidence: whole-slide STT on long audio silently truncates its
+# own transcript, misreading a content-complete slide as stt_short. See
+# docs/hardening/stages/S11_slide_gate/SPEC.md.
+# ---------------------------------------------------------------------------
+
+def test_segment_stt_replaces_whole_slide_stt_and_aggregates_weighted_cer(tmp_path):
+    """Spec test #1: segment STT active -> no whole-audio STT call, and
+    SlideQC.stt is the char-count-weighted CER average + space-joined
+    transcript of the adopted per-segment results."""
+    import json as _json
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from lecture_auto.pipeline.raon_tts import compute_cer
+
+    sr = 24000
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    transcript1 = s1  # exact match -> cer 0.0
+    transcript2 = s2.replace("두 번째", "세 번째", 1)  # one real char changed, still low CER
+    pipe = _FakePipe([_tone(10.0, sr)] * 2)  # both segments pass on their first draw
+    pipe.stt = MagicMock(side_effect=[transcript1, transcript2])
+
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    synthesize_raon_slide(pipe, text, out, max_seconds=60.0, verify_stt=True, qc_path=qc_path)
+
+    assert pipe.stt.call_count == 2, "must not also run a whole-audio STT pass (one call per segment only)"
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    seg0, seg1 = data["segments"]
+    assert seg0["stt_status"] == "pass" and seg0["cer"] == 0.0
+    cer2 = compute_cer(s2, transcript2)
+    assert seg1["stt_status"] == "pass"
+    assert seg1["cer"] == pytest.approx(cer2)
+
+    expected_cer = (0.0 * len(s1) + cer2 * len(s2)) / (len(s1) + len(s2))
+    assert data["stt"]["status"] == "pass"
+    assert data["stt"]["cer"] == pytest.approx(expected_cer)
+    assert data["stt"]["transcript"] == f"{transcript1} {transcript2}"
+
+
+def test_segment_stt_failure_marks_slide_stt_fail_with_seg_index_reason(tmp_path):
+    """Spec test #2: one segment's adopted attempt fails STT -> the slide's
+    aggregated stt.status is "fail" and reasons carries "seg{index}:{reason}",
+    which also lands in gate_reasons (fail still affects the gate, unchanged
+    from the whole-audio path)."""
+    import json as _json
+    from unittest.mock import MagicMock
+
+    sr = 24000
+    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+    text = s1 + " " + s2
+    assert len(s1) == 60, "s1 must sit at _MIN_SPLIT_WORTH_CHARS so it stays unsplittable"
+    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
+
+    attempts_n = len(plan_attempts(has_continuation=False))
+    bad_transcript = "그렇죠 그렇죠 그렇죠 반복되는 말이 섞여 들어간 엉뚱한 내용입니다"  # repetition -> stt fail
+    pipe = _FakePipe([_tone(9.0, sr)] * attempts_n + [_tone(9.0, sr)])
+    pipe.stt = MagicMock(side_effect=[bad_transcript] * attempts_n + [s2])
+
+    out = tmp_path / "slide.wav"
+    qc_path = tmp_path / "slide.wav.qc.json"
+    synthesize_raon_slide(pipe, text, out, max_seconds=60.0, verify_stt=True, qc_path=qc_path)
+
+    data = _json.loads(qc_path.read_text(encoding="utf-8"))
+    seg0, seg1 = data["segments"]
+    assert seg0["stt_status"] == "fail"
+    assert seg0["fallback"] is True, "every draw failed STT -- never passed its own gate"
+    assert data["stt"]["status"] == "fail"
+    assert any(r.startswith("seg0:") for r in data["stt"]["reasons"]), data["stt"]["reasons"]
+    assert any(r.startswith("seg0:") for r in data["gate_reasons"]), data["gate_reasons"]
+    assert data["ok"] is False
+
+
+def test_segment_stt_unavailable_falls_back_to_whole_audio_path(tmp_path, monkeypatch):
+    """Spec test #3: no segment-level STT was used (verify_stt=False, only
+    RAON_VERIFY_STT=1 forces a check) -> the original whole-audio STT path
+    still runs, exactly once."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("RAON_VERIFY_STT", "1")
+    try:
+        pipe = _FakePipe([_tone(5.0)] * 50)
+        pipe.stt = MagicMock(return_value="첫 문장입니다.")
+        out = tmp_path / "slide.wav"
+
+        _, ok = synthesize_raon_slide(pipe, "첫 문장입니다.", out)  # verify_stt defaults False
+
+        assert ok is True
+        pipe.stt.assert_called_once()
+    finally:
+        monkeypatch.delenv("RAON_VERIFY_STT", raising=False)
+
+
+# ---------------------------------------------------------------------------
+# S11-b (D-15/04-2): "long" is judged against max(max_seconds, char-based
+# budget), not max_seconds alone -- a script that ran longer than planned is
+# not itself a TTS defect (04-2 slide 15: 253 chars at a normal pace took 37s
+# against a 20s plan).
+# ---------------------------------------------------------------------------
+
+def test_slide_gate_long_threshold_uses_char_budget_when_script_ran_long():
+    """Spec test #4: 253 chars budgets ~36.1s at the segment-gate's 7.0
+    chars/s rate. A 37s clip against max_seconds=20 must not be "long" (it's
+    within budget*1.35 ~= 48.8s); a clip that also blows the char budget
+    (here 50s) still is."""
+    sr = 24000
+    char_count = 253
+    assert _slide_gate_failures(_tone(37.0, sr), sr, char_count, 20.0) == []
+    assert any(
+        r.startswith("long") for r in _slide_gate_failures(_tone(50.0, sr), sr, char_count, 20.0)
+    )
 
 
 # ---------------------------------------------------------------------------
