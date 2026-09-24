@@ -1127,3 +1127,40 @@ def test_cli_status_does_not_load_models_or_write_files(monkeypatch, tmp_path, c
     out = capsys.readouterr().out
     assert "testlec" in out
     assert "영상 없음" in out
+
+
+# ---------------------------------------------------------------------------
+# S10-c/D-16: lecture plan gets a calibrated minutes figure (spec test #4)
+# ---------------------------------------------------------------------------
+
+def test_lecture_plan_generation_uses_calibrated_minutes(tmp_path):
+    """04-1 measured script chars (15,873) at 94.5% of the plan budget
+    (40min * 60 * 7.0 chars/s = 16,800) -- the plan is handed
+    TARGET_MINUTES * PLAN_LENGTH_CALIBRATION (40 * 1.06 = 42.4), not the raw
+    target, so that shortfall is compensated upstream. Same value at both
+    call sites (prompt build + generation) so the cache key matches what was
+    actually generated."""
+    from scripts.batch_generate_lectures import (
+        PLAN_LENGTH_CALIBRATION,
+        TARGET_MINUTES,
+        _generate_lecture_plan_cached,
+    )
+
+    assert TARGET_MINUTES * PLAN_LENGTH_CALIBRATION == pytest.approx(42.4)
+
+    plan = LecturePlan(
+        lecture_title="t", total_minutes=42.4, opening_context="o", core_message="c",
+        recurring_examples=[], sections=[],
+    )
+    llm_client = MagicMock()
+    llm_client.text_model = "gpt-x"
+    llm_client.vlm_model = "gpt-y"
+    plan_path = tmp_path / "plan.json"
+
+    with patch("scripts.batch_generate_lectures.build_lecture_plan_prompt", return_value="prompt") as mock_prompt, \
+         patch("scripts.batch_generate_lectures.generate_lecture_plan", return_value=plan) as mock_gen:
+        _generate_lecture_plan_cached(llm_client, [], "subj", "name", plan_path)
+
+    expected_minutes = TARGET_MINUTES * PLAN_LENGTH_CALIBRATION
+    assert mock_prompt.call_args[0][3] == expected_minutes
+    assert mock_gen.call_args[0][4] == expected_minutes
