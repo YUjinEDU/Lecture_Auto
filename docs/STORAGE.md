@@ -52,7 +52,7 @@
 .venv/bin/python scripts/batch_generate_lectures.py --status             # 전체 강의 진행 상황 한 표
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --gpu 1     # 04-1 제작(대본→음성→영상)
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --slides 12,15   # 일부 슬라이드 재생성(후보로)
-.venv/bin/python scripts/batch_generate_lectures.py --only 6 --promote 12     # 후보 채택
+.venv/bin/python scripts/batch_generate_lectures.py --only 6 --promote 12     # 후보 채택 = **승인까지 기록됨** → 들어본 뒤에만
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --approve 1-23   # 현재 음성 승인
 .venv/bin/python scripts/batch_generate_lectures.py --only 6 --assemble-only  # 모델 없이 재조립
 ```
