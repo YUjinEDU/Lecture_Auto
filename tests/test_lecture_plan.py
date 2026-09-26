@@ -426,3 +426,32 @@ def test_build_lecture_plan_prompt_reference_outline_none_matches_baseline():
     got = build_lecture_plan_prompt(slides, "AI활용현업문제해결", "디자인씽킹 개요", 30.0, reference_outline=None)
 
     assert got == _read_fixture("lecture_plan_prompt_baseline.txt")
+
+
+def test_generate_section_scripts_reasks_once_on_malformed_json(tmp_path):
+    # 06 shard0 died on a single truncated JSON reply; one re-ask should absorb it.
+    good = _section_result_json([220, 220], [1, 2])  # within budget, no budget retry
+    client = MagicMock()
+    client.chat.side_effect = ['{"section_summary": "잘린', good]
+
+    plan, section = _plan_and_section()
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    slides = [_make_slide(i, f"t{i}", f"b{i}") for i in (1, 2)]
+
+    result = generate_section_scripts(client, plan, section, slides, [png, png], None, False)
+    assert client.chat.call_count == 2
+    assert sum(len(s.script) for s in result.slides) == 440
+
+
+def test_generate_section_scripts_raises_if_json_stays_malformed(tmp_path):
+    client = MagicMock()
+    client.chat.side_effect = ["not json", "still not json"]
+
+    plan, section = _plan_and_section()
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    slides = [_make_slide(i, f"t{i}", f"b{i}") for i in (1, 2)]
+
+    with pytest.raises(json.JSONDecodeError):
+        generate_section_scripts(client, plan, section, slides, [png, png], None, False)

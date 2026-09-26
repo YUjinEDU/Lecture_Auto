@@ -20,6 +20,8 @@ import logging
 import re
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from lecture_auto.llm import LLMClient
 from lecture_auto.pipeline.script_gen import (
     SPEECH_CHARS_PER_SECOND,
@@ -402,8 +404,15 @@ def generate_section_scripts(
             {"role": "system", "content": get_professor_system_prompt()},
             {"role": "user", "content": [{"type": "text", "text": prompt_text}, *images]},
         ]
-        raw = client.chat(messages)
-        return SectionScriptResult(**json.loads(strip_markdown_json_fence(raw)))
+        # One re-ask on malformed output: a single bad JSON reply used to kill the whole shard.
+        for attempt in range(2):
+            raw = client.chat(messages)
+            try:
+                return SectionScriptResult(**json.loads(strip_markdown_json_fence(raw)))
+            except (json.JSONDecodeError, ValidationError):
+                if attempt:
+                    raise
+                logger.warning("Section %r: malformed JSON from LLM -- re-asking once", section.title)
 
     result = run(None)
     ratio = _budget_ratio(result, section)
