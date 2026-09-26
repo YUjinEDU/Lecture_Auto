@@ -54,3 +54,70 @@ entries:
   - {written: "PO", spoken: "프로덕트 오너", approved: true}
   - {written: "SP", spoken: "스토리 포인트", approved: true}
   - {written: "AC", spoken: "억셉턴스 크라이테리아", approved: true}
+  # 2026-09-26(2차): 05·06 잔여 영어 용어 — 사용자 전부 승인.
+  - {written: "Must", spoken: "머스트", approved: true}
+  - {written: "Should", spoken: "슈드", approved: true}
+  - {written: "Could", spoken: "쿠드", approved: true}
+  - {written: "Won't", spoken: "원트", approved: true}
+  - {written: "Priority", spoken: "프라이오리티", approved: true}
+  - {written: "Prioritized", spoken: "프라이오리타이즈드", approved: true}
+  - {written: "Given", spoken: "기븐", approved: true}
+  - {written: "When", spoken: "웬", approved: true}
+  - {written: "Then", spoken: "덴", approved: true}
+  - {written: "So that", spoken: "소 댓", approved: true}
+  - {written: "As a", spoken: "애즈 어", approved: true}
+  - {written: "I want", spoken: "아이 원트", approved: true}
+  - {written: "Burndown Chart", spoken: "번다운 차트", approved: true}
+  - {written: "Day", spoken: "데이", approved: true}
+  - {written: "Dev1", spoken: "데브 원", approved: true}
+  - {written: "Dev2", spoken: "데브 투", approved: true}
+  - {written: "Dev3", spoken: "데브 쓰리", approved: true}
+  - {written: "T2", spoken: "티 투", approved: true}
+  - {written: "T3", spoken: "티 쓰리", approved: true}
+  - {written: "US-01", spoken: "유에스 공일", approved: true}
+  - {written: "US-06", spoken: "유에스 공육", approved: true}
+  - {written: "US-23", spoken: "유에스 이십삼", approved: true}
+  - {written: "KPT", spoken: "케이피티", approved: true}
+  - {written: "Keep", spoken: "킵", approved: true}
+  - {written: "Problem", spoken: "프라블럼", approved: true}
+  - {written: "Try", spoken: "트라이", approved: true}
+  - {written: "Revision History", spoken: "리비전 히스토리", approved: true}
+  - {written: "REV", spoken: "레브", approved: true}
+  - {written: "Success Metrics", spoken: "석세스 메트릭스", approved: true}
+  - {written: "Scope Creep", spoken: "스코프 크리프", approved: true}
+  - {written: "Single Source", spoken: "싱글 소스", approved: true}
+  - {written: "Living Document", spoken: "리빙 도큐먼트", approved: true}
+  - {written: "To-do List", spoken: "투두 리스트", approved: true}
+  - {written: "Lifecycle", spoken: "라이프사이클", approved: true}
+  - {written: "pain point", spoken: "페인 포인트", approved: true}
+  - {written: "DEEP", spoken: "딥", approved: true}
+  - {written: "D", spoken: "디", approved: true}
+  - {written: "E", spoken: "이", approved: true}
+  - {written: "P", spoken: "피", approved: true}
+  - {written: "E1", spoken: "이 원", approved: true}
+  - {written: "En", spoken: "이 엔", approved: true}
+  - {written: "Detailed Appropriately", spoken: "디테일드 어프로프리엇리", approved: true}
+  - {written: "Estimated", spoken: "에스티메이티드", approved: true}
+  - {written: "Emergent", spoken: "이머전트", approved: true}
+  - {written: "INVEST", spoken: "인베스트", approved: true}
+  - {written: "Independent", spoken: "인디펜던트", approved: true}
+  - {written: "Negotiable", spoken: "니고시에이블", approved: true}
+  - {written: "Valuable", spoken: "밸류어블", approved: true}
+  - {written: "Estimable", spoken: "에스티머블", approved: true}
+  - {written: "Small", spoken: "스몰", approved: true}
+  - {written: "Testable", spoken: "테스터블", approved: true}
+  - {written: "Estimate", spoken: "에스티메이트", approved: true}
+  - {written: "Grooming", spoken: "그루밍", approved: true}
+  - {written: "velocity", spoken: "벨로시티", approved: true}
+  - {written: "Foundation", spoken: "파운데이션", approved: true}
+  - {written: "Workflow", spoken: "워크플로", approved: true}
+  - {written: "Enhancement", spoken: "인핸스먼트", approved: true}
+  - {written: "timebox", spoken: "타임박스", approved: true}
+  - {written: "PM", spoken: "피엠", approved: true}
+  - {written: "ID", spoken: "아이디", approved: true}
+  - {written: "README", spoken: "리드미", approved: true}
+  - {written: "JWT", spoken: "제이더블유티", approved: true}
+  - {written: "What", spoken: "왓", approved: true}
+  - {written: "How", spoken: "하우", approved: true}
+  - {written: "React", spoken: "리액트", approved: true}
+  - {written: "MySQL", spoken: "마이에스큐엘", approved: true}
