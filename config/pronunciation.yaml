@@ -13,3 +13,44 @@ entries:
   - written: "CI/CD"
     spoken: "씨아이 씨디"
     approved: true
+  # 2026-09-26: 05·06 스크럼/백로그 강의 영어 용어 — 사용자 전부 승인, 약어는 풀어 읽기.
+  - {written: "Sprint", spoken: "스프린트", approved: true}
+  - {written: "Backlog", spoken: "백로그", approved: true}
+  - {written: "Product", spoken: "프로덕트", approved: true}
+  - {written: "Owner", spoken: "오너", approved: true}
+  - {written: "Scrum", spoken: "스크럼", approved: true}
+  - {written: "Master", spoken: "마스터", approved: true}
+  - {written: "User", spoken: "유저", approved: true}
+  - {written: "Story", spoken: "스토리", approved: true}
+  - {written: "Point", spoken: "포인트", approved: true}
+  - {written: "Epic", spoken: "에픽", approved: true}
+  - {written: "Task", spoken: "태스크", approved: true}
+  - {written: "Developers", spoken: "디벨로퍼스", approved: true}
+  - {written: "Acceptance", spoken: "억셉턴스", approved: true}
+  - {written: "Criteria", spoken: "크라이테리아", approved: true}
+  - {written: "Increment", spoken: "인크리먼트", approved: true}
+  - {written: "Goal", spoken: "골", approved: true}
+  - {written: "Retrospective", spoken: "레트로스펙티브", approved: true}
+  - {written: "Daily", spoken: "데일리", approved: true}
+  - {written: "Review", spoken: "리뷰", approved: true}
+  - {written: "Planning", spoken: "플래닝", approved: true}
+  - {written: "Poker", spoken: "포커", approved: true}
+  - {written: "Item", spoken: "아이템", approved: true}
+  - {written: "Vision", spoken: "비전", approved: true}
+  - {written: "Agile", spoken: "애자일", approved: true}
+  - {written: "Release", spoken: "릴리스", approved: true}
+  - {written: "Plan", spoken: "플랜", approved: true}
+  - {written: "Waterfall", spoken: "워터폴", approved: true}
+  - {written: "Velocity", spoken: "벨로시티", approved: true}
+  - {written: "Capacity", spoken: "캐파시티", approved: true}
+  - {written: "Refinement", spoken: "리파인먼트", approved: true}
+  - {written: "Definition of Done", spoken: "데피니션 오브 던", approved: true}
+  - {written: "Done", spoken: "던", approved: true}
+  - {written: "MoSCoW", spoken: "모스코", approved: true}
+  - {written: "Figma", spoken: "피그마", approved: true}
+  - {written: "UI", spoken: "유아이", approved: true}
+  - {written: "CRUD", spoken: "크루드", approved: true}
+  # 약어 — 사용자 결정: 풀어서 읽기
+  - {written: "PO", spoken: "프로덕트 오너", approved: true}
+  - {written: "SP", spoken: "스토리 포인트", approved: true}
+  - {written: "AC", spoken: "억셉턴스 크라이테리아", approved: true}

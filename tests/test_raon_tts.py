@@ -1506,3 +1506,17 @@ def test_slide_gate_short_check_can_be_disabled_when_segments_are_stt_verified()
     assert not any(
         r.startswith("short") for r in _slide_gate_failures(clip, sr, char_count, 30.0, check_short=False)
     )
+
+
+def test_fallback_segment_fails_the_slide_under_segment_stt():
+    from lecture_auto.pipeline.raon_tts import _slide_stt_from_segments
+    from lecture_auto.schemas.production import SegmentQC
+
+    segs = [
+        SegmentQC(index=0, text="가나다", seed=17, call="tts", continuation_from=None, fallback=False, stt_status="pass", cer=0.0),
+        SegmentQC(index=1, text="라마바", seed=61, call="tts", continuation_from=None, fallback=True, stt_status="pass", cer=0.57),
+    ]
+    metas = [{"transcript": "가나다"}, {"transcript": "라마", "reason": "cer"}]
+    check = _slide_stt_from_segments(segs, metas)
+    assert check.status == "fail"
+    assert "seg1:fallback(cer)" in check.reasons

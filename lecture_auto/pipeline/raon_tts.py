@@ -1218,6 +1218,14 @@ def _slide_stt_from_segments(segments_qc: list[SegmentQC], metas: list[dict]) ->
     weighted_chars = 0
     transcripts: list[str] = []
     for seg, meta in zip(segments_qc, metas):
+        # 06 (Product Backlog): 60/227 segments shipped as fallbacks -- every
+        # seed failed, most on CER (garbled English terms, "Product Owner" ->
+        # "프로토타운") -- inside slides reported as passing, because segment
+        # failures were advisory. Under segment STT a fallback is a segment
+        # whose content was never verified, so it fails the slide (DRAFT ->
+        # a human listens) instead of shipping silently.
+        if seg.fallback:
+            reasons.append(f"seg{seg.index}:fallback({meta.get('reason')})")
         if seg.stt_status is None or seg.stt_status == "unavailable":
             any_missing = True
             continue
