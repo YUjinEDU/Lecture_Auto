@@ -609,6 +609,10 @@ def _hand_edited(script_path: Path) -> dict | None:
     return json.loads(current)
 
 
+def _section_fully_hand_edited(scripts_dir: Path, slide_numbers: list[int]) -> bool:
+    return all(_hand_edited(scripts_dir / f"script_{n:03d}.json") is not None for n in slide_numbers)
+
+
 def _resolve_pdf_input(item: dict, input_dir: Path, lec_id: str) -> Path:
     """S3-a: a lecture entry may give a ``"pptx"`` path instead of ``"pdf"``.
 
@@ -769,17 +773,22 @@ def process_lecture(
             png_paths_in_section = [png_by_number[n] for n in section.slides]
             section_result_path = sections_dir / f"section_{idx + 1:03d}.json"
 
-            result = _generate_section_scripts_cached(
-                llm_client,
-                plan,
-                section,
-                slides_in_section,
-                png_paths_in_section,
-                carry_forward,
-                is_last_section,
-                section_result_path,
-                reference_notes,
-            )
+            if section_result_path.exists() and _section_fully_hand_edited(scripts_dir, section.slides):
+                # Fresh LLM output would be discarded slide by slide below anyway; skip the call.
+                logger.info("Section %r: every slide edited by hand -- reusing cached result", section.title)
+                result = SectionScriptResult(**json.loads(section_result_path.read_text(encoding="utf-8")))
+            else:
+                result = _generate_section_scripts_cached(
+                    llm_client,
+                    plan,
+                    section,
+                    slides_in_section,
+                    png_paths_in_section,
+                    carry_forward,
+                    is_last_section,
+                    section_result_path,
+                    reference_notes,
+                )
             for s in result.slides:
                 script_path = scripts_dir / f"script_{s.slide_number:03d}.json"
                 generated = json.dumps(
