@@ -121,3 +121,20 @@ entries:
   - {written: "How", spoken: "하우", approved: true}
   - {written: "React", spoken: "리액트", approved: true}
   - {written: "MySQL", spoken: "마이에스큐엘", approved: true}
+  # 2026-09-29: 04-2 잔여 영어 용어 — 사용자 전부 승인.
+  - {written: "As-Is", spoken: "애즈이즈", approved: true}
+  - {written: "GitHub", spoken: "깃허브", approved: true}
+  - {written: "I like", spoken: "아이 라이크", approved: true}
+  - {written: "I wish", spoken: "아이 위시", approved: true}
+  - {written: "IDEO", spoken: "아이디오", approved: true}
+  - {written: "Ideas", spoken: "아이디어스", approved: true}
+  - {written: "Pre-test", spoken: "프리테스트", approved: true}
+  - {written: "Test", spoken: "테스트", approved: true}
+  - {written: "Post-test", spoken: "포스트테스트", approved: true}
+  - {written: "Proof of Concept", spoken: "프루프 오브 컨셉", approved: true}
+  - {written: "Questions", spoken: "퀘스천스", approved: true}
+  - {written: "Whys", spoken: "와이즈", approved: true}
+  - {written: "before", spoken: "비포", approved: true}
+  - {written: "after", spoken: "애프터", approved: true}
+  - {written: "gain", spoken: "게인", approved: true}
+  - {written: "pain", spoken: "페인", approved: true}
