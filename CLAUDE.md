@@ -263,6 +263,10 @@ Hardening work is tracked in `docs/hardening/` (status board in its `README.md`)
   writes `<mp4 stem>.timeline.json`.
 - STT fidelity check is ON by default in the batch (`--no-stt` to skip); each WAV gets a `.qc.json`.
   Pronunciation overrides live in `config/pronunciation.yaml` (only `approved: true` entries apply).
+- S19 restyle (opt-in): a `LECTURES` item with `"restyle": True` runs `pipeline/restyle.py` once per section after script generation
+  (cache `sections/section_NNN.restyled.json`, report `restyle_report.json`); the result is written as our own script (`.hash` matches, not hand-edited). No key = unchanged.
+- S19 `--suggest-pron --only <id>`: one text-LLM call for Korean readings of unlisted Latin tokens -> `data/work_batch/<id>/pronunciation_suggestions.yaml`
+  (`approved: false`, `source: llm`; never edits `config/pronunciation.yaml`, loads no TTS model). A human copies approved entries over.
 - S17 one-command run: `python scripts/produce.py --only 7,8,9 --gpus 0,1 [--workers-per-gpu N] [--slides ..] [--no-stt] [--max-restarts 2] [--fix-failed] [--dry-run]`.
   Spawns `--claim <run_id>` workers (dynamic per-slide flock claim in `audio/.claim/`, longest script first; replaces static `--shard`, which still works but is mutually exclusive), restarts crashed workers, then assembles each lecture once and prints the status table (exit 1 if any lecture is not final).
 - `--only` accepts comma lists (`7,8,9`, `08,09`); approval commands still need exactly one lecture. `--fix-failed` moves unapproved slides with an invalid cache to `audio/failed_<ts>/` (+`MOVED.txt`, never deletes) before resynthesis.
