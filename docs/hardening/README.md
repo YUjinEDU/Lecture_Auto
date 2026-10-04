@@ -47,11 +47,12 @@ hardening/
 | S11 | 슬라이드 STT를 조각 결과로 대체 + long 판정 글자 수 기준 | ✅ 병합 완료 | — |
 | S12 | 대본 말투 재작성(restyle) | ✅ 병합 완료 | — |
 | S13 | 발음 사전 사전 점검 `--check` | ✅ 병합 완료 (31e9cfc) | — |
-| S14 | 문장 단위 자막(SRT/VTT) + 자막 입힌 영상 (D-19) | 🔵 진행 중 | s14-subtitles |
-| S15 | 말하는 문장 하이라이트 영상 (D-19, S14 이후) | ⚪ 대기 | — |
-| S17 | 오케스트레이션: 동적 claim + 크래시 재시작 + `produce.py` + `--fix-failed` + `--only` 콤마 | 🔵 진행 중 | s17-orchestration |
-| S18 | TTS: 생성 상한을 판정 상한에 맞춤 + 처리량 벤치 스크립트 | 🔵 진행 중 | s18-tts-speed |
-| S16a | 강의 간 메모리(opt-in `previous`, D-18) | 🔵 진행 중 | s16-series-memory |
+| S14 | 문장 단위 자막(SRT/VTT) + 자막 입힌 영상 (D-19) | ✅ 병합 완료 (7431406, 6ad60c4) | — |
+| S15 | 말하는 문장 하이라이트 영상 (D-19, S14 이후) | 🔵 진행 중 | s15-highlight |
+| S17 | 오케스트레이션: 동적 claim + 크래시 재시작 + `produce.py` + `--fix-failed` + `--only` 콤마 | ✅ 병합 완료 | — |
+| S18 | TTS: 생성 상한을 판정 상한에 맞춤 + 처리량 벤치 스크립트 | ✅ 병합 완료 (b40f6e2) | — |
+| S19 | 대본: restyle 배치 통합(opt-in) + 발음 후보 자동 제안 `--suggest-pron` | 🔵 진행 중 | s19-script-quality |
+| S16a | 강의 간 메모리(opt-in `previous`, D-18) | ✅ 병합 완료 (881e9d2) | — |
 | S16b | 교수님 수정 학습 | ⏸ 보류 (D-18) | — |
 
 ## 사용자 확인 대기
