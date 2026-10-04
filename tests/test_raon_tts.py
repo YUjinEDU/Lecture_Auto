@@ -1538,3 +1538,65 @@ def test_max_new_tokens_cap_uses_token_cap_ratio():
     hi = _FakePipe([_tone(1.0, 24000)] * 40)
     m._synthesize_segment_with_gate(hi, "짧", None, expected_seconds=500.0)
     assert hi.task_params["tts"]["max_new_tokens"] == m._MAX_MAX_NEW_TOKENS
+
+
+
+# ---------------------------------------------------------------------------
+# S20-a regression pin: the exact pipe.tts call sequence and torch.manual_seed
+# order for a multi-segment slide. Recorded on the code BEFORE the dead
+# tts_continuation path was removed; removal must not change it (same seeds,
+# same call order -> same audio).
+# ---------------------------------------------------------------------------
+
+_S1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
+_S2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
+
+
+def _record_synthesis(monkeypatch, tmp_path, waveforms):
+    import torch
+
+    events: list = []
+    monkeypatch.setattr(torch, "manual_seed", lambda s: events.append(("seed", s)))
+    pipe = _FakePipe(waveforms)
+    inner = pipe.tts
+
+    def tts(text, **kwargs):
+        events.append(("tts", text, kwargs))
+        return inner(text, **kwargs)
+
+    pipe.tts = tts
+    ref = tmp_path / "ref.wav"
+    sf.write(str(ref), _tone(1.0), 24000)
+    synthesize_raon_slide(pipe, _S1 + " " + _S2, tmp_path / "slide.wav", speaker_audio=ref, max_seconds=60.0)
+    return events, str(ref)
+
+
+def test_tts_call_and_seed_sequence_with_retry_is_pinned(monkeypatch, tmp_path):
+    # segment 0: first draw fails the gate (4s dead gap), second passes; segment 1: first draw passes.
+    bad = _speech_then_gap(4.0)
+    loud = _tone(10.0)
+    events, ref = _record_synthesis(monkeypatch, tmp_path, [bad, loud, loud])
+    kw = {"speaker_audio": ref}
+    assert events == [
+        ("seed", 17), ("tts", _S1, kw),
+        ("seed", 29), ("tts", _S1, kw),
+        ("seed", 17), ("tts", _S2, kw),
+    ]
+
+
+def test_tts_call_and_seed_sequence_with_fallback_and_redraw_is_pinned(monkeypatch, tmp_path):
+    # Same scenario as test_redraw_candidate_is_normalized...: segment 0 fails all 4 draws,
+    # segment 1 passes first draw, then the redraw of segment 0 is adopted on its first draw.
+    bad = np.concatenate([_tone(3.0, 24000, amp=0.3), _tone(4.0, 24000, amp=0.004), _tone(3.0, 24000, amp=0.3)])
+    loud = _tone(10.0)
+    quiet_redraw = _tone(10.0, amp=0.02)
+    events, ref = _record_synthesis(
+        monkeypatch, tmp_path, [bad, bad, bad, bad, loud] + [quiet_redraw] * 4
+    )
+    kw = {"speaker_audio": ref}
+    assert events == [
+        ("seed", 17), ("tts", _S1, kw), ("seed", 29), ("tts", _S1, kw),
+        ("seed", 43), ("tts", _S1, kw), ("seed", 61), ("tts", _S1, kw),
+        ("seed", 17), ("tts", _S2, kw),
+        ("seed", 17), ("tts", _S1, kw),
+    ]
