@@ -357,6 +357,7 @@ def _synthesize_all_slides(
     approved_numbers: set[int],
     entries: Sequence[dict] = (),
     verify_stt: bool = True,
+    claim: str | None = None,
 ) -> tuple[list[Path], list[int]]:
     """Stage 5 of ``process_lecture``, pulled out for direct testing: decide
     per slide whether to synthesize, skip (sharded/kept/approved), and
@@ -372,10 +373,10 @@ def _synthesize_all_slides(
     wav_paths: list[Path] = []
     failed_slides: list[int] = []
     shard_index, shard_count = shard
+    claim_candidates: list[int] = []
     for n in range(1, slide_count + 1):
-        sc = scripts[n]
         out_wav = audio_dir / f"slide_{n:03d}.wav"
-        if (n - 1) % shard_count != shard_index:
+        if claim is None and (n - 1) % shard_count != shard_index:
             # Another process on another GPU owns this slide. Slides are fully
             # independent -- tts_continuation only ever references a segment
             # from the same slide -- so splitting them costs no quality.
@@ -390,16 +391,93 @@ def _synthesize_all_slides(
             wav_paths.append(out_wav)
             continue
 
-        cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
-        force_regen = target_slides is not None and n in target_slides
-        ok = _run_slide_tts(
-            tts_pipe, n, sc, out_wav, cache_key, force_regen, entries=entries, verify_stt=verify_stt
-        )
-        if not ok:
-            failed_slides.append(n)
         wav_paths.append(out_wav)
+        if claim is not None:
+            claim_candidates.append(n)
+            continue
+        if not _synth_one(tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt):
+            failed_slides.append(n)
 
-    return wav_paths, failed_slides
+    # S17-a dynamic claim: longest script first (tail balance); order affects
+    # neither results nor cache keys. One pass; slides another worker holds are
+    # that worker's job (or a restarted worker's, if it dies).
+    claim_dir = audio_dir / ".claim"
+    if claim is not None:
+        claim_dir.mkdir(parents=True, exist_ok=True)
+    for n in sorted(claim_candidates, key=lambda i: -len(scripts[i].get("script", ""))):
+        with (claim_dir / f"slide_{n:03d}.lock").open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            done = claim_dir / f"slide_{n:03d}.done"
+            if done.exists() and done.read_text(encoding="utf-8") == claim:
+                continue
+            ok = _synth_one(
+                tts_pipe, n, scripts, audio_dir / f"slide_{n:03d}.wav", ref_voice_bytes, target_slides,
+                entries, verify_stt,
+            )
+            # Written for success AND gate failure; an exception skips it so a
+            # restarted worker can retake the slide (kernel frees the flock).
+            write_text_atomic(done, claim)
+            if not ok:
+                failed_slides.append(n)
+
+    return wav_paths, sorted(failed_slides)
+
+
+def _synth_one(tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt) -> bool:
+    sc = scripts[n]
+    cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
+    force_regen = target_slides is not None and n in target_slides
+    return _run_slide_tts(
+        tts_pipe, n, sc, out_wav, cache_key, force_regen, entries=entries, verify_stt=verify_stt
+    )
+
+
+def _fix_failed(
+    audio_dir: Path,
+    slide_count: int,
+    scripts: dict[int, dict],
+    ref_voice_bytes: bytes,
+    approved_numbers: set[int],
+    entries: Sequence[dict] = (),
+    claim: str | None = None,
+    ts: str | None = None,
+) -> list[int]:
+    """S17-d: move (never delete) every unapproved slide WAV whose cache is not
+    valid for the current key into ``audio/failed_<ts>/`` (with .hash/.qc.json)
+    so the main path is re-synthesized directly. Runs under a per-lecture lock;
+    with *claim* only the first worker of a run does it (otherwise a peer's
+    fresh failed take would be moved again)."""
+    claim_dir = audio_dir / ".claim"
+    claim_dir.mkdir(parents=True, exist_ok=True)
+    with (claim_dir / "fix.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        marker = claim_dir / f"fix_{claim}.done" if claim else None
+        if marker is not None and marker.exists():
+            return []
+        moved: list[int] = []
+        dest = audio_dir / f"failed_{ts or time.strftime('%Y%m%d_%H%M%S')}"
+        for n in range(1, slide_count + 1):
+            wav = audio_dir / f"slide_{n:03d}.wav"
+            if n in approved_numbers or not wav.exists():
+                continue
+            sc = scripts[n]
+            key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
+            if is_cache_valid(wav, key):
+                continue
+            dest.mkdir(exist_ok=True)
+            for src in (wav, cache_path_for(wav), qc_path_for(wav)):
+                if src.exists():
+                    shutil.move(str(src), str(dest / src.name))
+            moved.append(n)
+        if moved:
+            write_text_atomic(dest / "MOVED.txt", "".join(f"slide_{n:03d}.wav\n" for n in moved))
+            logger.info("--fix-failed: moved slides %s to %s", moved, dest)
+        if marker is not None:
+            write_text_atomic(marker, claim)
+        return moved
 
 
 def _draft_or_final_path(out_mp4: Path, invalid_slides: list[int]) -> Path:
@@ -680,6 +758,8 @@ def process_lecture(
     target_slides: set[int] | None = None,
     entries: Sequence[dict] = (),
     verify_stt: bool = True,
+    claim: str | None = None,
+    fix_failed: bool = False,
 ) -> Path:
     lec_id = item["id"]
     out_mp4 = _lecture_output_mp4(lec_id, output_dir).resolve()
@@ -858,9 +938,11 @@ def process_lecture(
     ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
     approved_numbers = set(load_approvals(work_dir, lec_id).slides.keys())
 
+    if fix_failed:
+        _fix_failed(audio_dir, slide_count, scripts, ref_voice_bytes, approved_numbers, entries, claim=claim)
     wav_paths, failed_slides = _synthesize_all_slides(
         tts_pipe, slide_count, scripts, audio_dir, ref_voice_bytes, shard, target_slides, approved_numbers,
-        entries=entries, verify_stt=verify_stt,
+        entries=entries, verify_stt=verify_stt, claim=claim,
     )
     shard_index, shard_count = shard
 
@@ -871,6 +953,10 @@ def process_lecture(
         )
     else:
         logger.info("All %d slides passed the quality gate.", slide_count)
+
+    if claim is not None:
+        logger.info("[6/6] Claim-mode worker -- scripts/produce.py assembles once all workers finish.")
+        return out_mp4
 
     if shard_count > 1:
         # Never assemble from inside a shard. Checking that the peer's wavs
@@ -1136,11 +1222,38 @@ def _format_status_line(idx: int, lec_id: str, st: LectureStatus) -> str:
     )
 
 
+def _select_lectures(only: str, error) -> list[dict]:
+    """S17-b: ``--only`` as comma-separated tokens (1-based index or id
+    substring); LECTURES order, de-duplicated; a token matching nothing is an error."""
+    picked: set[int] = set()
+    for tok in (t.strip() for t in only.split(",") if t.strip()):
+        if tok.isdigit():
+            if not 1 <= int(tok) <= len(LECTURES):
+                error(f"--only {tok}: index must be in 1..{len(LECTURES)}")
+            hits = [int(tok) - 1]
+        else:
+            hits = [i for i, lec in enumerate(LECTURES) if tok in lec["id"]]
+            if not hits:
+                error(f"--only {tok!r} matches no lecture")
+        picked.update(hits)
+    return [LECTURES[i] for i in sorted(picked)]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Batch lecture video generation")
     parser.add_argument(
         "--only", type=str, default=None,
-        help=f"Run only specific lecture id or index (1-{len(LECTURES)})",
+        help=f"Run only specific lectures: comma-separated ids/substrings or indexes (1-{len(LECTURES)})",
+    )
+    parser.add_argument(
+        "--claim", type=str, default=None, metavar="RUN_ID",
+        help="S17: dynamic per-slide claim (flock) instead of --shard; never assembles. "
+             "Used by scripts/produce.py. Mutually exclusive with --shard.",
+    )
+    parser.add_argument(
+        "--fix-failed", action="store_true",
+        help="S17: before synthesis, move unapproved slides with an invalid cache to "
+             "audio/failed_<ts>/ (never deleted) so they are re-synthesized on the main path.",
     )
     parser.add_argument(
         "--slides", type=str, default=None,
@@ -1225,15 +1338,10 @@ def main():
             "--approve/--approve-passing/--promote/--assemble-only/--check require --only <lecture id or index>"
         )
 
-    selected = LECTURES
-    if args.only:
-        if args.only.isdigit():
-            idx = int(args.only) - 1
-            if not 0 <= idx < len(LECTURES):
-                parser.error(f"--only {args.only}: index must be in 1..{len(LECTURES)}")
-            selected = [LECTURES[idx]]
-        else:
-            selected = [lec for lec in LECTURES if args.only in lec["id"]]
+    if args.claim and args.shard != "0/1":
+        parser.error("--claim and --shard are mutually exclusive")
+
+    selected = _select_lectures(args.only, parser.error) if args.only else LECTURES
 
     if args.status:
         # S8-c: disk-only status table -- no TTS/LLM load, no --only-must-be-
@@ -1305,7 +1413,7 @@ def main():
         t0 = time.time()
         mp4_path = process_lecture(
             lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
-            entries=pronunciation_entries, verify_stt=verify_stt,
+            entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
         )
         elapsed = time.time() - t0
         results.append((lec["id"], mp4_path, elapsed))

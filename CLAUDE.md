@@ -260,3 +260,6 @@ Hardening work is tracked in `docs/hardening/` (status board in its `README.md`)
   writes `<mp4 stem>.timeline.json`.
 - STT fidelity check is ON by default in the batch (`--no-stt` to skip); each WAV gets a `.qc.json`.
   Pronunciation overrides live in `config/pronunciation.yaml` (only `approved: true` entries apply).
+- S17 one-command run: `python scripts/produce.py --only 7,8,9 --gpus 0,1 [--workers-per-gpu N] [--slides ..] [--no-stt] [--max-restarts 2] [--fix-failed] [--dry-run]`.
+  Spawns `--claim <run_id>` workers (dynamic per-slide flock claim in `audio/.claim/`, longest script first; replaces static `--shard`, which still works but is mutually exclusive), restarts crashed workers, then assembles each lecture once and prints the status table (exit 1 if any lecture is not final).
+- `--only` accepts comma lists (`7,8,9`, `08,09`); approval commands still need exactly one lecture. `--fix-failed` moves unapproved slides with an invalid cache to `audio/failed_<ts>/` (+`MOVED.txt`, never deletes) before resynthesis.
