@@ -20,3 +20,4 @@ data/demo_jobs/
 data/backup_*/
 PPTX/
 __pycache__/
+logs/
