@@ -7,7 +7,7 @@ Usage:
     from lecture_auto.pipeline import assemble_video
 
 GPU-dependent modules (vlm, tts, video) use lazy imports so the package
-can be loaded in environments without vllm / transformers installed.
+can be loaded in environments without optional heavy dependencies installed.
 """
 
 from .parser_pptx import parse_pptx
