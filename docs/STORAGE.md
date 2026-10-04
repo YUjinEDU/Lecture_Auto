@@ -43,7 +43,7 @@
 | `voice_professor/` | 원본 녹음 |
 | `backup_20260923_audio/` | S1 이전 01·04 음성 백업(읽기 전용) |
 | `work/<job_id>/` | API(FastAPI+Celery) 경로의 작업 폴더 — 배치와 별개 |
-| `work_mini_test*/`, `smoke*/` | 스모크 테스트 스크립트 작업 폴더(`scripts/run_mini_test*.py`, `smoke_*.py`) |
+| `work_mini_test*/`, `smoke*/` | 스모크 테스트 스크립트 작업 폴더(`smoke_*.py`) |
 
 ## 4. 자주 쓰는 명령
 

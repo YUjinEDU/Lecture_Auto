@@ -72,7 +72,7 @@ uvicorn lecture_auto.api.main:app --reload   # then open the demo route it mount
 
 # Real-model smoke tests (hit OpenAI / GPU — not run in CI)
 python scripts/smoke_e2e.py --stage script   # OPENAI_API_KEY only, no GPU
-python scripts/run_mini_test.py              # 3-slide end-to-end incl. TTS + video
+python scripts/produce.py --only <lec> --slides 1,2,3   # few-slide real TTS + video via the batch
 ```
 
 No linter is configured in this repo (no ruff/flake8/eslint config committed) — don't assume
