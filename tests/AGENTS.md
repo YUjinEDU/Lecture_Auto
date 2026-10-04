@@ -26,6 +26,7 @@ rules, EMU conversion, token-overlap thresholds, ffmpeg flags, SSE behavior).
 | `test_scripts_api.py` | Script CRUD/regenerate/approve/progress/PNG endpoints. |
 | `test_script_tasks.py` | Resumable script Celery task + checkpointing. |
 | `test_vlm_tasks.py` | Resumable VLM Celery task. |
+| `test_series_memory.py` | S16a: golden (`fixtures/s16_golden/*.txt`, captured from pre-S16 master) proves no-`previous` prompts and plan/section cache keys are byte-identical; memory block placement, `summarize_lecture` retry, memory cache. |
 | `test_run.py` | CLI helpers (`confirm_step`, arg parser, `write_summary`, `sha256_file`). |
 
 ## Subdirectories

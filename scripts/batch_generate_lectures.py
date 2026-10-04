@@ -57,6 +57,7 @@ from lecture_auto.pipeline.lecture_plan import (
     summarize_reference_outline,
 )
 from lecture_auto.pipeline.parser_pdf import parse_pdf
+from lecture_auto.pipeline.series_memory import load_or_create_memory
 from lecture_auto.pipeline.raon_tts import (
     TTS_MODEL_ID,
     TTS_RESEED_SEEDS,
@@ -504,13 +505,17 @@ def _llm_config_repr(llm_client) -> str:
 def _generate_lecture_plan_cached(
     llm_client, slides, subject: str, name: str, plan_path: Path,
     reference_outline: str | None = None,
+    previous_memory=None,
 ) -> LecturePlan:
     # S10-c/D-16: the plan gets a calibrated (inflated) minutes figure, not
     # raw TARGET_MINUTES -- see PLAN_LENGTH_CALIBRATION's own comment. Same
     # value at both call sites below so the cache key matches what was
     # actually generated.
     plan_minutes = TARGET_MINUTES * PLAN_LENGTH_CALIBRATION
-    prompt_text = build_lecture_plan_prompt(slides, subject, name, plan_minutes, reference_outline)
+    # S16: previous_memory (opt-in) is embedded in prompt_text, hence in the key.
+    prompt_text = build_lecture_plan_prompt(
+        slides, subject, name, plan_minutes, reference_outline, previous_memory=previous_memory
+    )
     cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text, _llm_config_repr(llm_client))
 
     if is_cache_valid(plan_path, cache_key):
@@ -518,7 +523,9 @@ def _generate_lecture_plan_cached(
         return LecturePlan(**json.loads(plan_path.read_text(encoding="utf-8")))
 
     logger.info("Generating lecture plan (whole-slide-set analysis)...")
-    plan = generate_lecture_plan(llm_client, slides, subject, name, plan_minutes, reference_outline)
+    plan = generate_lecture_plan(
+        llm_client, slides, subject, name, plan_minutes, reference_outline, previous_memory=previous_memory
+    )
     write_text_atomic(plan_path, json.dumps(plan.model_dump(), ensure_ascii=False, indent=2))
     write_cache_hash(plan_path, cache_key)
     logger.info("Lecture plan: %d sections covering %d slides", len(plan.sections), len(slides))
@@ -535,13 +542,17 @@ def _generate_section_scripts_cached(
     is_last_section: bool,
     section_result_path: Path,
     reference_notes: dict[int, str] | None = None,
+    previous_memory=None,
 ):
+    # S16: previous_memory is passed for the FIRST section only; it is embedded
+    # in prompt_text, hence in the cache key (no separate key input needed).
     # S3-b: reference_notes flows into prompt_text, which is what the cache
     # key hashes below -- a changed/added/removed reference script therefore
     # invalidates the section cache automatically, no separate hash input
     # needed (SPEC S3-b "캐시 키... 확인하고, 아니면 포함").
     prompt_text = build_section_prompt(
-        plan, section, slides_in_section, carry_forward, is_last_section, reference_notes=reference_notes
+        plan, section, slides_in_section, carry_forward, is_last_section, reference_notes=reference_notes,
+        previous_memory=previous_memory,
     )
     image_bytes = b"".join(p.read_bytes() for p in png_paths_in_section)
     carry_forward_repr = carry_forward.model_dump_json() if carry_forward else ""
@@ -562,7 +573,7 @@ def _generate_section_scripts_cached(
     logger.info("Generating section %r (%d slides)...", section.title, len(section.slides))
     result = generate_section_scripts(
         llm_client, plan, section, slides_in_section, png_paths_in_section, carry_forward, is_last_section,
-        reference_notes=reference_notes,
+        reference_notes=reference_notes, previous_memory=previous_memory,
     )
     validate_section_result(result, section)
     write_text_atomic(
@@ -641,6 +652,17 @@ def _resolve_pdf_input(item: dict, input_dir: Path, lec_id: str) -> Path:
         logger.info("[0/6] Converting PPTX -> PDF: %s", pptx_path)
         pptx_to_pdf(pptx_path, input_dir, job_id)
     return converted
+
+
+def _load_previous_memory(item: dict, llm_client, base_work_dir: Path):
+    """S16: memory of ``item["previous"]`` from its on-disk scripts (cached)."""
+    prev_id = item["previous"]
+    prev = next((lec for lec in LECTURES if lec["id"] == prev_id), None)
+    if prev is None:
+        raise ValueError(f"[{item['id']}] previous={prev_id!r} is not a LECTURES id")
+    return load_or_create_memory(
+        llm_client, prev_id, prev["name"], base_work_dir / prev_id, _llm_config_repr(llm_client)
+    )
 
 
 def process_lecture(
@@ -760,8 +782,14 @@ def process_lecture(
         # 3. Lecture plan
         logger.info("[3/6] Building lecture plan...")
         plan_path = work_dir / "lecture_plan.json"
+        # S16 (D-18): explicit opt-in only; no `previous` -> nothing changes.
+        previous_memory = (
+            _load_previous_memory(item, llm_client, base_work_dir) if item.get("previous") else None
+        )
+        # Not passed at all when None: calls stay identical to pre-S16.
+        plan_kwargs = {"previous_memory": previous_memory} if previous_memory else {}
         plan = _generate_lecture_plan_cached(
-            llm_client, slides, item["subject"], item["name"], plan_path, reference_outline
+            llm_client, slides, item["subject"], item["name"], plan_path, reference_outline, **plan_kwargs
         )
 
         # 4. Section-by-section script generation
@@ -788,6 +816,7 @@ def process_lecture(
                     is_last_section,
                     section_result_path,
                     reference_notes,
+                    **({"previous_memory": previous_memory} if previous_memory and idx == 0 else {}),
                 )
             for s in result.slides:
                 script_path = scripts_dir / f"script_{s.slide_number:03d}.json"
@@ -1133,6 +1162,11 @@ def main():
              "gate-passing slide into a candidate/DRAFT if the transcript doesn't "
              "match (content-fidelity reasons feed the same gate as everything else).",
     )
+    parser.add_argument(
+        "--memory-preview", action="store_true",
+        help="S16: with --only <id>, build/load the previous-lecture memory (item['previous']) "
+             "and print it. Uses the LLM client; loads no TTS model.",
+    )
     args = parser.parse_args()
 
     base_work = Path("data/work_batch")
@@ -1191,6 +1225,14 @@ def main():
 
     logger.info("Initializing LLM client (FactChat gpt-5.6-luna)...")
     llm_client = OpenAILLMClient()
+
+    if args.memory_preview:
+        if not args.only or len(selected) != 1:
+            parser.error("--memory-preview requires --only matching exactly one lecture")
+        if not selected[0].get("previous"):
+            parser.error(f"{selected[0]['id']} has no 'previous' key")
+        print(_load_previous_memory(selected[0], llm_client, base_work).model_dump_json(indent=2))
+        return
 
     tts_pipe = None
     if not args.skip_tts:

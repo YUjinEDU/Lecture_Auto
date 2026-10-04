@@ -76,3 +76,90 @@ def _golden_outputs(tmp_path: Path) -> dict[str, str]:
 def test_golden_no_previous_is_byte_identical_to_master(tmp_path, name):
     got = _golden_outputs(tmp_path)[name]
     assert got == (_GOLDEN / f"{name}.txt").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# With memory
+# ---------------------------------------------------------------------------
+from lecture_auto.pipeline.series_memory import load_or_create_memory, summarize_lecture  # noqa: E402
+from lecture_auto.schemas.lecture_plan import LectureMemory  # noqa: E402
+
+_MEM = LectureMemory(
+    lecture_id="prev", covered_concepts=["프로토타입", "MVP"], running_examples=["배달앱"],
+    closing_hook="다음 시간에는 스크럼을 다룹니다", source_sha256="x",
+)
+_MEM_JSON = json.dumps(
+    {"covered_concepts": ["프로토타입"], "running_examples": ["배달앱"], "closing_hook": "스크럼"},
+    ensure_ascii=False,
+)
+
+
+def test_memory_block_in_plan_and_first_section_only():
+    plan = _plan()
+    slides = [_make_slide(n, f"t{n}", "b") for n in (1, 2)]
+    assert "[지난 강의 요약" in build_lecture_plan_prompt(slides, "s", "n", 30.0, previous_memory=_MEM)
+    first = build_section_prompt(plan, plan.sections[0], slides, None, False, previous_memory=_MEM)
+    second = build_section_prompt(plan, plan.sections[1], _sec_slides(), None, False)
+    assert "다음 시간에는 스크럼을 다룹니다" in first and "다시 설명하지 말 것" in first
+    assert "[지난 강의 요약" not in second
+
+
+def _client(*replies):
+    c = MagicMock()
+    c.chat.side_effect = list(replies)
+    return c
+
+
+def test_summarize_ok_and_one_retry_and_two_failures():
+    ok = summarize_lecture(_client(_MEM_JSON), "n", {1: "가"})
+    assert ok.covered_concepts == ["프로토타입"]
+    c = _client("not json", f"```json\n{_MEM_JSON}\n```")
+    assert summarize_lecture(c, "n", {1: "가"}).closing_hook == "스크럼"
+    assert c.chat.call_count == 2
+    with pytest.raises(json.JSONDecodeError):
+        summarize_lecture(_client("x", "y"), "n", {1: "가"})
+
+
+def _write_scripts(work: Path, text: str) -> None:
+    (work / "scripts").mkdir(parents=True)
+    (work / "scripts" / "script_001.json").write_text(
+        json.dumps({"slide_number": 1, "script": text}, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def test_memory_cache_reuses_until_scripts_change(tmp_path):
+    _write_scripts(tmp_path, "원본")
+    c = _client(_MEM_JSON, _MEM_JSON)
+    load_or_create_memory(c, "prev", "n", tmp_path, "cfg")
+    load_or_create_memory(c, "prev", "n", tmp_path, "cfg")
+    assert c.chat.call_count == 1
+    (tmp_path / "scripts" / "script_001.json").write_text(
+        json.dumps({"slide_number": 1, "script": "수정됨"}), encoding="utf-8"
+    )
+    load_or_create_memory(c, "prev", "n", tmp_path, "cfg")
+    assert c.chat.call_count == 2
+
+
+def test_memory_missing_scripts_is_clear_error(tmp_path):
+    with pytest.raises(FileNotFoundError, match="no generated scripts"):
+        load_or_create_memory(MagicMock(), "prev", "n", tmp_path, "cfg")
+
+
+def test_process_lecture_without_previous_never_touches_series_memory(tmp_path):
+    from unittest.mock import patch
+
+    import scripts.batch_generate_lectures as b
+
+    item = {"id": "x", "name": "n", "subject": "s", "pdf": tmp_path / "x.pdf"}
+    for i, (extra, expect_called) in enumerate((({}, False), ({"previous": "p"}, True))):
+        wdir = tmp_path / f"w{i}"  # own work dir: the first run's prep flock stays held by its traceback
+        with patch.object(b, "_load_previous_memory", return_value=_MEM) as m, \
+             patch.object(b, "_resolve_pdf_input", return_value=tmp_path / "x.pdf"), \
+             patch.object(b, "parse_pdf", return_value=[_make_slide(1, "t", "b")]), \
+             patch.object(b, "render_slides", return_value=([tmp_path / "1.png"], None)), \
+             patch.object(b, "_generate_lecture_plan_cached", side_effect=RuntimeError("stop")) as plan_fn:
+            with pytest.raises(RuntimeError, match="stop"):
+                b.process_lecture({**item, **extra}, MagicMock(), None, wdir, tmp_path / "o")
+        assert m.called is expect_called
+        # No `previous`: the plan wrapper is called exactly as before S16 (no new kwarg).
+        assert ("previous_memory" in plan_fn.call_args.kwargs) is expect_called

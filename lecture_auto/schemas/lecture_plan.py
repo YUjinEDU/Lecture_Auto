@@ -45,6 +45,16 @@ class SectionSlideScript(BaseModel):
     script: str
 
 
+class LectureMemory(BaseModel):
+    """S16: what an earlier lecture of a series actually said (D-18)."""
+
+    lecture_id: str
+    covered_concepts: list[str] = Field(default_factory=list, max_length=12)
+    running_examples: list[str] = Field(default_factory=list, max_length=3)
+    closing_hook: str = ""
+    source_sha256: str
+
+
 class SectionScriptResult(BaseModel):
     section_summary: str
     carry_forward: CarryForward
