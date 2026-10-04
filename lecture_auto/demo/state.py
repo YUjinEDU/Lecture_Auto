@@ -150,13 +150,6 @@ def get_job(job_id: str) -> dict | None:
         return job.to_dict() if job else None
 
 
-def list_jobs() -> list[dict]:
-    with _LOCK:
-        jobs = [job.to_dict() for job in _JOBS.values()]
-    jobs.sort(key=lambda job: job["updated_at"], reverse=True)
-    return jobs
-
-
 def list_job_summaries() -> list[dict]:
     with _LOCK:
         jobs = [job.to_summary() for job in _JOBS.values()]

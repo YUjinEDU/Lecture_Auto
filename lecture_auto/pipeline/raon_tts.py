@@ -234,19 +234,6 @@ def evaluate_transcription(
     return TranscriptionCheck(status=status, reasons=reasons, transcript=transcribed, cer=cer)
 
 
-def check_transcription_fidelity(
-    pipe,
-    audio_path: str | Path,
-    expected_text: str,
-) -> list[str]:
-    """Check synthesized audio against script using Raon-Speech-9B STT.
-
-    Thin wrapper over :func:`evaluate_transcription` kept for existing
-    callers: same return value (``reasons``) for every input as before.
-    """
-    return evaluate_transcription(pipe, audio_path, expected_text).reasons
-
-
 def _trim_lead_tail_silence(wav: np.ndarray, sr: int = _SAMPLE_RATE) -> np.ndarray:
     """Trim excessive lead/tail silence, keeping a small natural pad.
 
@@ -1490,30 +1477,3 @@ def synthesize_raon_slide(
         )
 
     return output_path, ok
-
-
-def synthesize_raon_audio(
-    pipe,
-    scripts: list[dict],
-    audio_dir: Path,
-    speaker_audio: Path | str | None = None,
-) -> list[Path]:
-    """Synthesize audio for all slides in scripts sequentially."""
-    audio_dir = Path(audio_dir)
-    audio_dir.mkdir(parents=True, exist_ok=True)
-
-    wav_paths: list[Path] = []
-    for i, slide in enumerate(scripts, start=1):
-        text = slide.get("script", "")
-        out_path = audio_dir / f"slide_{i:03d}.wav"
-        logger.info("Synthesizing slide %d/%d (%d chars)...", i, len(scripts), len(text))
-        _, ok = synthesize_raon_slide(
-            pipe, text, out_path, speaker_audio=speaker_audio,
-            max_seconds=slide.get("target_seconds"),
-        )
-        if not ok:
-            logger.warning("Slide %d audio failed quality gate", i)
-        wav_paths.append(out_path)
-
-    logger.info("Synthesized %d slide audios in %s", len(wav_paths), audio_dir)
-    return wav_paths

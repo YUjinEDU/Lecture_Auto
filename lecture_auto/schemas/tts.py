@@ -2,7 +2,6 @@
 
 Exports:
     VoiceRegisterResponse  -- Response after registering a voice reference
-    TTSStatusResponse      -- Status of TTS processing for a job
     TTSRegenerateResponse  -- Response after requesting single-slide re-TTS
     PackageResponse        -- Final package download info
 """
@@ -16,16 +15,6 @@ class VoiceRegisterResponse(BaseModel):
     professor_id: str
     voice_ref_path: str
     status: str  # "registered"
-
-
-class TTSStatusResponse(BaseModel):
-    """Response model for TTS job status queries."""
-
-    job_id: str
-    task_id: str | None = None
-    total_slides: int
-    completed_slides: int
-    status: str  # "pending" | "processing" | "complete" | "error"
 
 
 class TTSRegenerateResponse(BaseModel):
