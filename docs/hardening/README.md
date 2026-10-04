@@ -51,7 +51,7 @@ hardening/
 | S15 | 말하는 문장 하이라이트 영상 (D-19, S14 이후) | 🔵 진행 중 | s15-highlight |
 | S17 | 오케스트레이션: 동적 claim + 크래시 재시작 + `produce.py` + `--fix-failed` + `--only` 콤마 | ✅ 병합 완료 | — |
 | S18 | TTS: 생성 상한을 판정 상한에 맞춤 + 처리량 벤치 스크립트 | ✅ 병합 완료 (b40f6e2) | — |
-| S19 | 대본: restyle 배치 통합(opt-in) + 발음 후보 자동 제안 `--suggest-pron` | 🔵 진행 중 | s19-script-quality |
+| S19 | 대본: restyle 배치 통합(opt-in) + 발음 후보 자동 제안 `--suggest-pron` | ✅ 병합 완료 | — |
 | S16a | 강의 간 메모리(opt-in `previous`, D-18) | ✅ 병합 완료 (881e9d2) | — |
 | S16b | 교수님 수정 학습 | ⏸ 보류 (D-18) | — |
 
