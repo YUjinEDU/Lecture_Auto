@@ -27,6 +27,7 @@ rules, EMU conversion, token-overlap thresholds, ffmpeg flags, SSE behavior).
 | `test_script_tasks.py` | Resumable script Celery task + checkpointing. |
 | `test_vlm_tasks.py` | Resumable VLM Celery task. |
 | `test_run.py` | CLI helpers (`confirm_step`, arg parser, `write_summary`, `sha256_file`). |
+| `test_subtitles.py` | S14: subtitle span detection / written-text recovery / cue split / SRT-VTT format + `scripts/annotate_lecture.py` (ffmpeg mocked). |
 
 ## Subdirectories
 | Directory | Purpose |
