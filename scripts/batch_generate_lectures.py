@@ -23,6 +23,7 @@ import json
 import logging
 import re
 import shutil
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -46,7 +47,11 @@ from lecture_auto.pipeline.cache import (
     write_cache_hash,
     write_text_atomic,
 )
-from lecture_auto.pipeline.pronunciation import apply_pronunciation, load_pronunciation_entries
+from lecture_auto.pipeline.pronunciation import (
+    apply_pronunciation,
+    find_unlisted_latin_tokens,
+    load_pronunciation_entries,
+)
 from lecture_auto.pipeline.lecture_plan import (
     _PLAN_SYSTEM_PROMPT,
     build_lecture_plan_prompt,
@@ -817,6 +822,9 @@ def process_lecture(
         return scripts_dir
 
     # 5. Synthesize Audio with Raon-Speech-9B (segmented + quality-gated, see raon_tts.py)
+    # S13: warn-only; same scan as --check. Never aborts the run.
+    for tok, nums in _scan_unlisted({n: sc.get("script", "") for n, sc in scripts.items()}, entries).items():
+        logger.warning("[5/6] pronunciation: %r not in approved dictionary (slides %s)", tok, nums)
     logger.info("[5/6] Synthesizing TTS with Raon-Speech-9B & Professor Voice Cloning...")
     ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
     approved_numbers = set(load_approvals(work_dir, lec_id).slides.keys())
@@ -895,6 +903,35 @@ def assemble_only(
         lec_id, work_dir, audio_dir, video_dir, out_mp4, slide_count,
         scripts, png_paths, wav_paths, ref_voice_bytes, entries,
     )
+
+
+def _scan_unlisted(texts: dict[int, str], entries: Sequence[dict]) -> dict[str, list[int]]:
+    """S13: token -> slide numbers where it stays unlisted (first-seen order)."""
+    found: dict[str, list[int]] = {}
+    for n in sorted(texts):
+        for tok in find_unlisted_latin_tokens(texts[n], list(entries)):
+            found.setdefault(tok, []).append(n)
+    return found
+
+
+def _cli_check(item: dict, base_work_dir: Path, entries: Sequence[dict]) -> int:
+    """``--check``: print unlisted Latin tokens of the on-disk scripts. Returns
+    the exit code (1 if any). Disk reads only -- no LLM/TTS model."""
+    scripts_dir = base_work_dir / item["id"] / "scripts"
+    files = sorted(scripts_dir.glob("script_*.json"))
+    if not files:
+        raise SystemExit(f"--check: no scripts in {scripts_dir} (generate scripts first)")
+    texts = {}
+    for f in files:
+        sc = json.loads(f.read_text(encoding="utf-8"))
+        texts[int(sc.get("slide_number") or f.stem.rsplit("_", 1)[1])] = sc.get("script", "")
+    unapproved = {e.get("written") for e in entries if not e.get("approved")}
+    found = _scan_unlisted(texts, entries)
+    for tok, nums in found.items():
+        mark = "  (사전에 미승인 항목으로 있음)" if tok in unapproved else ""
+        print(f"{tok}\t{','.join(map(str, nums))}{mark}")
+    print(f"[{item['id']}] unlisted tokens: {len(found)}")
+    return 1 if found else 0
 
 
 def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str, entries: Sequence[dict] = ()) -> None:
@@ -1118,6 +1155,11 @@ def main():
         help="S8-c: print a one-line-per-lecture progress table (optionally --only) to "
              "stdout and exit. Disk reads only -- no TTS model/LLM client, no writes.",
     )
+    approval_group.add_argument(
+        "--check", action="store_true",
+        help="S13: list Latin tokens in the scripts that the pronunciation dictionary doesn't "
+             "cover; exit 1 if any. Requires --only. Loads no TTS model/LLM client.",
+    )
     parser.add_argument(
         "--allow-failed", action="store_true",
         help="With --promote: allow promoting a candidate that failed the quality gate.",
@@ -1143,10 +1185,10 @@ def main():
     # approved:false, so this is a no-op until someone flips one to true.
     pronunciation_entries = load_pronunciation_entries(Path("config/pronunciation.yaml"))
 
-    approval_mode = bool(args.approve or args.approve_passing or args.promote or args.assemble_only)
+    approval_mode = bool(args.approve or args.approve_passing or args.promote or args.assemble_only or args.check)
     if approval_mode and not args.only:
         parser.error(
-            "--approve/--approve-passing/--promote/--assemble-only require --only <lecture id or index>"
+            "--approve/--approve-passing/--promote/--assemble-only/--check require --only <lecture id or index>"
         )
 
     selected = LECTURES
@@ -1178,6 +1220,10 @@ def main():
         # Approval-only commands touch only approved.json / on-disk audio --
         # never load the TTS model or the LLM client (SPEC S2 §3).
         item = selected[0]
+        if args.check:
+            if _cli_check(item, base_work, pronunciation_entries):
+                sys.exit(1)
+            return
         if args.approve:
             _cli_approve(item, base_work, args.approve, pronunciation_entries)
         if args.approve_passing:

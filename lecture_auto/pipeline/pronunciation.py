@@ -50,3 +50,17 @@ def apply_pronunciation(text: str, entries: list[dict]) -> str:
     pattern = "|".join(re.escape(w) for w in spoken_by_written)
     regex = re.compile(_BOUNDARY.format(pattern))
     return regex.sub(lambda m: spoken_by_written[m.group(0)], text)
+
+
+_LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9\-]*")
+
+
+def find_unlisted_latin_tokens(text: str, entries: list[dict]) -> list[str]:
+    """Latin tokens still in *text* after ``apply_pronunciation`` (S13).
+
+    These are the terms the TTS would read with an English/garbled voice:
+    not in the dictionary, or only as an unapproved entry. De-duplicated,
+    first-seen order. Runs on the substituted text (not the raw one) so
+    multi-word keys like "Burndown Chart" cover their parts.
+    """
+    return list(dict.fromkeys(_LATIN_TOKEN.findall(apply_pronunciation(text, entries))))
