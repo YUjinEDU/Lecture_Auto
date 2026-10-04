@@ -15,7 +15,7 @@ them. Change a model here and you change the contract for all four.
 | `manifest.py` | The parse-stage data model: `FontInfo`, `TextRun`, `TextParagraph`, `ShapeRecord`, `SlideRecord`, `LectureStyle`, and the top-level `SlideManifest`. |
 | `job_status.py` | `JobStatus` enum + `ProgressEvent` (job_id, stage, current/total, percent, status) — the SSE/progress contract. |
 | `script.py` | `ScriptUpdateRequest`, `ScriptResponse`, `ScriptApproveResponse` for the script CRUD endpoints. |
-| `tts.py` | `VoiceRegisterResponse`, `TTSStatusResponse`, `TTSRegenerateResponse`, `PackageResponse`. |
+| `tts.py` | `VoiceRegisterResponse`, `TTSRegenerateResponse`, `PackageResponse`. |
 | `lecture_plan.py` | `LecturePlan`/`LectureSection`/`CarryForward`/`SectionScriptResult`, plus S16 `LectureMemory` (previous-lecture summary: concepts ≤12, examples ≤3, closing hook, source sha). |
 | `request.py` | `UploadResponse` for file upload. |
 | `production.py` | Batch production contract (future web UI): `ApprovedSlide`/`ApprovalManifest` (`approved.json`) and `TimelineEntry`/`Timeline` (`*.timeline.json`, incl. optional `stt_status`/`cer`/`gate_ok`), `SlideQC`/`SegmentQC` (`*.wav.qc.json`), `TranscriptionCheck`. Written via `pipeline/approval.py`. |

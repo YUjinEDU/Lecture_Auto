@@ -23,10 +23,10 @@ demo layers resumable.
 | `parser_pdf.py` | PDF → `SlideRecord` via PyMuPDF; title detection, pt→EMU bbox, pdfplumber table fallback. Exposes `parse_input()` dispatcher: `.pdf` → direct, `.pptx` → LibreOffice → PDF → parse. |
 | `renderer.py` | `render_slides()`: PPTX → PDF (LibreOffice headless) → numbered PNGs (pdf2image), plus font-issue detection. |
 | `tofu_detector.py` | Korean font-substitution / "tofu" (□□□) detection from `soffice` stderr + near-white pixel heuristic. |
-| `vlm.py` | Qwen3-VL via vLLM offline inference. Builds **text-grounded** multimodal prompts, generates per-slide `VlmNote`, computes token overlap. |
+| `vlm.py` | Slide image analysis via the unified OpenAI client (`LLMClient.analyze_image`). Builds **text-grounded** multimodal prompts, generates per-slide `VlmNote`, computes token overlap. |
 | `script_gen.py` | Lecture-script generation by calling `claude -p` as an asyncio subprocess; builds style/context prompts, parses JSON. |
 | `tts.py` | Qwen3-TTS voice-clone synthesis: per-slide WAV + silence handling. `merge_audio()` takes a directory (glob, legacy callers) **or an explicit ordered WAV list** (no glob). |
-| `raon_tts.py` | Raon-Speech-9B synthesis used by the production batch: segment splitting, seed retries, continuation, energy/silence quality gate, loudness normalization. `evaluate_transcription()` → `TranscriptionCheck` (`pass`/`fail`/`unavailable` + CER, recorded only — no CER threshold); `check_transcription_fidelity()` is its legacy `reasons` wrapper. `synthesize_raon_slide(qc_path=...)` writes a per-slide `SlideQC` JSON (gate reasons, STT, segments with `continuation_from`, `boundary_review`). |
+| `raon_tts.py` | Raon-Speech-9B synthesis used by the production batch: segment splitting, seed retries, energy/silence quality gate, loudness normalization. `evaluate_transcription()` → `TranscriptionCheck` (`pass`/`fail`/`unavailable` + CER, recorded only — no CER threshold). `synthesize_raon_slide(qc_path=...)` writes a per-slide `SlideQC` JSON (gate reasons, STT, segments with seed/call/STT fields). |
 | `approval.py` | Pure approval/timeline functions: `load_approvals`, `save_approvals`, `approve`, `verify_approved` (sha check), `promote_candidate` (cand → main, old kept as `.prev.wav`), `build_timeline`. |
 | `pronunciation.py` | `apply_pronunciation()` / `load_pronunciation_entries()` for `config/pronunciation.yaml`: only `approved: true` entries, ASCII word-boundary match, longest first. Applied to TTS input only — script JSON is never rewritten. |
 | `cache.py` | Content-hash sidecar cache (`content_hash`, `is_cache_valid`, `write_cache_hash`, `write_text_atomic`). |
@@ -48,7 +48,7 @@ demo layers resumable.
 
 ### Testing Requirements
 - Mirror tests in `tests/test_<module>.py`; all externals are mocked. Don't call real
-  vLLM/TTS/ffmpeg/soffice in tests.
+  OpenAI/TTS/ffmpeg/soffice in tests.
 
 ### Common Patterns & domain rules
 - **Hallucination guard (VLM-02):** parsed slide text is injected into the VLM prompt.
@@ -63,7 +63,7 @@ demo layers resumable.
 - `lecture_auto/schemas/manifest.py` (`SlideRecord`, `ShapeRecord`, `LectureStyle`).
 
 ### External
-- vLLM + qwen-vl-utils, qwen-tts, PyMuPDF, pdfplumber, python-pptx, pdf2image/poppler,
+- OpenAI client (vision + script), qwen-tts, PyMuPDF, pdfplumber, python-pptx, pdf2image/poppler,
   Pillow, soundfile, LibreOffice, ffmpeg, Claude CLI.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

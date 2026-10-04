@@ -15,7 +15,7 @@ re-video only, rebuild after a script edit).
 | File | Description |
 |------|-------------|
 | `__init__.py` | Demo package doc. |
-| `state.py` | `DemoJob` dataclass + in-memory registry (`create_job`/`get_job`/`list_jobs`/`list_job_summaries`/`delete_job`/`rename_job`) and stage tracking. |
+| `state.py` | `DemoJob` dataclass + in-memory registry (`create_job`/`get_job`/`list_job_summaries`/`delete_job`/`rename_job`) and stage tracking. |
 | `jobs.py` | Disk persistence: job snapshots (save/load), uploaded-PDF + voice-reference saving, versioned "library" artifacts (`_add_version_entry`, `_refresh_library_artifacts`). |
 | `orchestration.py` | The driver: `run_demo_pipeline` / `launch_demo_pipeline`, plus reruns — `update_script_and_rebuild`, `update_glossary`, `rerun_tts_only`, `rerun_video_only`, `rerun_scripts_and_media`, `launch_rerun`. |
 | `synthesis.py` | Media stages with fallbacks: `_render_script_stage`, `_run_tts_loop` (Qwen → flite → local-Korean), `_assemble_final_video`, `_render_media_stage`. |

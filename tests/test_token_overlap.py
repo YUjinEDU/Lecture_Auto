@@ -7,25 +7,12 @@ TDD RED phase: these tests define expected behavior before implementation.
 from __future__ import annotations
 
 import json
-import sys
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Minimal stubs for heavy dependencies not in test env
-# ---------------------------------------------------------------------------
-vllm_stub = types.ModuleType("vllm")
-vllm_stub.LLM = MagicMock
-vllm_stub.SamplingParams = MagicMock
-sys.modules.setdefault("vllm", vllm_stub)
-
-qwen_stub = types.ModuleType("qwen_vl_utils")
-sys.modules.setdefault("qwen_vl_utils", qwen_stub)
-
-from lecture_auto.pipeline.vlm import (  # noqa: E402
+from lecture_auto.pipeline.vlm import (
     VlmNote,
     compute_token_overlap,
     generate_single_note,

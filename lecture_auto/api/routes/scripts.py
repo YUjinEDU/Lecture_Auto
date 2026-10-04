@@ -10,7 +10,6 @@ Provides the backend API that the professor's review UI consumes:
 """
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from redis.asyncio import Redis as AsyncRedis
 from sse_starlette.sse import EventSourceResponse
 
 from lecture_auto.api.deps import get_async_redis
+from lecture_auto.pipeline.cache import write_text_atomic
 from lecture_auto.schemas.manifest import SlideManifest
 from lecture_auto.schemas.script import (
     ScriptApproveResponse,
@@ -65,14 +65,6 @@ def _read_all_scripts(scripts_dir: Path) -> list[dict]:
     return scripts
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
-    """Write JSON atomically via .tmp + os.rename."""
-    tmp_path = str(path) + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.rename(tmp_path, str(path))
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -114,7 +106,7 @@ async def update_script(job_id: str, slide_number: int, body: ScriptUpdateReques
     if body.transition_to_next is not None:
         updated = {**updated, "transition_to_next": body.transition_to_next}
 
-    _atomic_write_json(script_path, updated)
+    write_text_atomic(script_path, json.dumps(updated, ensure_ascii=False, indent=2))
     return updated
 
 

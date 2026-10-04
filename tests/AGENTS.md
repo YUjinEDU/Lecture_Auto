@@ -5,7 +5,7 @@
 
 ## Purpose
 Unit + integration tests mirroring the backend modules. The suite runs **without GPU or
-network**: vLLM, Qwen-TTS, `claude -p`, `soffice`, `ffmpeg`, and Redis are all mocked or
+network**: OpenAI, Qwen-TTS, `claude -p`, `soffice`, `ffmpeg`, and Redis are all mocked or
 faked. Tests double as executable specs for the pipeline's contracts (title-detection
 rules, EMU conversion, token-overlap thresholds, ffmpeg flags, SSE behavior).
 
@@ -40,7 +40,7 @@ rules, EMU conversion, token-overlap thresholds, ffmpeg flags, SSE behavior).
 
 ### Working In This Directory
 - Mirror the source: a change in `lecture_auto/pipeline/X.py` belongs in `tests/test_X.py`.
-- **Mock the externals, never call them.** Use `unittest.mock` for vLLM/TTS/subprocess;
+- **Mock the externals, never call them.** Use `unittest.mock` for OpenAI/TTS/subprocess;
   build tiny real PDFs/PPTX/WAVs in-memory when a fixture needs real bytes.
 - Discovery is `Test*` classes / `test_*` functions (see `pyproject.toml`).
 
