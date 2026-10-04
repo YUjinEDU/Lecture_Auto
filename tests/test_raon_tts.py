@@ -122,7 +122,7 @@ class _FakePipe:
     """Minimal stand-in for RaonPipeline.tts() -- returns one waveform per call, in order."""
 
     def __init__(self, waveforms):
-        self.task_params = {"tts": {}, "tts_continuation": {}}
+        self.task_params = {"tts": {}}
         self._waveforms = list(waveforms)
         self.calls = 0
 
@@ -132,13 +132,6 @@ class _FakePipe:
         if wav is None:
             raise TypeError("'NoneType' object is not subscriptable")  # mirrors modeling_raon.py's real failure
         return wav.tolist(), 24000  # plain list: no .squeeze/.cpu, exercises the numpy.array() fallback path
-
-    def tts_continuation(self, target_text, ref_audio, ref_text, **kwargs):
-        # Segments after the first go through this, not tts(). Without it the
-        # fake raises AttributeError, every seed is swallowed by the retry
-        # handler, and a "clean audio" test would silently exercise only the
-        # all-seeds-failed path.
-        return self.tts(target_text)
 
 
 def _speech_then_gap(gap_seconds: float, sr: int = 24000) -> np.ndarray:
@@ -418,21 +411,6 @@ def test_speech_reference_makes_a_quiet_clip_read_as_silence():
     assert _voiced_ratio(quiet, sr, reference=ref) == 0.0  # judged against real speech
 
 
-def test_plan_attempts_is_always_plain_tts_even_with_continuation_requested():
-    """S9-b/D-15: tts_continuation is retired. The S9 diagnostic experiment
-    found that when its prefill was itself imperfect, 20/20 continuation
-    draws produced unrelated speech with no gate able to tell a bad join from
-    a good one after the fact -- worse than the crash-repeats-every-seed
-    problem this function used to route around. has_continuation=True must
-    no longer request it.
-    """
-    attempts_with = plan_attempts(has_continuation=True)
-    attempts_without = plan_attempts(has_continuation=False)
-    assert [use for _, use in attempts_with] == [False, False, False, False]
-    assert attempts_with == attempts_without
-    assert len(attempts_with) == 4
-
-
 def test_short_segments_are_not_split_further(tmp_path):
     """A failing short segment is reported, not recursively redrawn.
 
@@ -471,10 +449,7 @@ def test_split_children_carry_their_own_text_not_the_parents():
     synthesized the parent into the first half's slot and the slide said the
     second half twice.
     """
-    import tempfile
-    from pathlib import Path as _Path
-
-    from lecture_auto.pipeline.raon_tts import _SplitState, _synthesize_with_splitting
+    from lecture_auto.pipeline.raon_tts import _synthesize_with_splitting
 
     sr = 24000
     attempts = len(plan_attempts(has_continuation=False))
@@ -485,10 +460,7 @@ def test_split_children_carry_their_own_text_not_the_parents():
     # _MAX_DURATION_RATIO * expected_seconds).
     pipe = _FakePipe([_speech_then_gap(6.0, sr)] * attempts + [_tone(5.5, sr)] * 40)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        pieces, ok, _ = _synthesize_with_splitting(
-            pipe, parent, None, None, depth=0, state=_SplitState(_Path(tmp))
-        )
+    pieces, ok = _synthesize_with_splitting(pipe, parent, None, depth=0)
 
     assert ok, "both halves are clean, so the split should have been accepted"
     assert len(pieces) == 2, f"expected the two halves, got {len(pieces)}"
@@ -864,73 +836,6 @@ def test_transcription_check_import_path_from_raon_tts_is_the_schema_class():
     assert TranscriptionCheck is SchemaCheck
 
 
-# ---------------------------------------------------------------------------
-# S6-c / F6 (#7): redrawing a continuation source after a later segment
-# already continued from it must flag that later segment in boundary_review.
-#
-# raon_tts.py's own second pass (search "Second pass" in synthesize_raon_slide)
-# is exactly this case: it redraws a piece against the whole-slide reference
-# AFTER every segment (including ones that used it as a tts_continuation
-# prefill) has already been generated. This is not a hypothetical -- it is
-# the shipped redraw path, evidenced by test_quiet_segment_is_redrawn_against_
-# the_slide_level above triggering the same code path.
-# ---------------------------------------------------------------------------
-
-def test_boundary_review_stays_empty_even_in_its_old_trigger_scenario(tmp_path):
-    """S9-b/D-15: tts_continuation is retired, so continuation_from is always
-    None and boundary_review can never be populated -- not even in the exact
-    setup that used to trigger it (a redraw replacing a piece a later piece
-    was recorded as continuing from). Segment 1 was never actually joined to
-    segment 0 -- both are plain tts, independent draws -- so this stays true
-    whether or not segment 0 needs a redraw. S10-a/D-16: it no longer does
-    (quiet is loudness-normalized to match its neighbours before either
-    segment is even joined), but the assertions below hold either way, so
-    the extra fallback waveforms are simply unused.
-    """
-    import json as _json
-
-    sr = 24000
-    quiet = _tone(10.0, sr, amp=0.005)
-    loud = _tone(10.0, sr, amp=0.3)
-    pipe = _FakePipe([quiet, loud, loud] + [loud] * 10)
-
-    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
-    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
-    assert len(split_into_segments(s1 + " " + s2)) == 2, "test assumes exactly 2 top-level segments"
-
-    out = tmp_path / "slide.wav"
-    qc_path = tmp_path / "slide.wav.qc.json"
-    synthesize_raon_slide(pipe, s1 + " " + s2, out, max_seconds=60.0, qc_path=qc_path)
-
-    data = _json.loads(qc_path.read_text(encoding="utf-8"))
-    seg0, seg1 = data["segments"]
-    assert seg0["fallback"] is False  # the redraw was adopted, not left failing
-    assert seg1["call"] == "tts"
-    assert seg1["continuation_from"] is None
-    assert data["boundary_review"] == []
-
-
-def test_boundary_review_empty_when_no_redraw_replaces_a_continuation_source(tmp_path):
-    """Same shape, but both segments come out loud on the first pass -- no
-    redraw fires, so nothing needs re-listening to. Proves boundary_review
-    isn't populated unconditionally."""
-    import json as _json
-
-    sr = 24000
-    loud = _tone(10.0, sr, amp=0.3)
-    pipe = _FakePipe([loud] * 6)
-
-    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
-    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
-
-    out = tmp_path / "slide.wav"
-    qc_path = tmp_path / "slide.wav.qc.json"
-    synthesize_raon_slide(pipe, s1 + " " + s2, out, max_seconds=60.0, qc_path=qc_path)
-
-    data = _json.loads(qc_path.read_text(encoding="utf-8"))
-    assert data["boundary_review"] == []
-
-
 def test_verify_stt_requested_but_pipe_has_no_stt_records_unavailable(tmp_path):
     """verify_stt=True on a pipe without .stt (e.g. a fake in tests, or a real
     pipe built without the STT head) must record status=unavailable in the QC
@@ -1176,28 +1081,6 @@ def test_verify_stt_fallback_prefers_lowest_cer_when_all_fail():
 
     assert ok is False
     assert len(audio) == int(durations[1] * sr), "the lowest-CER (second) attempt must be kept as the fallback"
-
-
-def test_synthesize_slide_never_calls_tts_continuation(tmp_path):
-    """S9-b/D-15: at the full synthesize_raon_slide level (not just
-    plan_attempts), no segment of a multi-segment slide ever calls
-    tts_continuation -- the join path this module used to route every
-    segment after the first through."""
-    from unittest.mock import MagicMock
-
-    s1 = "첫 번째 문장을 아주 충분히 길게 만들어서 확실하게 하나의 독립된 조각이 되도록 열심히 작성하는 문장입니다."
-    s2 = "두 번째 문장도 마찬가지로 아주 충분히 길게 만들어서 확실하게 별도의 조각이 되도록 열심히 작성하는 문장입니다."
-    text = s1 + " " + s2
-    assert len(split_into_segments(text)) == 2, "test assumes exactly 2 top-level segments"
-
-    pipe = _FakePipe([_tone(10.0)] * 10)
-    pipe.tts_continuation = MagicMock(side_effect=AssertionError("tts_continuation must not be called (S9-b)"))
-    out = tmp_path / "slide.wav"
-
-    _, ok = synthesize_raon_slide(pipe, text, out, max_seconds=60.0)
-
-    assert ok is True
-    pipe.tts_continuation.assert_not_called()
 
 
 def test_speech_rate_constants_are_intentionally_separated():

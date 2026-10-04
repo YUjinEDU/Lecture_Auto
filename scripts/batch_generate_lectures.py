@@ -384,8 +384,8 @@ def _synthesize_all_slides(
         out_wav = audio_dir / f"slide_{n:03d}.wav"
         if claim is None and (n - 1) % shard_count != shard_index:
             # Another process on another GPU owns this slide. Slides are fully
-            # independent -- tts_continuation only ever references a segment
-            # from the same slide -- so splitting them costs no quality.
+            # independent (each segment is a plain tts draw, no cross-slide state) --
+            # so splitting them costs no quality.
             wav_paths.append(out_wav)
             continue
         if n in approved_numbers and (target_slides is None or n not in target_slides):
