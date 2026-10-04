@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -168,9 +169,13 @@ def test_cli_burn_copies_audio_keeps_original(tmp_path):
         al.run(LEC, work, out, res, ENTRIES, do_burn=True)
     cmd = run.call_args.args[0]
     assert cmd[0] == "ffmpeg" and "-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "copy"
-    assert cmd[cmd.index("-i") + 1] == str(out / LEC / f"{LEC}.mp4")
-    assert cmd[-1] == str(res / f"{LEC}_subtitled.mp4")
+    # ffmpeg runs with cwd=srt.parent, so input/output must be absolute (relative
+    # --output-dir broke the real run).
+    assert cmd[cmd.index("-i") + 1] == str((out / LEC / f"{LEC}.mp4").resolve())
+    assert cmd[-1] == str((res / f"{LEC}_subtitled.mp4").resolve())
+    assert all(Path(cmd[i]).is_absolute() for i in (cmd.index("-i") + 1, len(cmd) - 1))
     assert any("NanumSquareRound" in c for c in cmd)
+    assert cmd[cmd.index("-vf") + 1].startswith("pad=")  # captions in a band, not over the slide
     assert (out / LEC / f"{LEC}.mp4").read_bytes() == b"ORIGINAL"
 
 

@@ -81,10 +81,15 @@ def _esc(p: str) -> str:
 
 
 def burn(mp4: Path, srt: Path, out: Path, font: str) -> None:
-    """Re-encode video only (``-c:a copy``); the subtitle is addressed relative to cwd to dodge path escaping."""
-    style = f"FontName={font},FontSize=22,Outline=2"
-    vf = f"subtitles='{_esc(srt.name)}':force_style='{style}'"
-    cmd = ["ffmpeg", "-y", "-i", str(mp4), "-vf", vf, "-c:v", "libx264", "-c:a", "copy", str(out)]
+    """Re-encode video only (``-c:a copy``) with a caption band below the slide; the subtitle
+    is addressed relative to cwd to dodge path escaping."""
+    # Slides fill the frame edge to edge, so overlaid captions cover content. Add an
+    # 18% black band under the slide and set the captions inside it instead.
+    style = f"FontName={font},FontSize=14,Outline=0,MarginV=6"
+    vf = f"pad=iw:trunc(ih*1.18/2)*2:0:0:color=black,subtitles='{_esc(srt.name)}':force_style='{style}'"
+    # cwd is srt.parent (see docstring), so every other path must be absolute.
+    cmd = ["ffmpeg", "-y", "-i", str(mp4.resolve()), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
+           "-c:a", "copy", str(out.resolve())]
     res = subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=srt.parent)
     if res.returncode != 0:
         raise RuntimeError(f"ffmpeg failed (exit {res.returncode}):\n{res.stderr[-2000:]}")
