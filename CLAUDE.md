@@ -46,11 +46,14 @@ description of what's wired up — check `lecture_auto/*/AGENTS.md` and the code
 # Install (uv-managed; lockfile is uv.lock)
 uv sync --extra dev
 
-# Run the whole test suite (config in pyproject.toml, testpaths=["tests"])
-pytest
+# Run the whole test suite (config in pyproject.toml, testpaths=["tests"]).
+# Use the venv python: a bare `pytest` may resolve to a system/anaconda one that
+# lacks the deps (24 collection errors). From a git worktree, `python -m` makes
+# the worktree's lecture_auto win over the editable install of the main checkout.
+.venv/bin/python -m pytest -q
 # Run one file / one test
-pytest tests/test_script_gen.py
-pytest tests/test_script_gen.py::test_build_prompt_includes_style -v
+.venv/bin/python -m pytest tests/test_script_gen.py
+.venv/bin/python -m pytest tests/test_script_gen.py::test_build_prompt_includes_style -v
 
 # Interactive CLI pipeline (local, human-in-the-loop, 6 stages)
 python run.py --pptx path/to/lecture.pptx
