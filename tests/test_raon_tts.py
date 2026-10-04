@@ -517,7 +517,7 @@ def test_trace_records_every_attempt_and_redraw(tmp_path, monkeypatch):
         rows = [_json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
         assert len(rows) >= 2, "each draw must be recorded, not just the last"
         assert [r["outcome"] for r in rows][:2] == ["gate_fail", "gate_fail"]
-        assert all("max_new_tokens" in r and "seconds" in r for r in rows)
+        assert all("max_new_tokens" in r and "seconds" in r and r["expected_seconds"] == 5.0 for r in rows)
         # No invented token counts: the pipeline returns a waveform, not usage.
         assert all("tokens_generated" not in r for r in rows)
     finally:
@@ -1520,3 +1520,21 @@ def test_fallback_segment_fails_the_slide_under_segment_stt():
     check = _slide_stt_from_segments(segs, metas)
     assert check.status == "fail"
     assert "seg1:fallback(cer)" in check.reasons
+
+
+def test_max_new_tokens_cap_uses_token_cap_ratio():
+    import math
+
+    from lecture_auto.pipeline import raon_tts as m
+
+    assert m._TOKEN_CAP_RATIO == m._MAX_DURATION_RATIO + 0.05
+    pipe = _FakePipe([_tone(10.0, 24000)])
+    m._synthesize_segment_with_gate(pipe, "짧은 문장 하나입니다.", None, expected_seconds=10.0)
+    want = math.ceil(10.0 * m._CODEC_FRAME_RATE * m._TOKEN_CAP_RATIO) + 8
+    assert pipe.task_params["tts"]["max_new_tokens"] == want == 184
+    lo = _FakePipe([_tone(1.0, 24000)] * 40)
+    m._synthesize_segment_with_gate(lo, "짧", None, expected_seconds=0.1)
+    assert lo.task_params["tts"]["max_new_tokens"] == m._MIN_MAX_NEW_TOKENS
+    hi = _FakePipe([_tone(1.0, 24000)] * 40)
+    m._synthesize_segment_with_gate(hi, "짧", None, expected_seconds=500.0)
+    assert hi.task_params["tts"]["max_new_tokens"] == m._MAX_MAX_NEW_TOKENS

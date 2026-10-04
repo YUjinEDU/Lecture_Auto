@@ -350,6 +350,13 @@ _MAX_PAUSE_S = 1.0
 # duration ratio raised from 0.70 to 0.78 (catches truncation/early stop in slide 041).
 _MIN_VOICED_RATIO = 0.45
 _MAX_DURATION_RATIO = 1.35
+# S18-a: generation cap as a multiple of expected duration. Measured on 3,870
+# traced attempts: long-gate failures ran to 1.47x median / 1.55x p95 of
+# expected (i.e. right up to the old 1.5x cap), while passing attempts are
+# <=1.13x (p95) and anything > _MAX_DURATION_RATIO is rejected anyway. The
+# gate measures *after* leading/trailing silence trim, so the pre-trim cap
+# keeps 0.05 of slack above the gate ratio. Stops doomed generations early.
+_TOKEN_CAP_RATIO = _MAX_DURATION_RATIO + 0.05
 _MAX_INTERNAL_SILENCE_S = 2.8
 
 # Lower duration bound: catches lost narration when generation terminates early.
@@ -850,7 +857,7 @@ def _synthesize_segment_with_gate(
     # long enough is not cut off mid-word by its own budget.
     max_new_tokens = int(
         min(
-            max(math.ceil(expected_seconds * _CODEC_FRAME_RATE * 1.5) + 8, _MIN_MAX_NEW_TOKENS),
+            max(math.ceil(expected_seconds * _CODEC_FRAME_RATE * _TOKEN_CAP_RATIO) + 8, _MIN_MAX_NEW_TOKENS),
             _MAX_MAX_NEW_TOKENS,
         )
     )
@@ -968,6 +975,7 @@ def _synthesize_segment_with_gate(
         _trace(
             event="attempt", call="tts_continuation" if use_continuation else "tts",
             seed=seed, depth=depth, chars=len(text), max_new_tokens=max_new_tokens,
+            expected_seconds=round(expected_seconds, 2),
             seconds=round(time.monotonic() - started, 2),
             out_seconds=round(len(trimmed) / sr, 2), outcome="pass" if passed else "gate_fail",
             cer=cer, stt_status=stt_status, reason=reason,
