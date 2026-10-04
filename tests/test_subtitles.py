@@ -172,3 +172,15 @@ def test_cli_burn_copies_audio_keeps_original(tmp_path):
     assert cmd[-1] == str(res / f"{LEC}_subtitled.mp4")
     assert any("NanumSquareRound" in c for c in cmd)
     assert (out / LEC / f"{LEC}.mp4").read_bytes() == b"ORIGINAL"
+
+
+def test_split_cue_sentence_first_and_no_orphans():
+    text = ("자, 애자일이 왜 등장했는지 살펴보고, Scrum의 기본 구조가 어떤 방식으로 움직이는지 연결해서 보는 거고요. "
+            "그 다음에 보겠습니다.")
+    cues = split_cue(text, 0.0, 10.0)
+    joined = [t.replace("\n", " ") for _, _, t in cues]
+    # sentence boundary respected: the second sentence never shares a cue with the first's tail
+    assert joined[-1] == "그 다음에 보겠습니다."
+    # no lone tiny cue like "거고요."
+    assert all(len(t) >= 8 for t in joined)
+    assert all(len(line) <= 26 for _, _, t in cues for line in t.split("\n"))

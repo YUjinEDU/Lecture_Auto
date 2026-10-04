@@ -89,24 +89,46 @@ def _wrap(text: str, line_chars: int) -> str:
     return f"{text[:k]}\n{text[k + 1:]}"
 
 
-def split_cue(text: str, start: float, end: float, max_chars: int = 42) -> list[Cue]:
-    """Split one segment into <=2-line cues of <= max_chars; time proportional to chars."""
-    words, pieces, cur = _norm(text).split(" "), [], ""
-    for w in words:
-        if cur and len(cur) + 1 + len(w) > max_chars:
+def _balanced(sentence: str, max_chars: int) -> list[str]:
+    """Split one sentence into the fewest pieces <= max_chars, of near-equal length,
+    preferring a cut right after a comma when one sits near the target length."""
+    words = sentence.split(" ")
+    if len(sentence) <= max_chars or len(words) == 1:
+        return [sentence]
+    n = -(-len(sentence) // max_chars)
+    target = len(sentence) / n
+    pieces, cur = [], ""
+    for i, w in enumerate(words):
+        cur = f"{cur} {w}" if cur else w
+        rest = " ".join(words[i + 1:])
+        if not rest or len(pieces) == n - 1:
+            continue
+        nxt = len(cur) + 1 + len(words[i + 1])
+        if (w.endswith(",") and len(cur) >= 0.7 * target) or nxt > target * 1.15 or nxt > max_chars:
             pieces.append(cur)
-            cur = w
-        else:
-            cur = f"{cur} {w}" if cur else w
-    if cur:
-        pieces.append(cur)
+            cur = ""
+    pieces.append(cur) if cur else None
+    return [p for p in pieces if p]
+
+
+def split_cue(text: str, start: float, end: float, max_chars: int = 42) -> list[Cue]:
+    """Split one segment into cues: sentence boundaries first, long sentences into
+    near-equal pieces <= max_chars, very short pieces (< 8 chars, e.g. a lone "거고요.")
+    merged into the previous one. Time is proportional to chars; text wrapped to <= 2 lines."""
+    pieces: list[str] = []
+    for sent in (x for x in _SENTENCE_END_RE.split(_norm(text)) if x):
+        for p in _balanced(sent, max_chars):
+            if pieces and len(p) < 8 and len(pieces[-1]) + 1 + len(p) <= max_chars + 10:
+                pieces[-1] = f"{pieces[-1]} {p}"
+            else:
+                pieces.append(p)
     if not pieces:
         return []
     total, acc, cues = sum(len(p) for p in pieces), 0, []
     for p in pieces:
         s = start + (end - start) * acc / total
         acc += len(p)
-        cues.append((s, start + (end - start) * acc / total, _wrap(p, max_chars // 2)))
+        cues.append((s, start + (end - start) * acc / total, _wrap(p, max(max_chars // 2, (len(p) + 1) // 2))))
     return cues
 
 
