@@ -32,6 +32,7 @@ demo layers resumable.
 | `cache.py` | Content-hash sidecar cache (`content_hash`, `is_cache_valid`, `write_cache_hash`, `write_text_atomic`). |
 | `video.py` | `assemble_video()`: single ffmpeg pass (concat demuxer of slide PNGs + merged audio of exactly the resolved slide WAVs). `strict=True` raises on a missing WAV instead of skipping. |
 | `restyle.py` | S12: `restyle_scripts()` rewrites already-generated slide scripts into spoken register (합니다/습니다 down, 그래서/이제 up) without touching content; per-slide length/Latin-token/digit-token/formal-frequency validation, one batched re-ask, else keeps the original. |
+| `subtitles.py` | S14: sentence-level subtitles from existing slide WAVs — `segment_spans` (exact-zero pause detection, proportional fallback), `written_segments` (restore on-screen English terms), `split_cue`, `to_srt`/`to_vtt`. Pure, no TTS. CLI: `scripts/annotate_lecture.py`. |
 
 ## For AI Agents
 
