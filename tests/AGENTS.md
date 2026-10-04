@@ -17,6 +17,7 @@ rules, EMU conversion, token-overlap thresholds, ffmpeg flags, SSE behavior).
 | `test_renderer.py` | LibreOffice + pdf2image: `soffice` arg correctness, temp-dir cleanup, `slide_NNN.png` naming, DPI. |
 | `test_tofu_detector.py` | Korean font-issue detection from `soffice` stderr + pixel analysis. |
 | `test_vlm.py` | VLM note generation, schema validation, malformed-JSON retry. |
+| `test_s19_script_quality.py` | S19: batch `"restyle": True` step (cache, hand-edited/kept_original/approved interactions, report) and `--suggest-pron` (mock LLM; config file untouched). |
 | `test_token_overlap.py` | Token-overlap ratio + `needs_review` heuristic, extended `VlmNote`. |
 | `test_script_gen.py` | Claude script prompts (context window, style params, target seconds) + JSON parsing. |
 | `test_tts.py` | TTS file naming, voice-ref forwarding, empty/whitespace → silence. |

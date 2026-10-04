@@ -29,6 +29,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from lecture_auto.llm.openai_client import OpenAILLMClient
 from lecture_auto.pipeline.approval import (
     approve,
@@ -59,9 +61,13 @@ from lecture_auto.pipeline.lecture_plan import (
     generate_lecture_plan,
     generate_section_scripts,
     parse_reference_script,
+    strip_markdown_json_fence,
     summarize_reference_outline,
 )
 from lecture_auto.pipeline.parser_pdf import parse_pdf
+from lecture_auto.pipeline.restyle import _SYSTEM_PROMPT as _RESTYLE_SYSTEM_PROMPT
+from lecture_auto.pipeline.restyle import _load_instruction as _load_restyle_instruction
+from lecture_auto.pipeline.restyle import RestyleResult, compute_metrics, restyle_scripts
 from lecture_auto.pipeline.series_memory import load_or_create_memory
 from lecture_auto.pipeline.raon_tts import (
     TTS_MODEL_ID,
@@ -687,6 +693,85 @@ def validate_section_result(result: SectionScriptResult, section) -> None:
 
 
 
+def _restyle_section_cached(llm_client, result: SectionScriptResult, section_result_path: Path):
+    """S19-a: spoken-register rewrite of one section (opt-in via ``"restyle": True``).
+
+    Returns ``(restyled SectionScriptResult, {slide_number: RestyleResult})``.
+    Cache: ``section_NNN.restyled.json`` keyed on the section result, the
+    restyle prompt texts and the LLM config. carry_forward is left untouched.
+    """
+    restyled_path = section_result_path.with_suffix(".restyled.json")
+    cache_key = content_hash(
+        json.dumps(result.model_dump(), ensure_ascii=False, sort_keys=True),
+        _load_restyle_instruction(),
+        _RESTYLE_SYSTEM_PROMPT,
+        _llm_config_repr(llm_client),
+    )
+    if is_cache_valid(restyled_path, cache_key):
+        logger.info("Restyle cached, reusing %s", restyled_path)
+        raw = json.loads(restyled_path.read_text(encoding="utf-8"))
+        results = {int(n): RestyleResult(**r) for n, r in raw.items()}
+    else:
+        results = restyle_scripts(llm_client, {s.slide_number: s.script for s in result.slides})
+        write_text_atomic(
+            restyled_path,
+            json.dumps({str(n): r.model_dump() for n, r in results.items()}, ensure_ascii=False, indent=2),
+        )
+        write_cache_hash(restyled_path, cache_key)
+    slides = [
+        s.model_copy(update={"script": results[s.slide_number].script}) if s.slide_number in results else s
+        for s in result.slides
+    ]
+    return result.model_copy(update={"slides": slides}), results
+
+
+def _write_restyle_report(lec_dir: Path, results: dict[int, RestyleResult]) -> None:
+    """S19-a: same format as scripts/restyle_scripts.py's restyle_report.json."""
+    ordered = [results[n] for n in sorted(results)]
+    report = {
+        "lecture_id": lec_dir.name,
+        "slides": {
+            str(n): {
+                "adopted": not r.kept_original,
+                "reasons": r.reasons,
+                "metrics_before": r.metrics_before,
+                "metrics_after": r.metrics_after,
+            }
+            for n, r in sorted(results.items())
+        },
+        "lecture_metrics_before": compute_metrics("".join(r.original for r in ordered)),
+        "lecture_metrics_after": compute_metrics("".join(r.script for r in ordered)),
+    }
+    logger.info(
+        "Restyle %s: formal/1000 %s -> %s, adopted %d/%d slides", lec_dir.name,
+        report["lecture_metrics_before"]["formal_per_1000"], report["lecture_metrics_after"]["formal_per_1000"],
+        sum(v["adopted"] for v in report["slides"].values()), len(results),
+    )
+    write_text_atomic(lec_dir / "restyle_report.json", json.dumps(report, ensure_ascii=False, indent=2))
+
+
+def _write_section_scripts(result: SectionScriptResult, scripts_dir: Path, scripts: dict[int, dict]) -> None:
+    """Write each slide's script_NNN.json + .hash, keeping hand-edited slides."""
+    for s in result.slides:
+        script_path = scripts_dir / f"script_{s.slide_number:03d}.json"
+        generated = json.dumps(
+            {"slide_number": s.slide_number, "target_seconds": s.target_seconds, "script": s.script},
+            ensure_ascii=False, indent=2,
+        )
+        edited = _hand_edited(script_path)
+        if edited is not None:
+            # Someone edited this slide's script by hand. Keep it: the
+            # point of per-slide regeneration is that a correction
+            # survives the next run, and only this slide's audio needs
+            # redoing (the script text is in the TTS cache key).
+            logger.info("Slide %d script was edited by hand -- keeping it", s.slide_number)
+            scripts[s.slide_number] = edited
+            continue
+        scripts[s.slide_number] = {"target_seconds": s.target_seconds, "script": s.script}
+        write_text_atomic(script_path, generated)
+        write_cache_hash(script_path, content_hash(generated))
+
+
 def _hand_edited(script_path: Path) -> dict | None:
     """Return the on-disk script if a human changed it, else None.
 
@@ -880,6 +965,7 @@ def process_lecture(
         # 4. Section-by-section script generation
         logger.info("[4/6] Generating scripts section by section...")
         carry_forward: CarryForward | None = None
+        restyle_results: dict[int, RestyleResult] = {}
         for idx, section in enumerate(plan.sections):
             is_last_section = idx == len(plan.sections) - 1
             slides_in_section = [slide_by_number[n] for n in section.slides]
@@ -903,25 +989,13 @@ def process_lecture(
                     reference_notes,
                     **({"previous_memory": previous_memory} if previous_memory and idx == 0 else {}),
                 )
-            for s in result.slides:
-                script_path = scripts_dir / f"script_{s.slide_number:03d}.json"
-                generated = json.dumps(
-                    {"slide_number": s.slide_number, "target_seconds": s.target_seconds, "script": s.script},
-                    ensure_ascii=False, indent=2,
-                )
-                edited = _hand_edited(script_path)
-                if edited is not None:
-                    # Someone edited this slide's script by hand. Keep it: the
-                    # point of per-slide regeneration is that a correction
-                    # survives the next run, and only this slide's audio needs
-                    # redoing (the script text is in the TTS cache key).
-                    logger.info("Slide %d script was edited by hand -- keeping it", s.slide_number)
-                    scripts[s.slide_number] = edited
-                    continue
-                scripts[s.slide_number] = {"target_seconds": s.target_seconds, "script": s.script}
-                write_text_atomic(script_path, generated)
-                write_cache_hash(script_path, content_hash(generated))
+                if item.get("restyle"):  # S19-a: opt-in; absent key = unchanged behaviour
+                    result, section_restyle = _restyle_section_cached(llm_client, result, section_result_path)
+                    restyle_results.update(section_restyle)
+            _write_section_scripts(result, scripts_dir, scripts)
             carry_forward = result.carry_forward
+        if restyle_results:
+            _write_restyle_report(work_dir, restyle_results)
 
     fcntl.flock(prep_lock, fcntl.LOCK_UN)
     prep_lock.close()
@@ -1047,6 +1121,84 @@ def _cli_check(item: dict, base_work_dir: Path, entries: Sequence[dict]) -> int:
         print(f"{tok}\t{','.join(map(str, nums))}{mark}")
     print(f"[{item['id']}] unlisted tokens: {len(found)}")
     return 1 if found else 0
+
+
+_SUGGEST_PRON_SYSTEM = "당신은 한국 대학 강의의 TTS 발음 사전을 만드는 보조자입니다. JSON만 출력합니다."
+_SUGGEST_PRON_PROMPT = (
+    "아래 영어 토큰들을 한국 대학 강의에서 교수가 실제로 읽는 한글 발음으로 바꿔 주세요. "
+    "약어는 관례대로(예: PO→피오 또는 풀어 읽기 중 강의 문맥상 자연스러운 것) 쓰세요. "
+    "spoken에는 한글만 쓰고 라틴 문자를 남기지 마세요. "
+    '출력 JSON {{"entries":[{{"written":..,"spoken":..,"note":..}}]}}\n\n토큰과 등장 문장:\n{tokens}'
+)
+_LATIN_CHAR = re.compile(r"[A-Za-z]")
+
+
+def _token_contexts(texts: dict[int, str], tok: str, nums: list[int]) -> list[str]:
+    """Up to 2 sentences (each cut to 120 chars) containing ``tok`` as a whole ASCII token."""
+    pat = re.compile(rf"(?<![A-Za-z0-9]){re.escape(tok)}(?![A-Za-z0-9])")
+    out: list[str] = []
+    for n in nums:
+        for sent in re.split(r"(?<=[.!?])\s+|\n", texts[n]):
+            if pat.search(sent):
+                out.append(sent.strip()[:120])
+                if len(out) == 2:
+                    return out
+    return out
+
+
+def _cli_suggest_pron(item: dict, base_work_dir: Path, entries: Sequence[dict], llm_client) -> int:
+    """S19-b ``--suggest-pron``: ask the text LLM for Korean readings of the
+    unlisted Latin tokens and write them to ``pronunciation_suggestions.yaml``
+    (approved: false). Never touches config/pronunciation.yaml. No TTS model."""
+    scripts_dir = base_work_dir / item["id"] / "scripts"
+    files = sorted(scripts_dir.glob("script_*.json"))
+    if not files:
+        raise SystemExit(f"--suggest-pron: no scripts in {scripts_dir} (generate scripts first)")
+    texts = {}
+    for f in files:
+        sc = json.loads(f.read_text(encoding="utf-8"))
+        texts[int(sc.get("slide_number") or f.stem.rsplit("_", 1)[1])] = sc.get("script", "")
+    found = _scan_unlisted(texts, entries)
+    if not found:
+        print(f"[{item['id']}] no unlisted tokens -- nothing to suggest")
+        return 0
+
+    tokens = "\n".join(
+        f"- {tok}: " + " / ".join(_token_contexts(texts, tok, nums)) for tok, nums in found.items()
+    )
+    messages = [
+        {"role": "system", "content": _SUGGEST_PRON_SYSTEM},
+        {"role": "user", "content": _SUGGEST_PRON_PROMPT.format(tokens=tokens)},
+    ]
+    data = None
+    for attempt in range(2):
+        raw = llm_client.chat(messages, temperature=0.2)
+        try:
+            data = json.loads(strip_markdown_json_fence(raw))
+            data["entries"]
+            break
+        except (json.JSONDecodeError, KeyError, TypeError):
+            if attempt:
+                raise SystemExit("--suggest-pron: LLM returned malformed JSON twice")
+            logger.warning("suggest-pron: malformed JSON from LLM -- re-asking once")
+
+    accepted: list[dict] = []
+    for e in data["entries"]:
+        written, spoken = e.get("written"), e.get("spoken")
+        if written not in found:
+            print(f"제외: {written!r} -- 요청한 토큰이 아님")
+        elif not spoken or _LATIN_CHAR.search(spoken):
+            print(f"제외: {written!r} -- spoken {spoken!r}에 라틴 문자가 남음/비어 있음")
+        else:
+            accepted.append(
+                {"written": written, "spoken": spoken, "note": e.get("note") or "", "approved": False, "source": "llm"}
+            )
+    out_path = base_work_dir / item["id"] / "pronunciation_suggestions.yaml"
+    text = yaml.safe_dump({"entries": accepted}, allow_unicode=True, sort_keys=False)
+    write_text_atomic(out_path, text)
+    print(f"# 붙여넣기용 (확인 후 approved: true로 바꿔 config/pronunciation.yaml에 추가) -- {out_path}")
+    print(text)
+    return 0
 
 
 def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str, entries: Sequence[dict] = ()) -> None:
@@ -1322,6 +1474,12 @@ def main():
         help="S16: with --only <id>, build/load the previous-lecture memory (item['previous']) "
              "and print it. Uses the LLM client; loads no TTS model.",
     )
+    parser.add_argument(
+        "--suggest-pron", action="store_true",
+        help="S19: with --only <id>, ask the text LLM for Korean readings of the unlisted Latin "
+             "tokens; writes data/work_batch/<id>/pronunciation_suggestions.yaml (approved: false). "
+             "Never edits config/pronunciation.yaml. Loads no TTS model.",
+    )
     args = parser.parse_args()
 
     base_work = Path("data/work_batch")
@@ -1387,6 +1545,11 @@ def main():
             parser.error(f"{selected[0]['id']} has no 'previous' key")
         print(_load_previous_memory(selected[0], llm_client, base_work).model_dump_json(indent=2))
         return
+
+    if args.suggest_pron:
+        if not args.only or len(selected) != 1:
+            parser.error("--suggest-pron requires --only matching exactly one lecture")
+        sys.exit(_cli_suggest_pron(selected[0], base_work, pronunciation_entries, llm_client))
 
     tts_pipe = None
     if not args.skip_tts:
