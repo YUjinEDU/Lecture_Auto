@@ -2,6 +2,12 @@
 
     python scripts/annotate_lecture.py --only 08_ [--burn] [--font NanumSquareRound]
         [--work-dir data/work_batch] [--output-dir output] [--out-dir DIR]
+    python scripts/annotate_lecture.py --only 08_ --highlight [--slides 3-5] [--burn] --out-dir DIR
+
+``--highlight`` (S15) writes ``<stem>_annotated.mp4`` (+ ``<stem>.highlight.json``): the slide
+text block each sentence is about gets a marker + underline. Video only is re-encoded; audio is
+the existing WAVs. ``--slides`` limits it to a short preview. Frames go to a temp dir under
+``--out-dir`` that is removed afterwards.
 
 Reads ``<output-dir>/<id>/<stem>.timeline.json`` + ``<work-dir>/<id>/{audio,scripts}``;
 never resynthesizes. Writes ``<stem>.srt/.vtt/.subtitles.json`` (and with ``--burn``
@@ -13,16 +19,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import soundfile as sf
+from PIL import Image
 
 # Make this checkout's lecture_auto win over any other editable install.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lecture_auto.pipeline.cache import qc_path_for, write_text_atomic
+from lecture_auto.pipeline.highlight import concat_manifest, draw_highlight, load_blocks, map_segment, slide_pieces
+from lecture_auto.pipeline.tts import merge_audio
 from lecture_auto.pipeline.pronunciation import apply_pronunciation, load_pronunciation_entries
 from lecture_auto.pipeline.subtitles import segment_spans, split_cue, to_srt, to_vtt, written_segments
 from lecture_auto.schemas.production import SlideQC, Timeline
@@ -40,8 +50,8 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _slide_cues(entry, audio_dir: Path, scripts_dir: Path, entries: list[dict]):
-    """-> (cues, info), or (None, info) when the slide must be skipped."""
+def _slide_segments(entry, audio_dir: Path, scripts_dir: Path, entries: list[dict]):
+    """-> ((texts, spans, wav_seconds), info), or (None, info) when the slide must be skipped."""
     n = entry.slide_number
     info: dict = {"slide": n}
     wav_path = audio_dir / entry.wav
@@ -68,6 +78,15 @@ def _slide_cues(entry, audio_dir: Path, scripts_dir: Path, entries: list[dict]):
         if not hash_ok:
             info["spoken_hash_mismatch"] = True
     info.update(method=method, source=source)
+    return (texts, spans, len(wav) / sr), info
+
+
+def _slide_cues(entry, audio_dir: Path, scripts_dir: Path, entries: list[dict]):
+    """-> (cues, info), or (None, info) when the slide must be skipped."""
+    seg, info = _slide_segments(entry, audio_dir, scripts_dir, entries)
+    if seg is None:
+        return None, info
+    texts, spans, _ = seg
     cues = [
         (entry.start_seconds + s, entry.start_seconds + e, t)
         for (s0, e0), txt in zip(spans, texts)
@@ -95,15 +114,118 @@ def burn(mp4: Path, srt: Path, out: Path, font: str) -> None:
         raise RuntimeError(f"ffmpeg failed (exit {res.returncode}):\n{res.stderr[-2000:]}")
 
 
-def run(lec_id: str, work_dir: Path, output_dir: Path, out_dir: Path | None, entries: list[dict],
-        do_burn: bool = False, font: str = "NanumSquareRound") -> dict:
-    lec_out = output_dir / lec_id
+def _load_timeline(lec_out: Path, lec_id: str) -> tuple[Timeline, str]:
     candidates = (lec_out / f"{lec_id}.timeline.json", lec_out / f"{lec_id}_DRAFT.timeline.json")
     tl_path = next((p for p in candidates if p.exists()), None)
     if tl_path is None:
         raise FileNotFoundError(f"no timeline.json under {lec_out}")
-    timeline = Timeline.model_validate_json(tl_path.read_text(encoding="utf-8"))
-    stem = tl_path.name[: -len(".timeline.json")]
+    return Timeline.model_validate_json(tl_path.read_text(encoding="utf-8")), tl_path.name[: -len(".timeline.json")]
+
+
+def parse_slides(spec: str) -> set[int]:
+    """"3-5" / "3,5,7" / "2-4,9" -> {slide numbers}."""
+    out: set[int] = set()
+    for part in spec.split(","):
+        a, _, b = part.strip().partition("-")
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+def _encode(manifest: Path, audio: Path, total: float, out: Path) -> None:
+    """Same encoding options as ``video.assemble_video`` (all paths absolute)."""
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(manifest.resolve()), "-i", str(audio.resolve()),
+           "-t", f"{total:.6f}", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30", "-c:v", "libx264",
+           "-preset", "veryfast", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+           "-shortest", str(out.resolve())]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed (exit {res.returncode}):\n{res.stderr[-2000:]}")
+
+
+def run_highlight(lec_id: str, work_dir: Path, output_dir: Path, out_dir: Path | None, entries: list[dict],
+                  slides: set[int] | None = None, do_burn: bool = False, font: str = "NanumSquareRound") -> dict:
+    lec_out = output_dir / lec_id
+    timeline, stem = _load_timeline(lec_out, lec_id)
+    out_dir = out_dir or lec_out
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = work_dir / lec_id
+    pdfs = sorted((base / "input").glob("*.pdf"))
+    if not pdfs:
+        raise FileNotFoundError(f"no PDF under {base / 'input'}")
+    png = lambda n: base / "rendered" / f"slide_{n:03d}.png"  # noqa: E731
+    sel = [e for e in timeline.entries if slides is None or e.slide_number in slides]
+    if not sel:
+        raise ValueError(f"no timeline entries match --slides {sorted(slides or [])}")
+    blocks = load_blocks(pdfs[0], Image.open(png(sel[0].slide_number)).width)
+    tmp = out_dir / f"{stem}.annotate_tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        items, wavs, cues, slide_info, cum = [], [], [], [], 0.0
+        for entry in sel:
+            seg, info = _slide_segments(entry, base / "audio", base / "scripts", entries)
+            if seg is None:
+                slide_info.append(info)
+                continue
+            texts, spans, dur = seg
+            n = entry.slide_number
+            sblocks = blocks.get(n, [])
+            ids, scores, prev = [], [], None
+            for t in texts:
+                prev, sc = map_segment(t, sblocks, prev)
+                ids.append(prev)
+                scores.append(round(sc, 3))
+            by_id = {b.id: b for b in sblocks}
+            frame: dict[int | None, Path] = {None: png(n)}
+            for bid in {i for i in ids if i is not None}:
+                dest = tmp / f"slide_{n:03d}_b{bid}.png"
+                draw_highlight(png(n), by_id[bid].bbox).save(dest)
+                frame[bid] = dest
+            pieces = slide_pieces(spans, ids, dur)
+            items += [(frame[b], d) for b, d in pieces]
+            wavs.append(base / "audio" / entry.wav)
+            # keep the timeline's own clock for full runs; previews re-base to 0
+            shifted = entry.model_copy(update={"start_seconds": entry.start_seconds if slides is None else cum})
+            cum += dur
+            c, _ = _slide_cues(shifted, base / "audio", base / "scripts", entries)
+            cues += c or []
+            info.update(
+                segments=[{"start": round(a, 3), "end": round(b, 3), "block": i, "score": s, "text": t}
+                          for (a, b), i, s, t in zip(spans, ids, scores, texts)],
+                pieces=[{"block": b, "seconds": round(d, 6)} for b, d in pieces],
+                highlighted=sum(i is not None for i in ids), n_segments=len(ids),
+            )
+            slide_info.append(info)
+        if not items:
+            raise RuntimeError("no slide could be assembled (all skipped)")
+        merged = merge_audio(wavs, tmp / "merged.wav")
+        total = sum(d for _, d in items)
+        man = tmp / "frames.txt"
+        man.write_text(concat_manifest(items), encoding="utf-8")
+        final = out_dir / f"{stem}_annotated.mp4"
+        if do_burn:
+            cues.sort(key=lambda x: x[0])
+            (tmp / "cues.srt").write_text(to_srt(cues), encoding="utf-8")
+            _encode(man, merged, total, tmp / "plain.mp4")
+            burn(tmp / "plain.mp4", tmp / "cues.srt", final, font)
+        else:
+            _encode(man, merged, total, final)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    done = [s for s in slide_info if "segments" in s]
+    n_seg = sum(s["n_segments"] for s in done)
+    n_hl = sum(s["highlighted"] for s in done)
+    summary = {"slides": len(done), "segments": n_seg, "highlighted": n_hl,
+               "coverage": round(n_hl / n_seg, 3) if n_seg else 0.0,
+               "skipped": [s["slide"] for s in slide_info if "skipped" in s], "seconds": round(total, 3)}
+    write_text_atomic(out_dir / f"{stem}.highlight.json",
+                      json.dumps({"summary": summary, "slides": slide_info}, ensure_ascii=False, indent=2))
+    return summary
+
+
+def run(lec_id: str, work_dir: Path, output_dir: Path, out_dir: Path | None, entries: list[dict],
+        do_burn: bool = False, font: str = "NanumSquareRound") -> dict:
+    lec_out = output_dir / lec_id
+    timeline, stem = _load_timeline(lec_out, lec_id)
     out_dir = out_dir or lec_out
     out_dir.mkdir(parents=True, exist_ok=True)
     cues, slides = [], []
@@ -139,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", required=True, help="substring of the lecture id")
     ap.add_argument("--burn", action="store_true")
+    ap.add_argument("--highlight", action="store_true", help="S15: write <stem>_annotated.mp4 with block highlights")
+    ap.add_argument("--slides", default=None, help="with --highlight: only these slides, e.g. 3-5 (preview)")
     ap.add_argument("--font", default="NanumSquareRound")
     ap.add_argument("--work-dir", type=Path, default=Path("data/work_batch"))
     ap.add_argument("--output-dir", type=Path, default=Path("output"))
@@ -149,6 +273,12 @@ def main(argv: list[str] | None = None) -> int:
     if len(matched) != 1:
         ap.error(f"--only {args.only!r} matched {len(matched)} lectures: {matched}")
     entries = load_pronunciation_entries(args.pronunciation)
+    if args.highlight:
+        h = run_highlight(matched[0], args.work_dir, args.output_dir, args.out_dir, entries,
+                          parse_slides(args.slides) if args.slides else None, args.burn, args.font)
+        print(f"slides={h['slides']} segments={h['segments']} highlighted={h['highlighted']} "
+              f"coverage={h['coverage']:.0%} skipped={h['skipped']} seconds={h['seconds']}")
+        return 0
     s = run(matched[0], args.work_dir, args.output_dir, args.out_dir, entries, args.burn, args.font)
     print(f"slides={s['slides']} pause={s['pause']} proportional={s['proportional']} "
           f"written={s['written']} spoken={s['spoken']} cues={s['cues']} skipped={s['skipped']} "
