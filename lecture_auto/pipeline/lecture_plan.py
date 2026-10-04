@@ -33,6 +33,7 @@ from lecture_auto.pipeline.script_gen import (
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
     LecturePlan,
+    LectureMemory,
     LectureSection,
     SectionScriptResult,
 )
@@ -137,12 +138,30 @@ def summarize_reference_outline(md_text: str) -> str:
     return "\n".join(parts)
 
 
+def previous_memory_block(memory: LectureMemory | None) -> list[str]:
+    """S16 (D-18): prompt lines for the previous lecture's memory; [] when None,
+    so prompts without ``previous`` stay byte-identical to before S16."""
+    if memory is None:
+        return []
+    lines = ["[지난 강의 요약 — 지난 시간에 실제로 다룬 내용]"]
+    if memory.covered_concepts:
+        lines.append(f"- 다룬 개념: {', '.join(memory.covered_concepts)}")
+    if memory.running_examples:
+        lines.append(f"- 사용한 사례: {', '.join(memory.running_examples)}")
+    if memory.closing_hook:
+        lines.append(f"- 마지막에 예고한 내용: {memory.closing_hook}")
+    lines.append("도입부에서 지난 시간 내용을 짧게 연결하되, 이미 다룬 내용을 다시 설명하지 말 것.")
+    lines.append("")
+    return lines
+
+
 def build_lecture_plan_prompt(
     slides: list[SlideRecord],
     subject: str,
     lecture_name: str,
     total_minutes: float,
     reference_outline: str | None = None,
+    previous_memory: LectureMemory | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"[과목명] {subject}")
@@ -163,6 +182,7 @@ def build_lecture_plan_prompt(
         )
         lines.append(reference_outline)
         lines.append("")
+    lines.extend(previous_memory_block(previous_memory))
     lines.append("[출력 형식] 아래 JSON 형식으로만 출력하세요. 다른 텍스트는 포함하지 마세요.")
     lines.append(
         json.dumps(
@@ -192,8 +212,11 @@ def generate_lecture_plan(
     lecture_name: str,
     total_minutes: float,
     reference_outline: str | None = None,
+    previous_memory: LectureMemory | None = None,
 ) -> LecturePlan:
-    prompt = build_lecture_plan_prompt(slides, subject, lecture_name, total_minutes, reference_outline)
+    prompt = build_lecture_plan_prompt(
+        slides, subject, lecture_name, total_minutes, reference_outline, previous_memory
+    )
     messages = [
         {"role": "system", "content": _PLAN_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
@@ -232,6 +255,7 @@ def build_section_prompt(
     is_last_section: bool,
     correction: str | None = None,
     reference_notes: dict[int, str] | None = None,
+    previous_memory: LectureMemory | None = None,
 ) -> str:
     lines: list[str] = []
     if correction:
@@ -317,6 +341,7 @@ def build_section_prompt(
                 lines.append(f"- 슬라이드 {n}: {note}")
             lines.append("")
 
+    lines.extend(previous_memory_block(previous_memory))
     lines.append("[출력 형식] 아래 JSON 형식으로만 출력하세요. 다른 텍스트는 포함하지 마세요.")
     lines.append(
         json.dumps(
@@ -376,6 +401,7 @@ def generate_section_scripts(
     carry_forward: CarryForward | None,
     is_last_section: bool,
     reference_notes: dict[int, str] | None = None,
+    previous_memory: LectureMemory | None = None,
 ) -> SectionScriptResult:
     """Generate one section's slides as a single continuous script.
 
@@ -399,6 +425,7 @@ def generate_section_scripts(
         prompt_text = build_section_prompt(
             plan, section, slides, carry_forward, is_last_section,
             correction=correction, reference_notes=reference_notes,
+            previous_memory=previous_memory,
         )
         messages = [
             {"role": "system", "content": get_professor_system_prompt()},
