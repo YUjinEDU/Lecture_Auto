@@ -249,7 +249,7 @@ class TestGenerateScriptsTask:
         assert "skipped" in result
 
     def test_atomic_write_uses_tmp_rename(self, tmp_path):
-        """Task uses .tmp + os.rename for atomic writes."""
+        """Task writes scripts via .tmp + os.replace (cache.write_text_atomic), bytes in json.dump format."""
         _setup_job_dir(tmp_path, slide_count=1)
         mock_paths = _make_job_paths_mock(tmp_path)
 
@@ -259,7 +259,7 @@ class TestGenerateScriptsTask:
         from lecture_auto.tasks import script_tasks
 
         rename_calls = []
-        original_rename = os.rename
+        original_rename = os.replace
 
         def tracking_rename(src, dst):
             rename_calls.append((src, dst))
@@ -268,7 +268,7 @@ class TestGenerateScriptsTask:
         with patch.object(script_tasks, "publish_progress"):
             with patch("lecture_auto.storage.jobs.JobPaths", return_value=mock_paths):
                 with patch("lecture_auto.llm.get_llm_client", return_value=mock_client):
-                    with patch.object(script_tasks.os, "rename", side_effect=tracking_rename):
+                    with patch("os.replace", side_effect=tracking_rename):
                         script_tasks.generate_scripts_task.__wrapped__(
                             "test-job"
                         )
@@ -276,6 +276,11 @@ class TestGenerateScriptsTask:
         assert len(rename_calls) >= 1
         # First arg should end with .tmp
         assert str(rename_calls[0][0]).endswith(".tmp")
+        # File bytes must stay exactly json.dump(ensure_ascii=False, indent=2): the batch hashes them.
+        written = sorted(tmp_path.rglob("script_001.json"))
+        assert written, "expected script_001.json to be written"
+        raw = written[0].read_bytes()
+        assert raw == json.dumps(json.loads(raw), ensure_ascii=False, indent=2).encode("utf-8")
 
     def test_adds_edited_false_to_output(self, tmp_path):
         """Task adds edited=false and edited_at=null to generated scripts."""

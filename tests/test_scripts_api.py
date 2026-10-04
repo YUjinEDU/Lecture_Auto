@@ -172,6 +172,16 @@ class TestUpdateScript:
         assert on_disk["script"] == "Updated text"
         assert on_disk["edited"] is True
 
+    def test_script_file_bytes_are_unchanged_json_dump_format(self, client, job_dir):
+        """The batch hashes script file bytes: keep ensure_ascii=False, indent=2, no trailing newline."""
+        resp = client.put("/jobs/test-job/scripts/1", json={"script": "한글 대본 \u00e9"})
+        assert resp.status_code == 200
+        path = job_dir / "scripts" / "script_001.json"
+        raw = path.read_bytes()
+        assert raw == json.dumps(json.loads(raw), ensure_ascii=False, indent=2).encode("utf-8")
+        assert "한글 대본".encode("utf-8") in raw
+        assert not path.with_name(path.name + ".tmp").exists()
+
     def test_returns_404_for_nonexistent(self, client):
         """Returns 404 for non-existent script."""
         resp = client.put(

@@ -9,11 +9,11 @@ Uses cpu_queue since script generation is a network/API call, not GPU work.
 
 import json
 import logging
-import os
 from pathlib import Path
 
 from celery import shared_task
 
+from lecture_auto.pipeline.cache import write_text_atomic
 from lecture_auto.tasks.progress import publish_progress
 
 logger = logging.getLogger(__name__)
@@ -36,14 +36,6 @@ def _is_valid_script(path: Path) -> bool:
         return bool(data.get("script"))
     except (json.JSONDecodeError, KeyError, OSError):
         return False
-
-
-def _atomic_write_json(path: Path, data: dict) -> None:
-    """Write JSON atomically via .tmp + os.rename to prevent corrupt checkpoints."""
-    tmp_path = str(path) + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.rename(tmp_path, str(path))
 
 
 def _read_script_text(scripts_dir: Path, slide_number: int) -> str | None:
@@ -138,7 +130,7 @@ def generate_scripts_task(self, job_id: str) -> dict:
             data["edited_at"] = None
 
             # Atomic write: .tmp + os.rename
-            _atomic_write_json(script_path, data)
+            write_text_atomic(script_path, json.dumps(data, ensure_ascii=False, indent=2))
 
             publish_progress(job_id, "script", i + 1, total, "done")
 
@@ -250,6 +242,6 @@ def regenerate_slide_task(
     data["edited"] = False
     data["edited_at"] = None
 
-    _atomic_write_json(script_path, data)
+    write_text_atomic(script_path, json.dumps(data, ensure_ascii=False, indent=2))
 
     return {"job_id": job_id, "slide_number": slide_number, "status": "regenerated"}
