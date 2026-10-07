@@ -21,3 +21,5 @@ data/backup_*/
 PPTX/
 __pycache__/
 logs/
+.claude/
+data/PDF/
