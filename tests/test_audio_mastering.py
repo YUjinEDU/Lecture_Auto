@@ -4,11 +4,13 @@ from __future__ import annotations
 import numpy as np
 
 from lecture_auto.pipeline.audio_mastering import (
+    apply_room_tone_dither,
     de_ess_filter,
     highpass_filter,
     master_lecture_speech,
     peaking_eq,
     soft_clip_limiter,
+    synthesize_room_tone,
     trim_speech_tail,
 )
 
@@ -125,3 +127,47 @@ def test_soft_clip_limiter_strictly_linear_below_knee():
     out_over = soft_clip_limiter(overshoot, ceiling=0.95, knee_start=0.80)
     assert np.all(out_over <= 0.95)
     assert np.all(out_over > 0.80)
+
+
+def test_synthesize_room_tone_properties():
+    sr = 24000
+    duration_s = 1.5
+    target_dbfs = -58.0
+    tone1 = synthesize_room_tone(duration_s, sr=sr, target_dbfs=target_dbfs, seed=42)
+    tone2 = synthesize_room_tone(duration_s, sr=sr, target_dbfs=target_dbfs, seed=42)
+
+    # Determinism
+    np.testing.assert_array_equal(tone1, tone2)
+    assert len(tone1) == int(duration_s * sr)
+
+    # Measured RMS level should be very close to target (-58 dBFS +/- 0.5 dB)
+    rms = float(np.sqrt(np.mean(tone1**2)))
+    measured_dbfs = 20.0 * np.log10(rms)
+    assert abs(measured_dbfs - target_dbfs) < 0.5
+
+
+def test_apply_room_tone_dither_replaces_digital_silence():
+    sr = 24000
+    # 0.5 seconds of pure digital zero
+    digital_zero = np.zeros(int(0.5 * sr), dtype=np.float32)
+    dithered = apply_room_tone_dither(digital_zero, sr=sr, target_dbfs=-58.0, seed=42)
+
+    assert len(dithered) == len(digital_zero)
+    # Shouldn't be zero anymore
+    rms = float(np.sqrt(np.mean(dithered**2)))
+    measured_dbfs = 20.0 * np.log10(rms)
+    assert -60.0 <= measured_dbfs <= -56.0
+
+
+def test_master_lecture_speech_with_room_tone_chain():
+    sr = 24000
+    t = np.linspace(0, 1.0, sr, endpoint=False)
+    sig = 0.5 * np.sin(2 * np.pi * 200 * t).astype(np.float32)
+
+    # Master with room tone dithering enabled (default)
+    mastered = master_lecture_speech(sig, sr=sr, dither_room_tone=True)
+
+    assert len(mastered) == len(sig)
+    assert np.max(np.abs(mastered)) <= 0.96
+    assert np.all(np.isfinite(mastered))
+

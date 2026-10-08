@@ -36,6 +36,9 @@ _DIGIT_RE = re.compile(r"\d+")
 # exact. Only "요" (not "죠", which SPEC's baseline table tracks separately as
 # its own ~5.4/1000 figure) so this lines up with SPEC's "~요 종결" column.
 _YO_ENDING_RE = re.compile(r"요(?=[.!?]|$)")
+_JO_ENDING_RE = re.compile(r"죠(?=[.!?]|$)")
+_QUESTION_ENDING_RE = re.compile(r"까요(?=[.!?]|$)")
+_COMMA_RE = re.compile(r",")
 
 _LENGTH_RATIO_RANGE = (0.95, 1.10)
 
@@ -58,15 +61,21 @@ class RestyleResult(BaseModel):
 
 
 def compute_metrics(text: str) -> dict[str, float]:
-    """합니다/습니다, 그래서+이제, ~요 종결 frequency per 1000 characters."""
+    """합니다/습니다, 그래서+이제, ~요 종결, ~죠 종결, ~까요 종결, 쉼표(AP 호흡) frequency per 1000 characters."""
     n = len(text) or 1
     formal = len(re.findall(r"합니다|습니다", text))
     connector = len(re.findall(r"그래서|이제", text))
     yo_ending = len(_YO_ENDING_RE.findall(text))
+    jo_ending = len(_JO_ENDING_RE.findall(text))
+    question_ending = len(_QUESTION_ENDING_RE.findall(text))
+    comma_count = len(_COMMA_RE.findall(text))
     return {
         "formal_per_1000": round(formal / n * 1000, 2),
         "connector_per_1000": round(connector / n * 1000, 2),
         "yo_ending_per_1000": round(yo_ending / n * 1000, 2),
+        "jo_ending_per_1000": round(jo_ending / n * 1000, 2),
+        "question_per_1000": round(question_ending / n * 1000, 2),
+        "comma_per_1000": round(comma_count / n * 1000, 2),
     }
 
 

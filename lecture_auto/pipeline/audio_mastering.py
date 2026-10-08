@@ -146,7 +146,6 @@ def trim_speech_tail(
         return wav.astype(np.float32)
 
     cut_sample = min(len(wav), (last_voiced_frame + 1) * frame_len + int(sr * safety_pad_ms / 1000.0))
-
     if cut_sample >= len(wav):
         return wav.astype(np.float32)
 
@@ -161,6 +160,70 @@ def trim_speech_tail(
     return trimmed
 
 
+def synthesize_room_tone(
+    duration_s: float,
+    sr: int = _DEFAULT_SR,
+    target_dbfs: float = -58.0,
+    lpf_cutoff_hz: float = 1200.0,
+    seed: int = 42,
+) -> np.ndarray:
+    """Generate subtle, biologically plausible studio ambient room tone.
+
+    Synthesizes low-pass filtered Gaussian noise at a controlled low level
+    (default -58 dBFS) to prevent harsh digital silence gating in headphone listening
+    (Clark et al., SSW 2019; LFSBench ACL 2026).
+    Deterministic via seed parameter.
+    """
+    n_samples = max(0, round(duration_s * sr))
+    if n_samples == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    rng = np.random.default_rng(seed)
+    white = rng.normal(0.0, 1.0, n_samples).astype(np.float64)
+
+    # 1st-order Butterworth LPF (gentle 6dB/oct roll-off simulating acoustic air absorption)
+    sos = signal.butter(1, lpf_cutoff_hz, btype="lowpass", fs=sr, output="sos")
+    padlen = min(n_samples - 1, int(sr * 0.05))
+    if padlen > 4:
+        filtered = signal.sosfiltfilt(sos, white, padlen=padlen)
+    else:
+        filtered = signal.sosfilt(sos, white)
+
+    rms = np.sqrt(np.mean(filtered**2))
+    if rms > 1e-9:
+        target_rms = 10.0 ** (target_dbfs / 20.0)
+        filtered = filtered * (target_rms / rms)
+
+    return filtered.astype(np.float32)
+
+
+def apply_room_tone_dither(
+    wav: np.ndarray,
+    sr: int = _DEFAULT_SR,
+    target_dbfs: float = -58.0,
+    seed: int = 42,
+) -> np.ndarray:
+    """Add ambient room tone dither to audio to eliminate unnatural digital zero drops.
+
+    Particularly crucial for inter-sentence pauses and post-speech tail segments.
+    """
+    if len(wav) == 0:
+        return wav.astype(np.float32)
+
+    room_tone = synthesize_room_tone(
+        duration_s=len(wav) / sr,
+        sr=sr,
+        target_dbfs=target_dbfs,
+        seed=seed,
+    )
+    if len(room_tone) != len(wav):
+        room_tone = np.pad(room_tone, (0, max(0, len(wav) - len(room_tone))))[:len(wav)]
+
+    # Additive blend
+    blended = wav.astype(np.float32) + room_tone
+    return blended
+
+
 def master_lecture_speech(
     wav: np.ndarray,
     sr: int = _DEFAULT_SR,
@@ -169,14 +232,18 @@ def master_lecture_speech(
     boxiness_cut_db: float = -1.8,
     presence_boost_db: float = 1.5,
     deess_cut_db: float = -2.5,
+    dither_room_tone: bool = True,
+    room_tone_dbfs: float = -58.0,
 ) -> np.ndarray:
-    """Run the complete 5-stage studio mastering chain.
+    """Run the complete 6-stage studio mastering chain.
 
     1. High-Pass Filter (80 Hz): Strips HVAC rumble and DC offset.
     2. Boxiness Cut (320 Hz, -1.8 dB): Removes hollow classroom resonance.
     3. Presence Boost (3000 Hz, +1.5 dB): Enhances consonant articulation.
     4. De-esser (6200 Hz, -2.5 dB): Tames piercing high-frequency sibilance.
-    5. Soft Limiting & EBU R128 Loudness Normalization (-20 LUFS).
+    5. EBU R128 Integrated Loudness Normalization (-20 LUFS).
+    6. Ambient Room Tone Dithering (-58 dBFS): Prevents headphone silence gating.
+    7. Soft-Knee Limiting: Transparent peak control at ceiling (0.95).
 
     Pure function, deterministic, returns float32 mono waveform.
     """
@@ -214,7 +281,11 @@ def master_lecture_speech(
         except Exception as e:  # noqa: BLE001
             logger.warning("Loudness normalization fallback: %s", e)
 
-    # 6. Safety Peak Ceiling Limiter
+    # 6. Ambient room tone dithering (eliminates digital zero gating)
+    if dither_room_tone:
+        out = apply_room_tone_dither(out, sr=sr, target_dbfs=room_tone_dbfs)
+
+    # 7. Safety Peak Ceiling Limiter
     out = soft_clip_limiter(out, ceiling=_TRUE_PEAK_CEILING)
 
     return out.astype(np.float32)

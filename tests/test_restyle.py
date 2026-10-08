@@ -117,3 +117,15 @@ def test_compute_metrics_formal_frequency_drops_with_fewer_endings():
     before = compute_metrics(ORIGINAL_1)
     after = compute_metrics(RESTYLED_1_OK)
     assert before["formal_per_1000"] > after["formal_per_1000"]
+
+
+def test_compute_metrics_includes_ktobi_prosody_fields():
+    sample = "자, 이 내용은 우리가 잘 아는 부분이죠? 왜 그럴까요? 차근차근 확인해 봅시다."
+    metrics = compute_metrics(sample)
+    assert "jo_ending_per_1000" in metrics
+    assert "question_per_1000" in metrics
+    assert "comma_per_1000" in metrics
+    assert metrics["jo_ending_per_1000"] > 0
+    assert metrics["question_per_1000"] > 0
+    assert metrics["comma_per_1000"] > 0
+
