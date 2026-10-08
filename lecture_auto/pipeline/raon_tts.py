@@ -14,15 +14,16 @@ import os
 import re
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
 import torch
 
-from lecture_auto.pipeline.cache import qc_path_for, write_text_atomic
+from lecture_auto.pipeline.cache import write_text_atomic
 from lecture_auto.schemas.production import SegmentQC, SlideQC, TranscriptionCheck
 
 logger = logging.getLogger(__name__)
@@ -95,8 +96,9 @@ def load_raon_pipeline(
     # babble after ~5s of real speech instead of stopping at its ~30s target.
     # synthesize_raon_slide() sets a per-call cap sized to that slide's own
     # target duration instead, so a bad sample is bounded, not left to run wild.
+    active_temp = float(os.environ.get("LECTURE_AUTO_TTS_TEMPERATURE", "0.72"))
     tuned = {
-        "temperature": TTS_TEMPERATURE,
+        "temperature": active_temp,
         "ras_enabled": True,
         "ras_window_size": 50,
         "ras_repetition_threshold": 0.5,
@@ -234,14 +236,17 @@ def evaluate_transcription(
     return TranscriptionCheck(status=status, reasons=reasons, transcript=transcribed, cer=cer)
 
 
-def _trim_lead_tail_silence(wav: np.ndarray, sr: int = _SAMPLE_RATE) -> np.ndarray:
-    """Trim excessive lead/tail silence, keeping a small natural pad.
+def _trim_lead_tail_silence(
+    wav: np.ndarray,
+    sr: int = _SAMPLE_RATE,
+    lead_pad_ms: float = 80.0,
+    tail_pad_ms: float = 100.0,
+) -> np.ndarray:
+    """Trim excessive lead/tail silence, keeping an adequate natural pad.
 
-    The cutoff is relative to the clip's own loud frames, matching how the
-    quality gate classifies silence. A fixed absolute threshold (0.005) left
-    quiet babble at 0.008 in place: too quiet to be trimmed, but still
-    "silence" to the gate, so two joined fragments contributed their untrimmed
-    edges plus the join pause as one long contiguous silent run.
+    Lead pad (80ms) ensures phrase-initial consonants (plosives, fricatives)
+    are never clipped. Tail pad (100ms) preserves natural vocal cord decay and
+    terminal particles (-다, -요, -죠). 5ms cosine edge fade prevents clicks.
     """
     if len(wav) == 0:
         return wav
@@ -251,9 +256,19 @@ def _trim_lead_tail_silence(wav: np.ndarray, sr: int = _SAMPLE_RATE) -> np.ndarr
     active = np.where(np.abs(wav) > threshold)[0]
     if len(active) == 0:
         return wav
-    start = max(0, active[0] - int(sr * 0.05))
-    end = min(len(wav), active[-1] + int(sr * 0.05))
-    return wav[start:end]
+    start = max(0, active[0] - int(sr * lead_pad_ms / 1000.0))
+    end = min(len(wav), active[-1] + int(sr * tail_pad_ms / 1000.0))
+    trimmed = wav[start:end].copy()
+
+    # Gentle 5ms cosine fade at the very edges to eliminate click/pop transients
+    fade_len = min(int(sr * 0.005), len(trimmed) // 4)
+    if fade_len > 0:
+        ramp_in = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, fade_len, dtype=np.float32)))
+        ramp_out = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, fade_len, dtype=np.float32)))
+        trimmed[:fade_len] *= ramp_in
+        trimmed[-fade_len:] *= ramp_out
+
+    return trimmed
 
 
 _CODEC_FRAME_RATE = 12.5  # Mimi codec, verified in modeling_raon.py
@@ -1199,7 +1214,7 @@ def _write_slide_qc(
         pauses_shortened=pauses_shortened,
         pause_seconds_removed=pause_seconds_removed,
         synth_version=TTS_SYNTH_VERSION,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     write_text_atomic(qc_path, qc.model_dump_json(indent=2))
 
