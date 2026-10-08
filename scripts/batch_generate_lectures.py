@@ -21,6 +21,7 @@ import argparse
 import fcntl
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -49,11 +50,6 @@ from lecture_auto.pipeline.cache import (
     write_cache_hash,
     write_text_atomic,
 )
-from lecture_auto.pipeline.pronunciation import (
-    apply_pronunciation,
-    find_unlisted_latin_tokens,
-    load_pronunciation_entries,
-)
 from lecture_auto.pipeline.lecture_plan import (
     _PLAN_SYSTEM_PROMPT,
     build_lecture_plan_prompt,
@@ -65,10 +61,11 @@ from lecture_auto.pipeline.lecture_plan import (
     summarize_reference_outline,
 )
 from lecture_auto.pipeline.parser_pdf import parse_pdf
-from lecture_auto.pipeline.restyle import _SYSTEM_PROMPT as _RESTYLE_SYSTEM_PROMPT
-from lecture_auto.pipeline.restyle import _load_instruction as _load_restyle_instruction
-from lecture_auto.pipeline.restyle import RestyleResult, compute_metrics, restyle_scripts
-from lecture_auto.pipeline.series_memory import load_or_create_memory
+from lecture_auto.pipeline.pronunciation import (
+    apply_pronunciation,
+    find_unlisted_latin_tokens,
+    load_pronunciation_entries,
+)
 from lecture_auto.pipeline.raon_tts import (
     TTS_MODEL_ID,
     TTS_RESEED_SEEDS,
@@ -79,10 +76,18 @@ from lecture_auto.pipeline.raon_tts import (
     synthesize_raon_slide,
 )
 from lecture_auto.pipeline.renderer import pptx_to_pdf, render_slides
+from lecture_auto.pipeline.restyle import _SYSTEM_PROMPT as _RESTYLE_SYSTEM_PROMPT
+from lecture_auto.pipeline.restyle import (
+    RestyleResult,
+    compute_metrics,
+    restyle_scripts,
+)
+from lecture_auto.pipeline.restyle import _load_instruction as _load_restyle_instruction
 from lecture_auto.pipeline.script_gen import (
     generate_script_for_slide_vision,
     get_professor_system_prompt,
 )
+from lecture_auto.pipeline.series_memory import load_or_create_memory
 from lecture_auto.pipeline.video import assemble_video
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
@@ -119,7 +124,8 @@ PLAN_LENGTH_CALIBRATION = 1.06
 # re-validating.
 # Built by scripts/build_voice_reference.py from 1859-1868s of the 2025
 # lecture recording; reference_v1.wav.json records the exact provenance.
-REF_VOICE = Path("data/audio_ref/reference_v1.wav")
+# Can be overridden via LECTURE_AUTO_REF_VOICE (e.g. data/audio_ref/reference_v2.wav).
+REF_VOICE = Path(os.environ.get("LECTURE_AUTO_REF_VOICE", "data/audio_ref/reference_v1.wav"))
 
 LECTURES = [
     {
@@ -1018,7 +1024,7 @@ def process_lecture(
         tts_pipe, slide_count, scripts, audio_dir, ref_voice_bytes, shard, target_slides, approved_numbers,
         entries=entries, verify_stt=verify_stt, claim=claim,
     )
-    shard_index, shard_count = shard
+    _shard_index, shard_count = shard
 
     if failed_slides:
         logger.error(

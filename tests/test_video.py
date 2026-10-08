@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -18,7 +18,6 @@ from lecture_auto.pipeline.video import (
     concat_clips,
     create_slide_clip,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -153,8 +152,6 @@ def test_concat_clips_cleans_up_temp_file(tmp_path):
     out = tmp_path / "lecture.mp4"
 
     captured_concat_path: list[Path] = []
-
-    original_run = subprocess.run
 
     def capturing_run(cmd, **kwargs):
         # Find the -i argument (the concat list file path)
@@ -382,3 +379,26 @@ def test_assemble_video_strict_false_still_skips(tmp_path):
 
     assert result == out
     assert mock_run.call_count == 1
+
+
+def test_assemble_video_with_master_audio(tmp_path):
+    """master_audio=True invokes master_lecture_speech on merged audio before encoding."""
+    pngs = [_make_dummy_file(tmp_path / "slide_001.png")]
+    wavs = [_make_silence_wav(tmp_path / "audio_001.wav", duration_seconds=0.5)]
+    out = tmp_path / "lecture.mp4"
+
+    with (
+        patch("lecture_auto.pipeline.video.subprocess.run") as mock_run,
+        patch("lecture_auto.pipeline.video.master_lecture_speech") as mock_master,
+    ):
+        mock_run.return_value = _success_result()
+        # Pass through audio array so sf.write doesn't fail
+        mock_master.side_effect = lambda wav, **kwargs: wav
+
+        result = assemble_video(
+            pngs, wavs, tmp_path / "video", out, job_id="master-test", master_audio=True
+        )
+
+        assert result == out
+        assert mock_master.call_count == 1
+        assert mock_run.call_count == 1

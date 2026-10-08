@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-
 _PATH = Path(__file__).parents[1] / "scripts" / "build_voice_reference.py"
 _SPEC = importlib.util.spec_from_file_location("build_voice_reference", _PATH)
 assert _SPEC and _SPEC.loader
@@ -44,3 +43,20 @@ def test_build_reference_rejects_invalid_or_overlong_range(tmp_path: Path):
         build_reference(source, tmp_path / "bad.wav", 3, 2)
     with pytest.raises(ValueError, match="at most 10 seconds"):
         build_reference(source, tmp_path / "bad.wav", 0, 11)
+
+
+def test_build_reference_with_clean_studio(tmp_path: Path):
+    source = tmp_path / "source.wav"
+    output = tmp_path / "reference_v2.wav"
+    sr = 16000
+    tone = 0.2 * np.sin(2 * np.pi * 300 * np.arange(sr * 3) / sr)
+    sf.write(source, tone, sr)
+
+    build_reference(source, output, 0.5, 2.5, clean_studio=True)
+
+    info = sf.info(output)
+    metadata = json.loads(output.with_suffix(".wav.json").read_text(encoding="utf-8"))
+    assert (info.samplerate, info.channels) == (24000, 1)
+    assert 1 <= info.duration <= 2.1
+    assert "afftdn" in metadata["processing"]
+    assert "highpass" in metadata["processing"]

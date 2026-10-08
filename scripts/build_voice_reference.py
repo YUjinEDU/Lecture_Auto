@@ -24,7 +24,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build_reference(source: Path, output: Path, start: float, end: float) -> Path:
+def build_reference(
+    source: Path, output: Path, start: float, end: float, clean_studio: bool = False
+) -> Path:
     if not source.is_file():
         raise FileNotFoundError(source)
     if start < 0 or end <= start:
@@ -34,20 +36,31 @@ def build_reference(source: Path, output: Path, start: float, end: float) -> Pat
 
     output.parent.mkdir(parents=True, exist_ok=True)
     tmp = output.with_name(output.name + ".tmp.wav")
+
+    # Base filter chain: trim edges only, preserving natural speech pauses
+    filter_parts = [
+        "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB",
+        "areverse",
+        "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB",
+        "areverse",
+    ]
+
+    # S21 Studio cleaning: HPF 80Hz, FFT denoiser (-12dB), anti-boxiness 320Hz, presence 3kHz
+    if clean_studio:
+        filter_parts.extend([
+            "highpass=f=80",
+            "afftdn=nr=12:nf=-38:tn=1",
+            "equalizer=f=320:width_type=q:w=1.2:g=-1.8",
+            "equalizer=f=3000:width_type=q:w=1.0:g=1.5",
+        ])
+
+    filter_parts.append("loudnorm=I=-23:TP=-2:LRA=7")
+    af_string = ",".join(filter_parts)
+
     command = [
         "ffmpeg", "-nostdin", "-y", "-v", "error",
         "-ss", f"{start:.6f}", "-to", f"{end:.6f}", "-i", str(source),
-        # Trim the lead and the tail only, by trimming the front twice with a
-        # reverse in between. The obvious one-filter form with stop_periods
-        # also strips silence *inside* the clip, which in speech means every
-        # pause between words: a 9s selection came out at 0.43s of spliced
-        # syllables. Internal pauses are part of how the professor sounds and
-        # must survive into the speaker reference.
-        "-af", (
-            "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse,"
-            "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB,areverse,"
-            "loudnorm=I=-23:TP=-2:LRA=7"
-        ),
+        "-af", af_string,
         "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le", str(tmp),
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -89,8 +102,15 @@ def main() -> int:
     parser.add_argument("output", type=Path)
     parser.add_argument("--start", type=float, required=True)
     parser.add_argument("--end", type=float, required=True)
+    parser.add_argument(
+        "--clean-studio",
+        action="store_true",
+        help="Apply S21 studio cleaning (HPF 80Hz + FFT denoiser + anti-boxiness EQ)",
+    )
     args = parser.parse_args()
-    built = build_reference(args.source, args.output, args.start, args.end)
+    built = build_reference(
+        args.source, args.output, args.start, args.end, clean_studio=args.clean_studio
+    )
     print(f"built {built} ({built.with_suffix(built.suffix + '.json')})")
     return 0
 

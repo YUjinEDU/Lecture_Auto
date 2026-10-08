@@ -9,11 +9,15 @@ is materially faster for large slide decks.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import tempfile
 import wave
 from pathlib import Path
 
+import soundfile as sf
+
+from lecture_auto.pipeline.audio_mastering import master_lecture_speech
 from lecture_auto.pipeline.tts import merge_audio
 
 logger = logging.getLogger(__name__)
@@ -173,6 +177,7 @@ def assemble_video(
     output_path: Path,
     job_id: str,
     strict: bool = False,
+    master_audio: bool | None = None,
 ) -> Path:
     """Assemble the final lecture MP4 in a single encode pass.
 
@@ -197,6 +202,11 @@ def assemble_video(
         (naming the missing slide number(s)) instead of being silently
         skipped with a warning. Batch production runs want this; interactive/
         demo drivers keep the permissive default.
+    master_audio:
+        When True (or if env LECTURE_AUTO_MASTER_AUDIO is set), applies the S21
+        studio mastering DSP chain (HPF 80Hz, room anti-boxiness, de-esser,
+        -20 LUFS) to the final merged audio before MP4 video multiplexing.
+        Non-destructive: original slide WAVs on disk remain completely untouched.
 
     Returns
     -------
@@ -211,6 +221,9 @@ def assemble_video(
     video_dir = Path(video_dir)
     video_dir.mkdir(parents=True, exist_ok=True)
     output_path = Path(output_path)
+
+    if master_audio is None:
+        master_audio = os.environ.get("LECTURE_AUTO_MASTER_AUDIO", "").lower() in ("1", "true", "yes")
 
     wav_by_number: dict[int, Path] = {}
     for wav in wav_paths:
@@ -261,6 +274,15 @@ def assemble_video(
         # Merge exactly the WAVs resolved above, in slide order -- not
         # everything glob-matches in the directory (S1-a).
         merge_audio([wav for _, wav in slide_pairs], merged_audio_path)
+
+        if master_audio and merged_audio_path.exists():
+            logger.info("Applying S21 studio audio mastering chain to merged audio (job_id=%s)...", job_id)
+            try:
+                raw_audio, sr = sf.read(merged_audio_path)
+                mastered_audio = master_lecture_speech(raw_audio, sr=sr, target_lufs=-20.0)
+                sf.write(merged_audio_path, mastered_audio, sr)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Studio audio mastering fallback: %s", e)
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as manifest_file:
             slideshow_manifest_path = Path(manifest_file.name)
