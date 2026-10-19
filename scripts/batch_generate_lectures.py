@@ -26,7 +26,8 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,11 +85,13 @@ from lecture_auto.pipeline.restyle import (
 )
 from lecture_auto.pipeline.restyle import _load_instruction as _load_restyle_instruction
 from lecture_auto.pipeline.script_gen import (
+    SPEECH_CHARS_PER_SECOND,
     generate_script_for_slide_vision,
     get_professor_system_prompt,
 )
 from lecture_auto.pipeline.series_memory import load_or_create_memory
 from lecture_auto.pipeline.video import assemble_video
+from lecture_auto.pipeline.voice_match import VOICE_MATCH_ENV
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
     LecturePlan,
@@ -190,7 +193,69 @@ LECTURES = [
         "pptx": Path("data/PDF/종합설계 2026/06_Product_Backlog.pptx"),
         "reference_script": Path("data/PDF/종합설계 2026/06_Product_Backlog_강의스크립트.md"),
     },
+    # 07 (2026-10-19): the supplied *_강의스크립트.md for this deck is LLM-made reference
+    # material of no authority (user), so neither entry links it. Two cuts of the
+    # same deck; ``target_minutes`` is the plan target (non-binding for the
+    # free cut), ``min_minutes`` is a hard floor checked before any TTS runs.
+    # ``voice_match`` turns on per-segment spectral matching (voice_match.py).
+    {
+        "id": "10_종합설계_07_시스템구조_자유분량",
+        "name": "07_시스템 구조 설계 및 개발 환경 구축 (자유 분량)",
+        "subject": "종합설계",
+        "pptx": Path("data/PDF/종합설계 2026/07_시스템구조설계 및 개발환경.pptx"),
+        "target_minutes": 18.0,
+        "voice_match": True,
+    },
+    {
+        "id": "11_종합설계_07_시스템구조_30분이상",
+        "name": "07_시스템 구조 설계 및 개발 환경 구축 (30분 이상)",
+        "subject": "종합설계",
+        "pptx": Path("data/PDF/종합설계 2026/07_시스템구조설계 및 개발환경.pptx"),
+        "target_minutes": 33.0,
+        "min_minutes": 30.0,
+        "voice_match": True,
+    },
 ]
+
+_MIN_MINUTES_MARGIN = 1.0
+
+
+def _check_min_minutes(item: dict, scripts: dict[int, dict]) -> None:
+    """Refuse to start TTS when the scripts cannot reach ``item['min_minutes']``.
+
+    Estimated from script length at SPEECH_CHARS_PER_SECOND (measured 7.0-7.65
+    chars/s incl. pauses on shipped slides) plus a margin, so a too-short
+    lecture fails in minutes of LLM time instead of after hours of GPU time.
+    """
+    required = item.get("min_minutes")
+    if required is None:
+        return
+    chars = sum(len(sc.get("script", "")) for sc in scripts.values())
+    estimated = chars / SPEECH_CHARS_PER_SECOND / 60.0
+    logger.info("[%s] scripts: %d chars, ~%.1f min estimated (need >= %.1f + %.1f margin)",
+                item["id"], chars, estimated, required, _MIN_MINUTES_MARGIN)
+    if estimated < required + _MIN_MINUTES_MARGIN:
+        raise ValueError(
+            f"[{item['id']}] scripts total ~{estimated:.1f} min, below the required "
+            f"{required:.0f} min (+{_MIN_MINUTES_MARGIN:.0f} margin) -- raise target_minutes and regenerate"
+        )
+
+
+@contextmanager
+def _lecture_voice_match(item: dict) -> Iterator[None]:
+    """Enable per-segment spectral matching for a lecture that opts in via the
+    registry, restoring the caller's setting afterwards (so one process can mix
+    flagged and unflagged lectures)."""
+    previous = os.environ.get(VOICE_MATCH_ENV)
+    if item.get("voice_match"):
+        os.environ[VOICE_MATCH_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(VOICE_MATCH_ENV, None)
+        else:
+            os.environ[VOICE_MATCH_ENV] = previous
 
 
 def _lecture_output_mp4(lec_id: str, output_dir: Path) -> Path:
@@ -601,12 +666,13 @@ def _generate_lecture_plan_cached(
     llm_client, slides, subject: str, name: str, plan_path: Path,
     reference_outline: str | None = None,
     previous_memory=None,
+    target_minutes: float = TARGET_MINUTES,
 ) -> LecturePlan:
     # S10-c/D-16: the plan gets a calibrated (inflated) minutes figure, not
     # raw TARGET_MINUTES -- see PLAN_LENGTH_CALIBRATION's own comment. Same
     # value at both call sites below so the cache key matches what was
     # actually generated.
-    plan_minutes = TARGET_MINUTES * PLAN_LENGTH_CALIBRATION
+    plan_minutes = target_minutes * PLAN_LENGTH_CALIBRATION
     # S16: previous_memory (opt-in) is embedded in prompt_text, hence in the key.
     prompt_text = build_lecture_plan_prompt(
         slides, subject, name, plan_minutes, reference_outline, previous_memory=previous_memory
@@ -964,6 +1030,8 @@ def process_lecture(
         )
         # Not passed at all when None: calls stay identical to pre-S16.
         plan_kwargs = {"previous_memory": previous_memory} if previous_memory else {}
+        if item.get("target_minutes"):
+            plan_kwargs["target_minutes"] = item["target_minutes"]
         plan = _generate_lecture_plan_cached(
             llm_client, slides, item["subject"], item["name"], plan_path, reference_outline, **plan_kwargs
         )
@@ -1005,6 +1073,8 @@ def process_lecture(
 
     fcntl.flock(prep_lock, fcntl.LOCK_UN)
     prep_lock.close()
+
+    _check_min_minutes(item, scripts)
 
     if tts_pipe is None:
         logger.info("[5-6/6] --skip-tts: leaving TTS/video assembly out, scripts only.")
@@ -1580,10 +1650,11 @@ def main():
     verify_stt = not args.no_stt
     for lec in selected:
         t0 = time.time()
-        mp4_path = process_lecture(
-            lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
-            entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
-        )
+        with _lecture_voice_match(lec):
+            mp4_path = process_lecture(
+                lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
+                entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
+            )
         elapsed = time.time() - t0
         results.append((lec["id"], mp4_path, elapsed))
 

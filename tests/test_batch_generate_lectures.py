@@ -62,6 +62,83 @@ def test_tts_cache_key_stable_for_same_inputs():
     assert key_a == key_b
 
 
+def test_tts_cache_key_ignores_voice_match_env(monkeypatch):
+    """Status/assemble run in another shell must judge voice-matched audio valid."""
+    monkeypatch.delenv("LECTURE_AUTO_VOICE_MATCH", raising=False)
+    off = _tts_cache_key("script", b"ref-bytes", 20.0)
+    monkeypatch.setenv("LECTURE_AUTO_VOICE_MATCH", "1")
+    assert _tts_cache_key("script", b"ref-bytes", 20.0) == off
+
+
+def test_lecture_07_versions_are_registered_without_the_llm_reference_script():
+    by_id = {lec["id"]: lec for lec in LECTURES}
+    free = by_id["10_종합설계_07_시스템구조_자유분량"]
+    long_cut = by_id["11_종합설계_07_시스템구조_30분이상"]
+
+    assert free["pptx"] == long_cut["pptx"]
+    for lec in (free, long_cut):
+        assert "reference_script" not in lec
+        assert lec["voice_match"] is True
+    assert free.get("min_minutes") is None
+    assert long_cut["min_minutes"] == 30.0
+    assert long_cut["target_minutes"] > long_cut["min_minutes"]
+    assert len({lec["id"] for lec in LECTURES}) == len(LECTURES)
+
+
+def test_plan_uses_the_lectures_own_target_minutes(tmp_path):
+    from scripts.batch_generate_lectures import (
+        PLAN_LENGTH_CALIBRATION,
+        _generate_lecture_plan_cached,
+    )
+
+    plan = LecturePlan(
+        lecture_title="t", total_minutes=35.0, opening_context="o", core_message="c",
+        recurring_examples=[], sections=[],
+    )
+    llm_client = MagicMock()
+    llm_client.text_model = "gpt-x"
+    llm_client.vlm_model = "gpt-y"
+
+    with patch("scripts.batch_generate_lectures.build_lecture_plan_prompt", return_value="prompt") as mock_prompt, \
+         patch("scripts.batch_generate_lectures.generate_lecture_plan", return_value=plan) as mock_gen:
+        _generate_lecture_plan_cached(
+            llm_client, [], "subj", "name", tmp_path / "plan.json", target_minutes=33.0
+        )
+
+    assert mock_prompt.call_args[0][3] == pytest.approx(33.0 * PLAN_LENGTH_CALIBRATION)
+    assert mock_gen.call_args[0][4] == pytest.approx(33.0 * PLAN_LENGTH_CALIBRATION)
+
+
+def test_check_min_minutes_refuses_scripts_too_short_for_the_floor():
+    from scripts.batch_generate_lectures import _check_min_minutes
+
+    item = {"id": "x", "min_minutes": 30.0}
+    short = {1: {"script": "가" * int(7.5 * 60 * 20)}}
+    enough = {1: {"script": "가" * int(7.5 * 60 * 32)}}
+
+    with pytest.raises(ValueError):
+        _check_min_minutes(item, short)
+    _check_min_minutes(item, enough)
+    _check_min_minutes({"id": "y"}, short)
+
+
+def test_lecture_voice_match_sets_env_for_flagged_lectures_and_restores(monkeypatch):
+    from scripts.batch_generate_lectures import _lecture_voice_match
+
+    monkeypatch.delenv("LECTURE_AUTO_VOICE_MATCH", raising=False)
+    with _lecture_voice_match({"voice_match": True}):
+        assert os.environ["LECTURE_AUTO_VOICE_MATCH"] == "1"
+    assert "LECTURE_AUTO_VOICE_MATCH" not in os.environ
+
+    with _lecture_voice_match({}):
+        assert "LECTURE_AUTO_VOICE_MATCH" not in os.environ
+
+    monkeypatch.setenv("LECTURE_AUTO_VOICE_MATCH", "0")
+    with _lecture_voice_match({"voice_match": True}):
+        assert os.environ["LECTURE_AUTO_VOICE_MATCH"] == "1"
+    assert os.environ["LECTURE_AUTO_VOICE_MATCH"] == "0"
+
+
 # ---------------------------------------------------------------------------
 # S1-c: existing WAV is protected; re-synthesis goes to a .cand.wav sibling
 # ---------------------------------------------------------------------------
@@ -890,7 +967,7 @@ def test_lectures_all_entries_reference_real_files():
     if not data_pdf_dir.is_dir():
         pytest.skip(f"{data_pdf_dir} not present in this worktree (gitignored data)")
 
-    assert len(LECTURES) == 9
+    assert len(LECTURES) == 11
     for lec in LECTURES:
         assert "pdf" in lec or "pptx" in lec, lec["id"]
         if "pdf" in lec:
@@ -906,7 +983,7 @@ def test_lectures_new_entries_reference_real_files():
     if not real_dir.is_dir():
         pytest.skip(f"{real_dir} not present in this worktree (gitignored data)")
 
-    new_lectures = [lec for lec in LECTURES if "pptx" in lec]
+    new_lectures = [lec for lec in LECTURES if "reference_script" in lec]
     assert len(new_lectures) == 4
     for lec in new_lectures:
         assert lec["subject"] == "종합설계"
@@ -916,7 +993,7 @@ def test_lectures_new_entries_reference_real_files():
 
 def test_lectures_new_entries_selectable_by_only_index():
     # SPEC S3-c: "--only 인덱스로도 선택 가능해야 함(6~9)" -- 1-based index.
-    new_ids = {lec["id"] for lec in LECTURES if "pptx" in lec}
+    new_ids = {lec["id"] for lec in LECTURES if "reference_script" in lec}
     assert {LECTURES[i - 1]["id"] for i in range(6, 10)} == new_ids
 
 
