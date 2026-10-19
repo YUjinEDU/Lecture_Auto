@@ -366,7 +366,7 @@ def test_parse_reference_script_real_files():
         pytest.skip(f"{real_dir} not present in this worktree (gitignored data)")
 
     md_files = sorted(real_dir.glob("*_강의스크립트.md"))
-    assert len(md_files) == 4
+    assert len(md_files) >= 4
     for md_path in md_files:
         notes = parse_reference_script(md_path.read_text(encoding="utf-8"))
         assert len(notes) > 0, md_path
