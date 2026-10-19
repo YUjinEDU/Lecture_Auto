@@ -260,3 +260,10 @@ entries:
   - {written: "Step", spoken: "스텝", approved: true}
   - {written: "Example", spoken: "이그잼플", approved: true}
   - {written: "Target", spoken: "타깃", approved: true}
+
+  # 2026-10-19: 07 슬라이드 12/14의 API 경로. 슬래시와 ?, =, {} 를 TTS가 읽지 않아 받아쓰기와 어긋나므로 말로 풀어 쓴다.
+  - {written: "/api/loans/{id}/return", spoken: "슬래시 에이피아이 슬래시 론즈 슬래시 아이디 슬래시 리턴", approved: true}
+  - {written: "/api/books?title=", spoken: "슬래시 에이피아이 슬래시 북스 물음표 타이틀 이퀄 표시", approved: true}
+  - {written: "/api/reservations", spoken: "슬래시 에이피아이 슬래시 레저베이션즈", approved: true}
+  - {written: "/api/borrowers", spoken: "슬래시 에이피아이 슬래시 보로워즈", approved: true}
+  - {written: "/api/loans", spoken: "슬래시 에이피아이 슬래시 론즈", approved: true}
