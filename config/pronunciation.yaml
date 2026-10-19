@@ -138,3 +138,125 @@ entries:
   - {written: "after", spoken: "애프터", approved: true}
   - {written: "gain", spoken: "게인", approved: true}
   - {written: "pain", spoken: "페인", approved: true}
+
+  # 2026-10-19: 07 시스템구조설계 및 개발환경 영어 용어 발음 사전
+  - {written: "Controller", spoken: "컨트롤러", approved: true}
+  - {written: "Service", spoken: "서비스", approved: true}
+  - {written: "Repository", spoken: "레포지토리", approved: true}
+  - {written: "Domain", spoken: "도메인", approved: true}
+  - {written: "DTO", spoken: "디티오", approved: true}
+  - {written: "JPA", spoken: "제이피에이", approved: true}
+  - {written: "Entity", spoken: "엔티티", approved: true}
+  - {written: "REST", spoken: "레스트", approved: true}
+  - {written: "RESTful", spoken: "레스트풀", approved: true}
+  - {written: "Validation", spoken: "발리데이션", approved: true}
+  - {written: "Sequence Diagram", spoken: "시퀀스 다이어그램", approved: true}
+  - {written: "Sequence", spoken: "시퀀스", approved: true}
+  - {written: "Diagram", spoken: "다이어그램", approved: true}
+  - {written: "Class Diagram", spoken: "클래스 다이어그램", approved: true}
+  - {written: "Class", spoken: "클래스", approved: true}
+  - {written: "DB", spoken: "디비", approved: true}
+  - {written: "ERD", spoken: "이알디", approved: true}
+  - {written: "PK", spoken: "피케이", approved: true}
+  - {written: "FK", spoken: "에프케이", approved: true}
+  - {written: "ISBN", spoken: "아이에스비엔", approved: true}
+  - {written: "UNIQUE", spoken: "유니크", approved: true}
+  - {written: "NULL", spoken: "널", approved: true}
+  - {written: "H2", spoken: "에이치투", approved: true}
+  - {written: "DBeaver", spoken: "디비버", approved: true}
+  - {written: "dbdiagram", spoken: "디비다이어그램", approved: true}
+  - {written: "Constraints", spoken: "컨스트레인츠", approved: true}
+  - {written: "Endpoint", spoken: "엔드포인트", approved: true}
+  - {written: "Catalog", spoken: "카탈로그", approved: true}
+  - {written: "URL", spoken: "유알엘", approved: true}
+  - {written: "HTTP", spoken: "에이치티티피", approved: true}
+  - {written: "POST", spoken: "포스트", approved: true}
+  - {written: "GET", spoken: "겟", approved: true}
+  - {written: "PUT", spoken: "풋", approved: true}
+  - {written: "DELETE", spoken: "딜리트", approved: true}
+  - {written: "GraphQL", spoken: "그래프큐엘", approved: true}
+  - {written: "gRPC", spoken: "지알피씨", approved: true}
+  - {written: "Postman", spoken: "포스트맨", approved: true}
+  - {written: "Swagger", spoken: "스웨거", approved: true}
+  - {written: "Method", spoken: "메서드", approved: true}
+  - {written: "PC", spoken: "피씨", approved: true}
+  - {written: "JDK", spoken: "제이디케이", approved: true}
+  - {written: "Python", spoken: "파이썬", approved: true}
+  - {written: "FastAPI", spoken: "패스트에이피아이", approved: true}
+  - {written: "Spring Boot", spoken: "스프링 부트", approved: true}
+  - {written: "Spring", spoken: "스프링", approved: true}
+  - {written: "Boot", spoken: "부트", approved: true}
+  - {written: "Gradle", spoken: "그레이들", approved: true}
+  - {written: "npm", spoken: "엔피엠", approved: true}
+  - {written: "Docker", spoken: "도커", approved: true}
+  - {written: "PR", spoken: "피알", approved: true}
+  - {written: "Issue", spoken: "이슈", approved: true}
+  - {written: "Lucidchart", spoken: "루시드차트", approved: true}
+  - {written: "draw.io", spoken: "드로우아이오", approved: true}
+  - {written: "draw", spoken: "드로우", approved: true}
+  - {written: "io", spoken: "아이오", approved: true}
+  - {written: "Visual Paradigm", spoken: "비주얼 패러다임", approved: true}
+  - {written: "Visual", spoken: "비주얼", approved: true}
+  - {written: "Paradigm", spoken: "패러다임", approved: true}
+  - {written: "Web", spoken: "웹", approved: true}
+  - {written: "Framework", spoken: "프레임워크", approved: true}
+  - {written: "Library", spoken: "라이브러리", approved: true}
+  - {written: "Management", spoken: "매니지먼트", approved: true}
+  - {written: "System", spoken: "시스템", approved: true}
+  - {written: "Version", spoken: "버전", approved: true}
+  - {written: "v1", spoken: "브이원", approved: true}
+  - {written: "Dev", spoken: "데브", approved: true}
+  - {written: "SM", spoken: "에스엠", approved: true}
+  - {written: "Team", spoken: "팀", approved: true}
+  - {written: "Meta Information", spoken: "메타 인포메이션", approved: true}
+  - {written: "Meta", spoken: "메타", approved: true}
+  - {written: "Information", spoken: "인포메이션", approved: true}
+  - {written: "Project Overview", spoken: "프로젝트 오버뷰", approved: true}
+  - {written: "Overview", spoken: "오버뷰", approved: true}
+  - {written: "Architecture Design", spoken: "아키텍처 디자인", approved: true}
+  - {written: "Architecture", spoken: "아키텍처", approved: true}
+  - {written: "Design", spoken: "디자인", approved: true}
+  - {written: "Traceability", spoken: "트레이서빌리티", approved: true}
+  - {written: "Scope", spoken: "스코프", approved: true}
+  - {written: "In-Scope", spoken: "인스코프", approved: true}
+  - {written: "Out-of-Scope", spoken: "아웃오브스코프", approved: true}
+  - {written: "LoanService", spoken: "론서비스", approved: true}
+  - {written: "LoanEntity", spoken: "론엔티티", approved: true}
+  - {written: "ReturnService", spoken: "리턴서비스", approved: true}
+  - {written: "ReservationService", spoken: "레저베이션서비스", approved: true}
+  - {written: "IntegrityChecker", spoken: "인테그리티 체커", approved: true}
+  - {written: "Reservation", spoken: "레저베이션", approved: true}
+  - {written: "Loan", spoken: "론", approved: true}
+  - {written: "Active", spoken: "액티브", approved: true}
+  - {written: "returnedAt", spoken: "리턴드앳", approved: true}
+  - {written: "US-11", spoken: "유에스 십일", approved: true}
+  - {written: "US-13", spoken: "유에스 십삼", approved: true}
+  - {written: "US-24", spoken: "유에스 이십사", approved: true}
+  - {written: "books", spoken: "북스", approved: true}
+  - {written: "borrowers", spoken: "보로워즈", approved: true}
+  - {written: "loans", spoken: "론즈", approved: true}
+  - {written: "reservations", spoken: "레저베이션즈", approved: true}
+  - {written: "return", spoken: "리턴", approved: true}
+  - {written: "title", spoken: "타이틀", approved: true}
+  - {written: "if", spoken: "이프", approved: true}
+
+  # 2026-10-19: 07 대본 사전 점검(--check)에서 남은 영어 토큰
+  - {written: "Project", spoken: "프로젝트", approved: true}
+  - {written: "Presentation", spoken: "프레젠테이션", approved: true}
+  - {written: "Application", spoken: "애플리케이션", approved: true}
+  - {written: "Persistence", spoken: "퍼시스턴스", approved: true}
+  - {written: "api", spoken: "에이피아이", approved: true}
+  - {written: "id", spoken: "아이디", approved: true}
+  - {written: "x", spoken: "엑스", approved: true}
+  - {written: "Enum", spoken: "이넘", approved: true}
+  - {written: "borrower", spoken: "보로워", approved: true}
+  - {written: "book", spoken: "북", approved: true}
+  - {written: "IS", spoken: "이즈", approved: true}
+  - {written: "US-16", spoken: "유에스 십육", approved: true}
+  - {written: "Pull Request", spoken: "풀 리퀘스트", approved: true}
+  - {written: "Pull", spoken: "풀", approved: true}
+  - {written: "Request", spoken: "리퀘스트", approved: true}
+  - {written: "Java", spoken: "자바", approved: true}
+  - {written: "Step", spoken: "스텝", approved: true}
+  - {written: "Example", spoken: "이그잼플", approved: true}
+  - {written: "Target", spoken: "타깃", approved: true}
