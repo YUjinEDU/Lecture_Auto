@@ -184,6 +184,13 @@ def test_produce_restart_limited(monkeypatch, tmp_path):
     assert rc == 1
 
 
+def test_produce_does_not_restart_on_precondition_exit(monkeypatch, tmp_path):
+    popen = MagicMock(side_effect=lambda *a, **k: FakeProc([bgl.EXIT_NO_RETRY]))
+    rc, _ = _produce(monkeypatch, tmp_path, ["--only", "7", "--gpus", "0", "--max-restarts", "2"], popen)
+    assert popen.call_count == 1
+    assert rc == 1
+
+
 def test_produce_draft_exit_1(monkeypatch, tmp_path):
     popen = MagicMock(side_effect=lambda *a, **k: FakeProc([0]))
     rc, _ = _produce(monkeypatch, tmp_path, ["--only", "7", "--gpus", "0"], popen, state="draft")

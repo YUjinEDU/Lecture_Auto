@@ -221,6 +221,13 @@ LECTURES = [
 _MIN_MINUTES_MARGIN = 1.0
 
 
+EXIT_NO_RETRY = 3
+
+
+class ScriptTooShortError(ValueError):
+    """Scripts on disk cannot reach the lecture's ``min_minutes``; rerunning changes nothing."""
+
+
 def _check_min_minutes(item: dict, scripts: dict[int, dict]) -> None:
     """Refuse to start TTS when the scripts cannot reach ``item['min_minutes']``.
 
@@ -236,7 +243,7 @@ def _check_min_minutes(item: dict, scripts: dict[int, dict]) -> None:
     logger.info("[%s] scripts: %d chars, ~%.1f min estimated (need >= %.1f + %.1f margin)",
                 item["id"], chars, estimated, required, _MIN_MINUTES_MARGIN)
     if estimated < required + _MIN_MINUTES_MARGIN:
-        raise ValueError(
+        raise ScriptTooShortError(
             f"[{item['id']}] scripts total ~{estimated:.1f} min, below the required "
             f"{required:.0f} min (+{_MIN_MINUTES_MARGIN:.0f} margin) -- raise target_minutes and regenerate"
         )
@@ -1743,11 +1750,15 @@ def main():
             still = _heal_lecture(lec, llm_client, tts_pipe, base_work, output_dir, pronunciation_entries, verify_stt)
             results.append((lec["id"], f"heal: still held back {still}" if still else "heal: all slides pass", time.time() - t0))
             continue
-        with _lecture_voice_match(lec):
-            mp4_path = process_lecture(
-                lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
-                entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
-            )
+        try:
+            with _lecture_voice_match(lec):
+                mp4_path = process_lecture(
+                    lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
+                    entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
+                )
+        except ScriptTooShortError as e:
+            logger.error("%s", e)
+            sys.exit(EXIT_NO_RETRY)
         elapsed = time.time() - t0
         results.append((lec["id"], mp4_path, elapsed))
 

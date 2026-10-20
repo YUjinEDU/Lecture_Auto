@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.batch_generate_lectures import (  # noqa: E402
+    EXIT_NO_RETRY,
     LECTURES,
     _format_status_line,
     _select_lectures,
@@ -125,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         for w in list(live):
             rc = w[0].poll()
             if rc is None:
+                continue
+            if rc == EXIT_NO_RETRY:
+                print(f"WARNING: worker gpu{w[1]}#{w[2]} hit a precondition error (see its log); not restarting")
+                failed = True
+                live.remove(w)
                 continue
             if rc != 0 and w[4] < args.max_restarts:
                 w[4] += 1
