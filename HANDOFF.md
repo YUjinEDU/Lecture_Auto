@@ -47,7 +47,7 @@
   - 액센트구(AP) 호흡 쉼표(`,`) 가이드 및 `compute_metrics` 지표 확장.
 - **주요 버그 해결 및 파이프라인 정상화 (`raon_tts.py`)**:
   1. **단어 잘림(Chopped words) 해결**: 세그먼트 트리밍 시 안전 여유 마진이 50ms로 너무 짧아 첫 자음과 종결어미가 잘리던 문제를 **선두 80ms, 말미 100ms**로 대폭 확장하고 **5ms 코사인 페이드**를 적용하여 단어 잘림 완벽 박멸.
-  2. **톤 불안정 및 가성 튐 해결**: `TTS_TEMPERATURE = 0.85` 상수는 기존 캐시 무회귀를 위해 유지하되, 런타임 인퍼런스는 `LECTURE_AUTO_TTS_TEMPERATURE` (기본값 `0.72`)로 안정화하여 피치 튐 억제.
+  2. **톤 불안정 및 가성 튐 해결**: `TTS_TEMPERATURE = 0.85` 상수가 캐시 키와 런타임 기본값을 겸한다. 2026-10-20 실측(07 강의 구간 60개, 시드 17 고정)에서 0.72 대비 첫 시도 게이트 실패율 23% → 8%, 음높이 튐·화자 유사도(ECAPA 0.762 → 0.773)는 동등 이상이라 기본값을 0.72에서 0.85로 되돌렸다. `LECTURE_AUTO_TTS_TEMPERATURE`로 덮어쓸 수 있다.
 
 ---
 
@@ -121,7 +121,7 @@ Lecture_Auto/
 | :--- | :---: | :--- |
 | `LECTURE_AUTO_REF_VOICE` | `None` (내부 v1 fallback) | 레퍼런스 음성 오버라이드. 스튜디오 정제본 적용 시 `data/audio_ref/reference_v2.wav` 지정 권장. |
 | `LECTURE_AUTO_MASTER_AUDIO` | `"1"` | 비디오 합성 시 `audio_mastering.py` 마스터링 체인 적용 여부 (`"1"` 또는 `"0"`). |
-| `LECTURE_AUTO_TTS_TEMPERATURE` | `"0.72"` | Raon TTS 런타임 샘플링 온도 (0.70~0.75 권장, 피치 튐 방지). |
+| `LECTURE_AUTO_TTS_TEMPERATURE` | `"0.85"` | Raon TTS 런타임 샘플링 온도. 실행 환경에 `0.72`를 따로 지정해 두었다면 제거할 것 (0.72는 첫 시도 실패율이 약 3배). |
 
 ---
 
