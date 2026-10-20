@@ -62,15 +62,56 @@ def normalize_transcript(text: str, entries: list[dict]) -> str:
     what it hears in its own orthography ("API", "US11"). Comparing the two
     as-is counts every such term as errors, so a correctly read sentence fails
     the fidelity gate. Entries like "US-11" also match the hyphen-less
-    spelling "US11" that STT tends to produce. Comparison-only: the stored
-    transcript is left as the STT returned it.
+    spelling "US11" that STT tends to produce, and single Latin words match in
+    either case (STT writes "get" for an entry "GET"). Comparison-only: the
+    stored transcript is left as the STT returned it.
     """
-    hyphenless = [
-        {**e, "written": m.group(1) + m.group(2)}
-        for e in entries
-        if (m := _HYPHEN_DIGITS.match(e.get("written") or ""))
-    ]
-    return apply_pronunciation(text, list(entries) + hyphenless)
+    taken = {e.get("written") for e in entries}
+    variants = []
+    for e in entries:
+        written = e.get("written") or ""
+        forms = set()
+        if m := _HYPHEN_DIGITS.match(written):
+            forms.add(m.group(1) + m.group(2))
+        if written.isascii() and written.isalpha():
+            forms |= {written.lower(), written.upper()}
+        variants += [{**e, "written": f} for f in forms if f not in taken]
+    return apply_pronunciation(text, list(entries) + variants)
+
+
+_RISK_PATH = re.compile(r"(?<![A-Za-z0-9가-힣])/[A-Za-z{가-힣][^\s,)]*")
+_RISK_DOTTED = re.compile(r"[A-Za-z가-힣]\.[A-Za-z가-힣][A-Za-z0-9가-힣]*")
+_RISK_SYMBOL = re.compile(r"[{}]|[A-Za-z]=")
+_RISK_QUERY = re.compile(r"/[A-Za-z0-9/_{}\-]*\?[A-Za-z]+=")
+_CODE_TOKEN = re.compile(r"[A-Za-z]*[a-z][A-Z][A-Za-z]*|[A-Za-z]+-\d+|/[A-Za-z][A-Za-z0-9/_{}\-]*")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+DENSE_SENTENCE_MIN_CHARS = 80
+DENSE_SENTENCE_MIN_CODE_TOKENS = 4
+
+
+def find_speakability_risks(text: str, entries: list[dict]) -> list[tuple[str, str]]:
+    """Spots in a script that the TTS/STT pair is known to stumble on.
+
+    Each hit is ``(kind, snippet)``. ``path``/``dotted``/``symbol`` are judged on
+    the dictionary-substituted text (a path the dictionary already spells out is
+    fine); ``query`` and ``dense`` on the raw text, because a spelled-out query
+    string is still rewritten by the STT as English words and a sentence
+    stuffed with code tokens (CamelCase names, ``US-11`` codes, paths) made the
+    TTS emit near-silence on every seed; plain English term lists are fine.
+    Warn-only: callers must not fail a run on these.
+    """
+    spoken = apply_pronunciation(text, entries)
+    risks = [(kind, m.group(0)) for kind, pat in (
+        ("path", _RISK_PATH), ("dotted", _RISK_DOTTED), ("symbol", _RISK_SYMBOL),
+    ) for m in pat.finditer(spoken)]
+    risks += [("query", m.group(0)) for m in _RISK_QUERY.finditer(text)]
+    for sentence in _SENTENCE_SPLIT.split(text):
+        if (
+            len(sentence) >= DENSE_SENTENCE_MIN_CHARS
+            and len(_CODE_TOKEN.findall(sentence)) >= DENSE_SENTENCE_MIN_CODE_TOKENS
+        ):
+            risks.append(("dense", sentence[:40] + "…"))
+    return risks
 
 
 _LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9\-]*")

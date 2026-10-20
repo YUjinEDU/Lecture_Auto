@@ -64,6 +64,7 @@ from lecture_auto.pipeline.lecture_plan import (
 from lecture_auto.pipeline.parser_pdf import parse_pdf
 from lecture_auto.pipeline.pronunciation import (
     apply_pronunciation,
+    find_speakability_risks,
     find_unlisted_latin_tokens,
     load_pronunciation_entries,
 )
@@ -1078,6 +1079,9 @@ def process_lecture(
 
     _check_min_minutes(item, scripts)
 
+    for n, kind, snippet in _scan_risks({n: sc.get("script", "") for n, sc in scripts.items()}, entries):
+        logger.warning("speakability: slide %d [%s] %r -- edit the script or add a dictionary entry", n, kind, snippet)
+
     if tts_pipe is None:
         logger.info("[5-6/6] --skip-tts: leaving TTS/video assembly out, scripts only.")
         return scripts_dir
@@ -1172,6 +1176,79 @@ def assemble_only(
     )
 
 
+def _held_back_slides(item: dict, base_work_dir: Path, entries: Sequence[dict]) -> list[int]:
+    """Slides that make the lecture a DRAFT: audio neither cache-valid nor approved."""
+    lec_id = item["id"]
+    work_dir = base_work_dir / lec_id
+    scripts = {
+        int(f.stem.rsplit("_", 1)[1]): json.loads(f.read_text(encoding="utf-8"))
+        for f in sorted((work_dir / "scripts").glob("script_*.json"))
+    }
+    wav_by_number = {n: work_dir / "audio" / f"slide_{n:03d}.wav" for n in scripts}
+    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+    approved = set(load_approvals(work_dir, lec_id).slides.keys())
+    invalid = _invalid_slides(sorted(scripts), wav_by_number, scripts, ref_voice_bytes, entries)
+    return [n for n in invalid if n not in approved]
+
+
+def _describe_failure(audio_dir: Path, n: int) -> str:
+    """Gate reasons and the failing segments' text from a slide's latest QC record."""
+    for name in (f"slide_{n:03d}.cand.wav", f"slide_{n:03d}.wav"):
+        qc = audio_dir / f"{name}.qc.json"
+        if qc.exists():
+            data = json.loads(qc.read_text(encoding="utf-8"))
+            failing = [
+                f"seg{s['index']}(cer={s.get('cer')}): {s['text'][:60]}"
+                for s in data.get("segments", []) if s.get("fallback")
+            ]
+            return f"{data.get('gate_reasons')} " + " | ".join(failing)
+    return "no QC record"
+
+
+def _heal_lecture(
+    item: dict, llm_client, tts_pipe, base_work_dir: Path, output_dir: Path,
+    entries: Sequence[dict], verify_stt: bool,
+) -> list[int]:
+    """One bounded recovery round for a DRAFT lecture; returns the slides still held back.
+
+    Reseeded draws only help when the failure was a bad draw. A slide that fails
+    again is reported with its failing segment so the script can be edited by
+    hand (a hand edit survives regeneration) instead of burning more GPU time.
+    """
+    audio_dir = base_work_dir / item["id"] / "audio"
+    held = _held_back_slides(item, base_work_dir, entries)
+    if not held:
+        logger.info("[%s] heal: nothing held back", item["id"])
+        return []
+    logger.info("[%s] heal: retrying slides %s with reseeded draws", item["id"], held)
+    with _lecture_voice_match(item):
+        process_lecture(
+            item, llm_client, tts_pipe, base_work_dir, output_dir, target_slides=set(held),
+            entries=entries, verify_stt=verify_stt, claim=f"heal_{time.strftime('%Y%m%d_%H%M%S')}",
+        )
+    for n in _held_back_slides(item, base_work_dir, entries):
+        if not (audio_dir / f"slide_{n:03d}.cand.wav").exists():
+            continue
+        try:
+            _cli_promote(item, base_work_dir, str(n), False, "heal: reseeded retry passed the gate")
+        except ValueError as e:
+            logger.error("[%s] heal: slide %d candidate not promoted: %s", item["id"], n, e)
+    assemble_only(item, base_work_dir, output_dir, entries)
+    still = _held_back_slides(item, base_work_dir, entries)
+    for n in still:
+        logger.error("[%s] heal: slide %d still held back: %s", item["id"], n, _describe_failure(audio_dir, n))
+    return still
+
+
+def _scan_risks(texts: dict[int, str], entries: Sequence[dict]) -> list[tuple[int, str, str]]:
+    """(slide, kind, snippet) for every speakability risk, slide order."""
+    return [
+        (n, kind, snippet)
+        for n in sorted(texts)
+        for kind, snippet in find_speakability_risks(texts[n], list(entries))
+    ]
+
+
 def _scan_unlisted(texts: dict[int, str], entries: Sequence[dict]) -> dict[str, list[int]]:
     """S13: token -> slide numbers where it stays unlisted (first-seen order)."""
     found: dict[str, list[int]] = {}
@@ -1197,6 +1274,8 @@ def _cli_check(item: dict, base_work_dir: Path, entries: Sequence[dict]) -> int:
     for tok, nums in found.items():
         mark = "  (사전에 미승인 항목으로 있음)" if tok in unapproved else ""
         print(f"{tok}\t{','.join(map(str, nums))}{mark}")
+    for n, kind, snippet in _scan_risks(texts, entries):
+        print(f"슬라이드 {n}\t[읽기 위험:{kind}]\t{snippet}")
     print(f"[{item['id']}] unlisted tokens: {len(found)}")
     return 1 if found else 0
 
@@ -1491,6 +1570,12 @@ def main():
              "Other slides keep their existing audio.",
     )
     parser.add_argument("--skip-tts", action="store_true", help="Skip TTS synthesis (test script/render only)")
+    parser.add_argument(
+        "--heal", action="store_true",
+        help="Retry the slides that keep a lecture a DRAFT with reseeded draws, promote the candidates "
+             "that pass the gate, re-assemble, and say which slides still need a script edit. "
+             "Requires --only; loads the TTS model.",
+    )
     parser.add_argument("--gpu", type=int, default=0, help="CUDA device index for the TTS model")
     parser.add_argument(
         "--shard", type=str, default="0/1",
@@ -1569,6 +1654,8 @@ def main():
     pronunciation_entries = load_pronunciation_entries(Path("config/pronunciation.yaml"))
 
     approval_mode = bool(args.approve or args.approve_passing or args.promote or args.assemble_only or args.check)
+    if args.heal and (not args.only or args.skip_tts):
+        parser.error("--heal requires --only and cannot be combined with --skip-tts")
     if approval_mode and not args.only:
         parser.error(
             "--approve/--approve-passing/--promote/--assemble-only/--check require --only <lecture id or index>"
@@ -1652,6 +1739,10 @@ def main():
     verify_stt = not args.no_stt
     for lec in selected:
         t0 = time.time()
+        if args.heal:
+            still = _heal_lecture(lec, llm_client, tts_pipe, base_work, output_dir, pronunciation_entries, verify_stt)
+            results.append((lec["id"], f"heal: still held back {still}" if still else "heal: all slides pass", time.time() - t0))
+            continue
         with _lecture_voice_match(lec):
             mp4_path = process_lecture(
                 lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,

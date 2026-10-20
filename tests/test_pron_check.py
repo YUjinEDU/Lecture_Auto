@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from lecture_auto.pipeline.pronunciation import find_unlisted_latin_tokens
+from lecture_auto.pipeline.pronunciation import (
+    find_speakability_risks,
+    find_unlisted_latin_tokens,
+)
 from scripts import batch_generate_lectures as bgl
 
 _LEC = {"id": "testlec", "name": "t", "subject": "t", "pdf": Path("x.pdf")}
@@ -68,3 +71,34 @@ def test_check_without_scripts_errors(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as e:
         _run_check(monkeypatch, tmp_path, ["--only", "testlec", "--check"])
     assert e.value.code not in (0, None)
+
+
+_RISK_ENTRIES = [
+    {"written": "API", "spoken": "에이피아이", "approved": True},
+    {"written": "/api/loans", "spoken": "슬래시 에이피아이 슬래시 론즈", "approved": True},
+]
+
+
+def _kinds(text):
+    return {kind for kind, _ in find_speakability_risks(text, _RISK_ENTRIES)}
+
+
+def test_speakability_flags_each_known_failure_shape():
+    assert _kinds("목록은 GET /api/books로 조회합니다.") == {"path"}
+    assert "dotted" in _kinds("ERD는 dbdiagram.io나 쓰죠.")
+    assert "query" in _kinds("제목 검색은 GET /api/books?title=로 표현합니다.")
+    dense = "예를 들어 US-11 도서 대출은 LoanService, LoanEntity, POST /api/loans로 이어지고, US-13 반납은 ReturnService와 연결됩니다."
+    assert "dense" in _kinds(dense)
+
+
+def test_speakability_leaves_fine_text_alone():
+    assert _kinds("세 역할은 Product Owner, Scrum Master, Developer이고 Spring Boot 3.x도 씁니다.") == set()
+    assert _kinds("대출은 POST /api/loans로 만듭니다.") == set()
+    assert _kinds("짧은 문장에 LoanService 하나만 있습니다.") == set()
+
+
+def test_check_prints_speakability_risks_without_changing_the_exit_code(monkeypatch, tmp_path, capsys):
+    _write_scripts(tmp_path, {1: "다이어그램.아이오나 씁니다."})
+    _run_check(monkeypatch, tmp_path, ["--only", "testlec", "--check"])
+    out = capsys.readouterr().out
+    assert "읽기 위험:dotted" in out and "슬라이드 1" in out

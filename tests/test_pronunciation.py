@@ -174,3 +174,14 @@ def test_normalize_transcript_maps_latin_terms_and_hyphenless_variants():
     ]
 
     assert normalize_transcript("API 와 US11에 ID", entries) == "에이피아이 와 유에스 십일에 ID"
+
+
+def test_normalize_transcript_matches_single_words_in_any_case():
+    entries = [
+        {"written": "GET", "spoken": "겟", "approved": True},
+        {"written": "books", "spoken": "북스", "approved": True},
+        {"written": "Pull Request", "spoken": "풀 리퀘스트", "approved": True},
+    ]
+
+    assert normalize_transcript("get BOOKS", entries) == "겟 북스"
+    assert normalize_transcript("pull request", entries) == "pull request"

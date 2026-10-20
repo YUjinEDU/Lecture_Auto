@@ -45,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-stt", action="store_true")
     ap.add_argument("--max-restarts", type=int, default=2)
     ap.add_argument("--fix-failed", action="store_true")
+    ap.add_argument(
+        "--heal", action="store_true",
+        help="after assembly, retry held-back slides of every non-final lecture once (batch --heal)",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -67,10 +71,17 @@ def main(argv: list[str] | None = None) -> int:
         base + ["--only", str(LECTURES.index(lec) + 1), "--assemble-only"] for lec in selected
     ]
 
+    first_gpu = args.gpus.split(",")[0].strip()
+    heals = [
+        base + ["--only", str(LECTURES.index(lec) + 1), "--heal", "--gpu", first_gpu] for lec in selected
+    ] if args.heal else []
+
     if args.dry_run:
         for _, _, cmd in workers:
             print(" ".join(cmd))
         for cmd in assembles:
+            print(" ".join(cmd))
+        for cmd in heals:
             print(" ".join(cmd))
         return 0
 
@@ -107,6 +118,13 @@ def main(argv: list[str] | None = None) -> int:
     for cmd in assembles:
         if subprocess.run(cmd, cwd=ROOT).returncode != 0:
             print("WARNING: assemble failed:", " ".join(cmd))
+            failed = True
+
+    for lec, cmd in zip(selected, heals):
+        if compute_lecture_status(lec, ROOT / "data" / "work_batch", ROOT / "output").video_state == "final":
+            continue
+        if subprocess.run(cmd, cwd=ROOT, check=False).returncode != 0:
+            print("WARNING: heal failed:", " ".join(cmd))
             failed = True
 
     for lec in selected:
