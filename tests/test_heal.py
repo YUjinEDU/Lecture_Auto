@@ -12,6 +12,12 @@ from scripts import batch_generate_lectures as bgl
 from scripts import produce
 
 _ITEM = {"id": "healtest", "name": "t", "subject": "t", "pdf": Path("x.pdf")}
+_real_free_vram_mib = produce._free_vram_mib
+
+
+@pytest.fixture(autouse=True)
+def _no_gpu_query(monkeypatch):
+    monkeypatch.setattr(produce, "_free_vram_mib", dict)
 
 
 @pytest.fixture
@@ -99,3 +105,31 @@ def test_produce_without_heal_flag_prints_no_heal_command(capsys):
     produce.main(["--only", "10,11", "--gpus", "0", "--dry-run"])
 
     assert "--heal" not in capsys.readouterr().out
+
+
+def test_free_vram_parses_nvidia_smi_and_survives_its_absence():
+    ok = type("R", (), {"stdout": "0, 49000\n1, 29000\n"})()
+
+    assert _real_free_vram_mib(lambda *a, **k: ok) == {"0": 49000, "1": 29000}
+
+    def missing(*a, **k):
+        raise FileNotFoundError("nvidia-smi")
+
+    assert _real_free_vram_mib(missing) == {}
+
+
+def test_workers_per_gpu_defaults_to_two_only_where_two_fit():
+    free = {"0": 49000, "1": 29000}
+
+    assert produce.workers_per_gpu(["0", "1", "2"], None, free) == {"0": 2, "1": 1, "2": 1}
+    assert produce.workers_per_gpu(["0", "1"], 1, free) == {"0": 1, "1": 1}
+    assert produce.workers_per_gpu(["1"], 2, free) == {"1": 2}
+
+
+def test_produce_starts_the_planned_number_of_workers(capsys, monkeypatch):
+    monkeypatch.setattr(produce, "_free_vram_mib", lambda: {"0": 49000, "1": 29000})
+
+    produce.main(["--only", "10", "--gpus", "0,1", "--dry-run"])
+
+    claims = [line for line in capsys.readouterr().out.splitlines() if "--claim" in line]
+    assert len(claims) == 3

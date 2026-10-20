@@ -159,6 +159,7 @@ def _produce(monkeypatch, tmp_path, argv, popen, state="final"):
     monkeypatch.setattr(produce, "LECTURES", LECS)
     monkeypatch.setattr(produce, "compute_lecture_status", lambda *a: MagicMock(video_state=state))
     monkeypatch.setattr(produce, "_format_status_line", lambda *a: "line")
+    monkeypatch.setattr(produce, "_free_vram_mib", dict)
     run = MagicMock(return_value=MagicMock(returncode=0))
     with patch.object(produce.subprocess, "Popen", popen), patch.object(produce.subprocess, "run", run):
         rc = produce.main(argv)

@@ -29,7 +29,28 @@ from scripts.batch_generate_lectures import (  # noqa: E402
 )
 
 LOG_ROOT = ROOT / "logs"
+# Measured: a Raon worker peaks at 18.5 GB; two on one A6000 ran 1.63x faster end to end.
+_VRAM_PER_WORKER_MIB = 20 * 1024
 _BATCH = [sys.executable, "-m", "scripts.batch_generate_lectures"]
+
+
+def _free_vram_mib(runner=subprocess.run) -> dict[str, int]:
+    """GPU index -> free VRAM in MiB; empty when nvidia-smi is unavailable."""
+    try:
+        out = runner(
+            ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return {}
+    return {i.strip(): int(f) for i, f in (line.split(",") for line in out.splitlines() if line.strip())}
+
+
+def workers_per_gpu(gpus: list[str], requested: int | None, free: dict[str, int]) -> dict[str, int]:
+    """Workers to start per GPU: the requested count, else 2 where two fit in free VRAM."""
+    if requested is not None:
+        return dict.fromkeys(gpus, requested)
+    return {g: 2 if free.get(g, 0) >= 2 * _VRAM_PER_WORKER_MIB else 1 for g in gpus}
 
 
 def _err(msg: str):
@@ -40,7 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", required=True)
     ap.add_argument("--gpus", required=True, help="comma-separated CUDA indexes, e.g. 0,1")
-    ap.add_argument("--workers-per-gpu", type=int, default=1)
+    ap.add_argument(
+        "--workers-per-gpu", type=int, default=None,
+        help="default: 2 on a GPU with >= 40 GiB free VRAM, else 1 (GPU indexes follow nvidia-smi)",
+    )
     ap.add_argument("--slides", default=None)
     ap.add_argument("--no-stt", action="store_true")
     ap.add_argument("--max-restarts", type=int, default=2)
@@ -62,11 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.slides:
         common += ["--slides", args.slides]
 
-    workers = [
-        (g, k, base + common + ["--gpu", g])
-        for g in (x.strip() for x in args.gpus.split(","))
-        for k in range(args.workers_per_gpu)
-    ]
+    gpus = [x.strip() for x in args.gpus.split(",")]
+    per_gpu = workers_per_gpu(gpus, args.workers_per_gpu, _free_vram_mib())
+    print(f"workers per gpu: {per_gpu}")
+    workers = [(g, k, base + common + ["--gpu", g]) for g in gpus for k in range(per_gpu[g])]
     assembles = [
         base + ["--only", str(LECTURES.index(lec) + 1), "--assemble-only"] for lec in selected
     ]
