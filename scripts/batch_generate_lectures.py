@@ -397,6 +397,7 @@ def _run_slide_tts(
         _, ok = synthesize_raon_slide(
             tts_pipe, spoken_text, cand_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
             verify_stt=verify_stt, qc_path=qc_path_for(cand_wav), seeds=seeds,
+            pronunciation_entries=list(entries),
         )
         write_text_atomic(
             cand_json, json.dumps({"ok": ok, "cache_key": cache_key}, ensure_ascii=False, indent=2)
@@ -411,6 +412,7 @@ def _run_slide_tts(
     _, ok = synthesize_raon_slide(
         tts_pipe, spoken_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
         verify_stt=verify_stt, qc_path=qc_path_for(out_wav), seeds=seeds,
+        pronunciation_entries=list(entries),
     )
     if ok:
         write_cache_hash(out_wav, cache_key)

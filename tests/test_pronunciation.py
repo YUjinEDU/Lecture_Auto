@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lecture_auto.pipeline.pronunciation import apply_pronunciation, load_pronunciation_entries
+from lecture_auto.pipeline.pronunciation import (
+    apply_pronunciation,
+    load_pronunciation_entries,
+    normalize_transcript,
+)
 from scripts.batch_generate_lectures import _tts_cache_key
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -160,3 +164,13 @@ def test_approving_an_entry_changes_the_cache_key_only_for_affected_text():
     other_before = _tts_cache_key("전혀 다른 내용입니다", b"ref", 20.0, unapproved)
     other_after = _tts_cache_key("전혀 다른 내용입니다", b"ref", 20.0, approved)
     assert other_before == other_after
+
+
+def test_normalize_transcript_maps_latin_terms_and_hyphenless_variants():
+    entries = [
+        {"written": "API", "spoken": "에이피아이", "approved": True},
+        {"written": "US-11", "spoken": "유에스 십일", "approved": True},
+        {"written": "ID", "spoken": "아이디", "approved": False},
+    ]
+
+    assert normalize_transcript("API 와 US11에 ID", entries) == "에이피아이 와 유에스 십일에 ID"

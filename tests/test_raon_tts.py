@@ -1478,3 +1478,48 @@ def test_tts_call_and_seed_sequence_with_fallback_and_redraw_is_pinned(monkeypat
         ("seed", 17), ("tts", _S2, kw),
         ("seed", 17), ("tts", _S1, kw),
     ]
+
+
+_LATIN_STT_ENTRIES = [
+    {"written": "API", "spoken": "에이피아이", "approved": True},
+    {"written": "US-11", "spoken": "유에스 십일", "approved": True},
+]
+_LATIN_STT_EXPECTED = "대출 신청은 포스트 슬래시 에이피아이 슬래시 론즈이며 유에스 십일과 연결됩니다."
+_LATIN_STT_HEARD = "대출 신청은 포스트 슬래시 API 슬래시 론즈이며 US11과 연결됩니다"
+
+
+def test_evaluate_transcription_normalizes_latin_stt_output_with_pronunciation_entries(tmp_path):
+    from unittest.mock import MagicMock
+
+    from lecture_auto.pipeline.raon_tts import evaluate_transcription
+
+    pipe = MagicMock()
+    pipe.stt.return_value = _LATIN_STT_HEARD
+    audio_path = tmp_path / "a.wav"
+    audio_path.touch()
+
+    without = evaluate_transcription(pipe, audio_path, _LATIN_STT_EXPECTED)
+    with_entries = evaluate_transcription(pipe, audio_path, _LATIN_STT_EXPECTED, _LATIN_STT_ENTRIES)
+
+    assert without.cer > 0.15
+    assert with_entries.cer == 0.0
+    assert with_entries.transcript == _LATIN_STT_HEARD
+
+
+def test_segment_gate_judges_latin_stt_output_through_pronunciation_entries():
+    attempts = len(plan_attempts(has_continuation=False))
+    strict = _FakePipe([_tone(5.0)] * attempts)
+    strict.stt = lambda audio_path: _LATIN_STT_HEARD
+    lenient = _FakePipe([_tone(5.0)] * attempts)
+    lenient.stt = lambda audio_path: _LATIN_STT_HEARD
+
+    _, _, ok_without = _synthesize_segment_with_gate(
+        strict, _LATIN_STT_EXPECTED, None, expected_seconds=5.0, verify_stt=True
+    )
+    _, _, ok_with = _synthesize_segment_with_gate(
+        lenient, _LATIN_STT_EXPECTED, None, expected_seconds=5.0, verify_stt=True,
+        pronunciation_entries=_LATIN_STT_ENTRIES,
+    )
+
+    assert ok_without is False and strict.calls == attempts
+    assert ok_with is True and lenient.calls == 1

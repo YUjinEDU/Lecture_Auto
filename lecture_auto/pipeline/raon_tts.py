@@ -14,6 +14,7 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -24,6 +25,7 @@ import soundfile as sf
 import torch
 
 from lecture_auto.pipeline.cache import write_text_atomic
+from lecture_auto.pipeline.pronunciation import normalize_transcript
 from lecture_auto.pipeline.voice_match import match_segment_spectra, voice_match_enabled
 from lecture_auto.schemas.production import SegmentQC, SlideQC, TranscriptionCheck
 
@@ -209,6 +211,7 @@ def evaluate_transcription(
     pipe,
     audio_path: str | Path,
     expected_text: str,
+    pronunciation_entries: Sequence[dict] = (),
 ) -> TranscriptionCheck:
     """Run the STT fidelity check and report status/reasons/transcript/CER.
 
@@ -224,7 +227,8 @@ def evaluate_transcription(
         logger.warning("STT transcription failed during fidelity check: %s", e)
         return TranscriptionCheck(status="unavailable", reasons=[], transcript=None, cer=None)
 
-    trans_clean = re.sub(r"\s+", " ", transcribed).strip()
+    heard = normalize_transcript(transcribed, list(pronunciation_entries)) if pronunciation_entries else transcribed
+    trans_clean = re.sub(r"\s+", " ", heard).strip()
     exp_clean = re.sub(r"\s+", " ", expected_text).strip()
     if not trans_clean or not exp_clean:
         return TranscriptionCheck(
@@ -232,7 +236,7 @@ def evaluate_transcription(
         )
 
     reasons = _stt_content_reasons(trans_clean, exp_clean)
-    cer = compute_cer(expected_text, transcribed)
+    cer = compute_cer(expected_text, heard)
     status: Literal["pass", "fail"] = "fail" if reasons else "pass"
     return TranscriptionCheck(status=status, reasons=reasons, transcript=transcribed, cer=cer)
 
@@ -807,6 +811,7 @@ def _synthesize_segment_with_gate(
     record: dict | None = None,
     verify_stt: bool = False,
     seeds: tuple[int, ...] = TTS_SEEDS,
+    pronunciation_entries: Sequence[dict] = (),
 ) -> tuple[np.ndarray, int, bool]:
     """Synthesize one short segment, retrying with a different seed on gate failure.
 
@@ -925,7 +930,7 @@ def _synthesize_segment_with_gate(
             else:
                 with tempfile.NamedTemporaryFile(suffix=".wav") as tmpf:
                     sf.write(tmpf.name, trimmed, sr)
-                    check = evaluate_transcription(pipe, tmpf.name, text)
+                    check = evaluate_transcription(pipe, tmpf.name, text, pronunciation_entries)
                 stt_status, cer, transcript = check.status, check.cer, check.transcript
                 if stt_status == "unavailable":
                     # D-15 item 4: STT itself couldn't judge this attempt --
@@ -1048,6 +1053,7 @@ def _synthesize_with_splitting(
     metas: list[dict] | None = None,
     verify_stt: bool = False,
     seeds: tuple[int, ...] = TTS_SEEDS,
+    pronunciation_entries: Sequence[dict] = (),
 ) -> tuple[list[tuple[str, np.ndarray, int]], bool]:
     """Synthesize one segment, splitting and retrying only if that actually helps.
 
@@ -1080,7 +1086,7 @@ def _synthesize_with_splitting(
     record: dict = {}
     audio, sr, ok = _synthesize_segment_with_gate(
         pipe, text, speaker_audio, expected_seconds, depth=depth, record=record,
-        verify_stt=verify_stt, seeds=seeds,
+        verify_stt=verify_stt, seeds=seeds, pronunciation_entries=pronunciation_entries,
     )
     if ok:
         if metas is not None:
@@ -1106,7 +1112,7 @@ def _synthesize_with_splitting(
     for half in halves:
         got, child_ok = _synthesize_with_splitting(
             pipe, half, speaker_audio, depth + 1, metas=child_metas,
-            verify_stt=verify_stt, seeds=seeds,
+            verify_stt=verify_stt, seeds=seeds, pronunciation_entries=pronunciation_entries,
         )
         child_pieces.extend(got)
         if not child_ok:
@@ -1229,6 +1235,7 @@ def synthesize_raon_slide(
     verify_stt: bool = False,
     qc_path: Path | None = None,
     seeds: tuple[int, ...] | None = None,
+    pronunciation_entries: Sequence[dict] = (),
 ) -> tuple[Path, bool]:
     """Synthesize a slide's script as short, quality-gated segments.
 
@@ -1317,7 +1324,7 @@ def synthesize_raon_slide(
     for segment in segments:
         seg_pieces, ok = _synthesize_with_splitting(
             pipe, segment, speaker_audio, depth=0, metas=metas,
-            verify_stt=verify_stt, seeds=effective_seeds,
+            verify_stt=verify_stt, seeds=effective_seeds, pronunciation_entries=pronunciation_entries,
         )
         if not ok:
             failures += 1
@@ -1378,7 +1385,7 @@ def synthesize_raon_slide(
                 max(len(seg_text) / _CHARS_PER_SECOND, 3.0),
                 energy_reference=reference,
                 record=redraw_record,
-                verify_stt=verify_stt, seeds=effective_seeds,
+                verify_stt=verify_stt, seeds=effective_seeds, pronunciation_entries=pronunciation_entries,
             )
             _trace(
                 event="redraw", slide=output_path.name, chars=len(seg_text),
@@ -1460,7 +1467,7 @@ def synthesize_raon_slide(
         stt_cer = stt_check.cer
     elif verify_stt or os.environ.get("RAON_VERIFY_STT") == "1":
         if hasattr(pipe, "stt"):
-            stt_check = evaluate_transcription(pipe, output_path, text)
+            stt_check = evaluate_transcription(pipe, output_path, text, pronunciation_entries)
         else:
             # STT was requested but this pipe can't do it (e.g. a fake/mock
             # in tests, or a real pipe built without the STT head) -- record

@@ -52,6 +52,27 @@ def apply_pronunciation(text: str, entries: list[dict]) -> str:
     return regex.sub(lambda m: spoken_by_written[m.group(0)], text)
 
 
+_HYPHEN_DIGITS = re.compile(r"^([A-Za-z]+)-(\d+)$")
+
+
+def normalize_transcript(text: str, entries: list[dict]) -> str:
+    """Rewrite Latin terms in an STT transcript to their dictionary spoken form.
+
+    The TTS is asked to say ``spoken`` (e.g. "에이피아이"), but the STT writes
+    what it hears in its own orthography ("API", "US11"). Comparing the two
+    as-is counts every such term as errors, so a correctly read sentence fails
+    the fidelity gate. Entries like "US-11" also match the hyphen-less
+    spelling "US11" that STT tends to produce. Comparison-only: the stored
+    transcript is left as the STT returned it.
+    """
+    hyphenless = [
+        {**e, "written": m.group(1) + m.group(2)}
+        for e in entries
+        if (m := _HYPHEN_DIGITS.match(e.get("written") or ""))
+    ]
+    return apply_pronunciation(text, list(entries) + hyphenless)
+
+
 _LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9\-]*")
 
 
