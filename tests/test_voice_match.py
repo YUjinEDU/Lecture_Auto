@@ -1,16 +1,23 @@
 """Tests for lecture_auto.pipeline.voice_match (pure numpy, no GPU/model)."""
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 from scipy.signal import butter, sosfilt
 
 from lecture_auto.pipeline import raon_tts
 from lecture_auto.pipeline.voice_match import (
+    BAND_CENTERS_HZ,
     MAX_GAIN_DB,
     VOICE_MATCH_ENV,
+    VOICE_TARGET_ENV,
+    _read_target,
     band_levels_db,
+    load_voice_target,
     match_segment_spectra,
+    split_speech_segments,
     voice_match_enabled,
 )
 
@@ -111,9 +118,9 @@ def test_synthesize_raon_slide_matches_segments_only_when_enabled(
     seen: list[int] = []
     real = raon_tts.match_segment_spectra
 
-    def spy(segments, sr):
+    def spy(segments, sr, target=None):
         seen.append(len(segments))
-        return real(segments, sr)
+        return real(segments, sr, target)
 
     monkeypatch.setattr(raon_tts, "match_segment_spectra", spy)
     monkeypatch.setenv(VOICE_MATCH_ENV, flag)
@@ -123,3 +130,62 @@ def test_synthesize_raon_slide_matches_segments_only_when_enabled(
     assert len(seen) == expected_calls
     if expected_calls:
         assert seen == [3]
+
+
+def _profile(x):
+    levels = band_levels_db(x, SR)
+    return levels - levels.mean()
+
+
+def test_fixed_target_corrects_a_single_segment_that_slide_median_leaves_alone():
+    target = _profile(_noise(0, 4000))
+    dark = _noise(1, 2500)
+
+    assert np.array_equal(match_segment_spectra([dark], SR)[0], dark)
+    [matched] = match_segment_spectra([dark], SR, target)
+
+    assert np.abs(_profile(matched) - target).mean() < np.abs(_profile(dark) - target).mean() * 0.8
+    assert _rms(matched) == pytest.approx(_rms(dark), rel=0.02)
+
+
+def test_fixed_target_pulls_segments_of_different_slides_toward_each_other():
+    target = _profile(_noise(0, 4000))
+    slide_a, slide_b = _noise(1, 2500), _noise(2, 6000)
+
+    matched = match_segment_spectra([slide_a], SR, target) + match_segment_spectra([slide_b], SR, target)
+
+    assert np.abs(_profile(matched[0]) - _profile(matched[1])).mean() < np.abs(_profile(slide_a) - _profile(slide_b)).mean() * 0.8
+
+
+def test_load_voice_target_reads_the_file_and_honours_the_slide_switch(tmp_path, monkeypatch):
+    good = tmp_path / "t.json"
+    good.write_text(json.dumps({"profile_db": [0.5] * len(BAND_CENTERS_HZ)}), encoding="utf-8")
+    wrong = tmp_path / "w.json"
+    wrong.write_text(json.dumps({"profile_db": [0.0, 1.0]}), encoding="utf-8")
+    _read_target.cache_clear()
+    monkeypatch.delenv(VOICE_TARGET_ENV, raising=False)
+
+    assert load_voice_target(good).tolist() == [0.5] * len(BAND_CENTERS_HZ)
+    assert load_voice_target(wrong) is None
+    assert load_voice_target(tmp_path / "missing.json") is None
+
+    monkeypatch.setenv(VOICE_TARGET_ENV, "slide")
+    assert load_voice_target(good) is None
+
+
+def test_committed_voice_target_matches_the_band_layout():
+    _read_target.cache_clear()
+    target = load_voice_target()
+
+    assert target is not None and target.shape == BAND_CENTERS_HZ.shape
+    assert abs(float(target.mean())) < 0.05
+
+
+def test_split_speech_segments_follows_the_zero_pauses():
+    tone = _noise(0, 3000, seconds=2.0)
+    wav = np.concatenate([tone, np.zeros(int(SR * 0.2), dtype=np.float32), tone, np.zeros(int(SR * 0.2), dtype=np.float32), tone])
+
+    spans = split_speech_segments(wav, SR)
+
+    assert len(spans) == 3
+    assert all(abs((b - a) / SR - 2.0) < 0.01 for a, b in spans)

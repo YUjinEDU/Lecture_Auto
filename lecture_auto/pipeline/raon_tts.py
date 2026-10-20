@@ -26,7 +26,11 @@ import torch
 
 from lecture_auto.pipeline.cache import write_text_atomic
 from lecture_auto.pipeline.pronunciation import normalize_transcript
-from lecture_auto.pipeline.voice_match import match_segment_spectra, voice_match_enabled
+from lecture_auto.pipeline.voice_match import (
+    load_voice_target,
+    match_segment_spectra,
+    voice_match_enabled,
+)
 from lecture_auto.schemas.production import SegmentQC, SlideQC, TranscriptionCheck
 
 logger = logging.getLogger(__name__)
@@ -1413,7 +1417,8 @@ def synthesize_raon_slide(
 
     if voice_match_enabled():
         span_indexes = [idx for _, idx in seg_spans]
-        for idx, matched in zip(span_indexes, match_segment_spectra([pieces[i] for i in span_indexes], sr)):
+        matched_pieces = match_segment_spectra([pieces[i] for i in span_indexes], sr, load_voice_target())
+        for idx, matched in zip(span_indexes, matched_pieces):
             pieces[idx] = matched
         joined = np.concatenate(pieces)
 

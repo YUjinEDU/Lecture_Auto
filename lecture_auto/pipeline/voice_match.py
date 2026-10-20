@@ -9,12 +9,17 @@ zero-phase EQ before the segments are joined.
 """
 from __future__ import annotations
 
+import json
 import os
+from functools import cache
 from itertools import pairwise
+from pathlib import Path
 
 import numpy as np
 
 VOICE_MATCH_ENV = "LECTURE_AUTO_VOICE_MATCH"
+VOICE_TARGET_ENV = "LECTURE_AUTO_VOICE_TARGET"
+VOICE_TARGET_PATH = Path(__file__).resolve().parents[2] / "config" / "voice_target.json"
 MAX_GAIN_DB = 3.5
 MIN_SEGMENTS = 3
 
@@ -49,6 +54,24 @@ def band_levels_db(x: np.ndarray, sr: int) -> np.ndarray | None:
     return levels if np.all(np.isfinite(levels)) else None
 
 
+def split_speech_segments(wav: np.ndarray, sr: int, min_pause_s: float = 0.15, min_len_s: float = 1.5) -> list[tuple[int, int]]:
+    """(start, end) sample spans of the pieces a slide WAV was joined from.
+
+    The joiner inserts exactly-zero pauses, so those runs are the boundaries.
+    """
+    zero = np.concatenate(([False], np.abs(wav) < 1e-9, [False]))
+    edges = np.diff(zero.astype(np.int8))
+    spans, start = [], 0
+    for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+        if (b - a) / sr >= min_pause_s:
+            if (a - start) / sr >= min_len_s:
+                spans.append((start, int(a)))
+            start = int(b)
+    if (len(wav) - start) / sr >= min_len_s:
+        spans.append((start, len(wav)))
+    return spans
+
+
 def _smooth(values: np.ndarray) -> np.ndarray:
     padded = np.pad(values, 1, mode="edge")
     return np.convolve(padded, np.ones(3) / 3.0, mode="valid")
@@ -65,23 +88,47 @@ def _apply_gain(x: np.ndarray, sr: int, gain_db: np.ndarray) -> np.ndarray:
     return (filtered * (rms_in / rms_out)).astype(np.float32)
 
 
-def match_segment_spectra(segments: list[np.ndarray], sr: int) -> list[np.ndarray]:
-    """Return segments with band levels pulled toward the slide median (RMS preserved).
+@cache
+def _read_target(path: str) -> np.ndarray | None:
+    file = Path(path)
+    if not file.exists():
+        return None
+    profile = np.asarray(json.loads(file.read_text(encoding="utf-8"))["profile_db"], dtype=float)
+    return profile if profile.shape == BAND_CENTERS_HZ.shape else None
 
-    Segments too short or silent to measure pass through untouched, and fewer
-    than ``MIN_SEGMENTS`` measurable segments leaves everything unchanged:
-    a median of one or two is just another segment.
+
+def load_voice_target(path: Path = VOICE_TARGET_PATH) -> np.ndarray | None:
+    """The fixed level-independent profile, or None to match against the slide's own median.
+
+    ``LECTURE_AUTO_VOICE_TARGET=slide`` forces the per-slide behaviour.
+    """
+    if os.environ.get(VOICE_TARGET_ENV) == "slide":
+        return None
+    return _read_target(str(path))
+
+
+def match_segment_spectra(
+    segments: list[np.ndarray], sr: int, target: np.ndarray | None = None
+) -> list[np.ndarray]:
+    """Return segments with band levels pulled toward a target (RMS preserved).
+
+    With a fixed ``target`` (mean-removed profile) every measurable segment is
+    corrected, so slides agree with each other and one-segment slides are covered.
+    Without one, the goal is the slide's median, which needs ``MIN_SEGMENTS``
+    measurable segments: a median of one or two is just another segment.
+    Segments too short or silent to measure pass through untouched.
     """
     levels = [band_levels_db(s, sr) for s in segments]
     measurable = [lv for lv in levels if lv is not None]
-    if len(measurable) < MIN_SEGMENTS:
+    if target is None and len(measurable) < MIN_SEGMENTS:
         return list(segments)
-    target = np.median(np.stack(measurable), axis=0)
+    goal = target if target is not None else np.median(np.stack(measurable), axis=0)
     matched = []
     for segment, level in zip(segments, levels):
         if level is None:
             matched.append(segment)
             continue
-        gain = _smooth(np.clip(target - level, -MAX_GAIN_DB, MAX_GAIN_DB))
+        current = level - level.mean() if target is not None else level
+        gain = _smooth(np.clip(goal - current, -MAX_GAIN_DB, MAX_GAIN_DB))
         matched.append(_apply_gain(segment, sr, gain))
     return matched
