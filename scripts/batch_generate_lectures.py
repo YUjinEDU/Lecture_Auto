@@ -40,7 +40,9 @@ from lecture_auto.pipeline.approval import (
     build_timeline,
     load_approvals,
     promote_candidate,
+    restore_previous,
     save_approvals,
+    unapprove,
     verify_approved,
 )
 from lecture_auto.pipeline.cache import (
@@ -1619,6 +1621,15 @@ def main():
              "slides (e.g. '12,15'). Requires --only. Loads no TTS model/LLM client.",
     )
     approval_group.add_argument(
+        "--unapprove", type=str, default=None,
+        help="Remove these slides from approved.json (audio untouched). Requires --only.",
+    )
+    approval_group.add_argument(
+        "--restore-prev", type=str, default=None,
+        help="Undo a promotion: swap slide_NNN.wav with slide_NNN.prev.wav (+ sidecars) and drop "
+             "the slide's approval. Running it twice restores the original. Requires --only.",
+    )
+    approval_group.add_argument(
         "--assemble-only", action="store_true",
         help="S2: assemble the current on-disk PNGs/WAVs into a video + timeline.json "
              "without synthesizing audio. Requires --only. Loads no TTS model/LLM client.",
@@ -1669,7 +1680,10 @@ def main():
     # approved:false, so this is a no-op until someone flips one to true.
     pronunciation_entries = load_pronunciation_entries(Path("config/pronunciation.yaml"))
 
-    approval_mode = bool(args.approve or args.approve_passing or args.promote or args.assemble_only or args.check)
+    approval_mode = bool(
+        args.approve or args.approve_passing or args.promote or args.assemble_only or args.check
+        or args.unapprove or args.restore_prev
+    )
     if args.heal and (not args.only or args.skip_tts):
         parser.error("--heal requires --only and cannot be combined with --skip-tts")
     if approval_mode and not args.only:
@@ -1711,6 +1725,16 @@ def main():
             _cli_approve_passing(item, base_work, pronunciation_entries)
         if args.promote:
             _cli_promote(item, base_work, args.promote, args.allow_failed, args.note)
+        if args.unapprove or args.restore_prev:
+            work_dir = base_work / item["id"]
+            manifest = load_approvals(work_dir, item["id"])
+            for n in sorted(_parse_slides_arg(args.unapprove or args.restore_prev) or set()):
+                if args.unapprove:
+                    manifest = unapprove(manifest, n)
+                else:
+                    manifest = restore_previous(manifest, work_dir / "audio", n)
+                save_approvals(work_dir, manifest)
+                logger.info("%s slide %d", "Unapproved" if args.unapprove else "Restored previous audio for", n)
         if args.assemble_only:
             mp4_path = assemble_only(item, base_work, output_dir, pronunciation_entries)
             logger.info("Assembled (no synth/LLM): %s", mp4_path)

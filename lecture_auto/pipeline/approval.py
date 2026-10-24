@@ -72,6 +72,33 @@ def approve(
     return manifest.model_copy(update={"slides": new_slides})
 
 
+def unapprove(manifest: ApprovalManifest, n: int) -> ApprovalManifest:
+    new_slides = {k: v for k, v in manifest.slides.items() if k != n}
+    return manifest.model_copy(update={"slides": new_slides})
+
+
+def restore_previous(manifest: ApprovalManifest, audio_dir: Path, n: int) -> ApprovalManifest:
+    """Undo a promotion: swap ``slide_NNN.wav`` and ``slide_NNN.prev.wav`` together
+    with their ``.hash`` / ``.qc.json`` sidecars and drop slide *n*'s approval (it
+    pinned the audio being swapped out). Swapping, not overwriting, keeps the undo
+    itself undoable."""
+    audio_dir = Path(audio_dir)
+    main = audio_dir / f"slide_{n:03d}.wav"
+    prev = audio_dir / f"slide_{n:03d}.prev.wav"
+    if not prev.exists():
+        raise FileNotFoundError(f"slide {n}: no previous audio to restore ({prev.name})")
+    tmp = audio_dir / f"slide_{n:03d}.swap.wav"
+    for side in (lambda p: p, cache_path_for, qc_path_for):
+        a, b, t = side(main), side(prev), side(tmp)
+        if a.exists():
+            os.replace(a, t)
+        if b.exists():
+            os.replace(b, a)
+        if t.exists():
+            os.replace(t, b)
+    return unapprove(manifest, n)
+
+
 def verify_approved(manifest: ApprovalManifest, audio_dir: Path) -> list[int]:
     """Slide numbers whose approved WAV is missing or no longer matches its
     recorded sha256 -- i.e. the approval no longer describes what's on disk."""

@@ -217,6 +217,8 @@ function slideRow(lec, s, busy) {
   const players = [];
   if (s.audio) players.push(h("div", { class: "player" }, h("span", {}, "현재 음성"),
     h("audio", { controls: true, preload: "none", src: `api/${base}/audio/main` })));
+  if (s.previous) players.push(h("div", { class: "player" }, h("span", {}, "이전 음성 (후보 채택 전)"),
+    h("audio", { controls: true, preload: "none", src: `api/${base}/audio/prev` })));
   if (s.candidate) players.push(h("div", { class: "player" }, h("span", {}, "새로 만든 후보 음성"),
     h("audio", { controls: true, preload: "none", src: `api/${base}/audio/cand` })));
   const buttons = [];
@@ -236,6 +238,22 @@ function slideRow(lec, s, busy) {
       toast(`슬라이드 ${s.number}: 현재 음성을 승인했습니다.`);
       renderLecture(lec.id);
     }) }, "현재 음성 승인"));
+  }
+  if (s.state === "approved") {
+    buttons.push(h("button", { disabled: busy, onclick: () => guard(async () => {
+      if (!confirm("이 슬라이드의 승인을 취소할까요? 음성 파일은 그대로 남습니다.")) return;
+      await api(`${base}/unapprove`, { method: "POST" });
+      toast(`슬라이드 ${s.number}: 승인을 취소했습니다.`);
+      renderLecture(lec.id);
+    }) }, "승인 취소"));
+  }
+  if (s.previous) {
+    buttons.push(h("button", { disabled: busy, onclick: () => guard(async () => {
+      if (!confirm("현재 음성과 이전 음성을 맞바꿉니다. 승인은 취소되며, 한 번 더 누르면 원래대로 돌아옵니다. 진행할까요?")) return;
+      await api(`${base}/restore-prev`, { method: "POST" });
+      toast(`슬라이드 ${s.number}: 이전 음성으로 되돌렸습니다.`);
+      renderLecture(lec.id);
+    }) }, "이전 음성으로 되돌리기"));
   }
   return h("article", { class: "card slide", id: `slide-${s.number}` },
     s.image ? h("img", { src: `api/${base}/image`, alt: `슬라이드 ${s.number}`, loading: "lazy" }) : h("div", { class: "empty" }, "이미지 없음"),

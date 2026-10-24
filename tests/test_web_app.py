@@ -271,3 +271,19 @@ def test_cancel_while_the_runner_is_starting_the_job_still_cancels(sandbox, monk
     final = runner.wait(job["id"], ("cancelled", "succeeded", "failed"), timeout=20)
     runner.stop()
     assert final["status"] == "cancelled"
+
+
+def test_unapprove_and_restore_previous_through_the_cli(client, sandbox):
+    settings, _ = sandbox
+    audio = settings.work_dir / LID / "audio"
+    old = (audio / "slide_002.wav").read_bytes()
+    assert client.post(f"/api/lectures/{LID}/slides/2/restore-prev").status_code == 404
+    assert client.post(f"/api/lectures/{LID}/slides/2/unapprove").status_code == 404
+    assert client.post(f"/api/lectures/{LID}/slides/2/promote", json={}).json()["state"] == "approved"
+    view = client.post(f"/api/lectures/{LID}/slides/2/unapprove").json()
+    assert view["state"] == "held" and view["approval"] is None
+    client.post(f"/api/lectures/{LID}/slides/2/approve")
+    view = client.post(f"/api/lectures/{LID}/slides/2/restore-prev").json()
+    assert (audio / "slide_002.wav").read_bytes() == old
+    assert view["approval"] is None and view["previous"] is True
+    assert client.get(f"/api/lectures/{LID}/slides/2/audio/prev").status_code == 200

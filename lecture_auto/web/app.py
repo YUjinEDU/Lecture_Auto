@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from lecture_auto.pipeline.approval import load_approvals
 from lecture_auto.web import store
 from lecture_auto.web.auth import COOKIE_NAME, check_password, issue_token, token_valid
 from lecture_auto.web.registry import (
@@ -217,6 +218,24 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         if body.allow_failed:
             args.append("--allow-failed")
         run_cli(item, args)
+        return next(v for v in store.slide_views(settings, item) if v["number"] == number)
+
+    @app.post("/api/lectures/{lecture_id}/slides/{number}/unapprove", dependencies=auth)
+    def unapprove(lecture_id: str, number: int):
+        item = lecture_or_404(lecture_id)
+        ensure_idle(lecture_id)
+        if number not in load_approvals(settings.work_dir / lecture_id, lecture_id).slides:
+            raise HTTPException(404, "승인된 슬라이드가 아닙니다")
+        run_cli(item, ["--unapprove", str(number)])
+        return next(v for v in store.slide_views(settings, item) if v["number"] == number)
+
+    @app.post("/api/lectures/{lecture_id}/slides/{number}/restore-prev", dependencies=auth)
+    def restore_prev(lecture_id: str, number: int):
+        item = lecture_or_404(lecture_id)
+        ensure_idle(lecture_id)
+        if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.prev.wav").exists():
+            raise HTTPException(404, "되돌릴 이전 음성이 없습니다")
+        run_cli(item, ["--restore-prev", str(number)])
         return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.get("/api/lectures/{lecture_id}/slides/{number}/image", dependencies=auth)

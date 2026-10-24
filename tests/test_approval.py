@@ -19,7 +19,9 @@ from lecture_auto.pipeline.approval import (
     build_timeline,
     load_approvals,
     promote_candidate,
+    restore_previous,
     save_approvals,
+    unapprove,
     verify_approved,
 )
 from lecture_auto.pipeline.cache import cache_path_for, qc_path_for, write_text_atomic
@@ -387,3 +389,46 @@ def test_build_report_flags_problem_slides_sorted_by_cer_desc(tmp_path):
     assert "경계 재확인 필요" in report
     assert "후보 대기" in report
     assert "승인 2 / 검사 통과 3 / 실패 1 / 후보 대기 1" in report
+
+
+def test_unapprove_drops_only_that_slide(tmp_path):
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    for n in (1, 2):
+        (audio_dir / f"slide_{n:03d}.wav").write_bytes(b"A%d" % n)
+    m = approve(approve(ApprovalManifest(lecture_id="l"), audio_dir, 1, "existing", True), audio_dir, 2, "existing", True)
+    out = unapprove(m, 1)
+    assert set(out.slides) == {2}
+    assert set(m.slides) == {1, 2}
+
+
+def test_restore_previous_swaps_audio_and_sidecars_and_is_its_own_undo(tmp_path):
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    main, prev = audio_dir / "slide_004.wav", audio_dir / "slide_004.prev.wav"
+    main.write_bytes(b"NEW")
+    write_text_atomic(cache_path_for(main), "new-key")
+    write_text_atomic(qc_path_for(main), '{"ok": true}')
+    prev.write_bytes(b"OLD")
+    write_text_atomic(cache_path_for(prev), "old-key")
+    m = approve(ApprovalManifest(lecture_id="l"), audio_dir, 4, "candidate", True)
+
+    out = restore_previous(m, audio_dir, 4)
+    assert main.read_bytes() == b"OLD" and prev.read_bytes() == b"NEW"
+    assert cache_path_for(main).read_text() == "old-key" and cache_path_for(prev).read_text() == "new-key"
+    assert not qc_path_for(main).exists() and qc_path_for(prev).read_text() == '{"ok": true}'
+    assert 4 not in out.slides
+    assert not (audio_dir / "slide_004.swap.wav").exists()
+
+    restore_previous(out, audio_dir, 4)
+    assert main.read_bytes() == b"NEW" and cache_path_for(main).read_text() == "new-key"
+    assert qc_path_for(main).exists()
+
+
+def test_restore_previous_without_prev_raises_and_changes_nothing(tmp_path):
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    (audio_dir / "slide_001.wav").write_bytes(b"X")
+    with pytest.raises(FileNotFoundError):
+        restore_previous(ApprovalManifest(lecture_id="l"), audio_dir, 1)
+    assert (audio_dir / "slide_001.wav").read_bytes() == b"X"
