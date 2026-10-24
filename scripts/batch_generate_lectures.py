@@ -99,6 +99,7 @@ from lecture_auto.schemas.lecture_plan import (
     SectionScriptResult,
 )
 from lecture_auto.schemas.manifest import LectureStyle
+from lecture_auto.web.registry import load_web_lectures
 
 logging.basicConfig(
     level=logging.INFO,
@@ -206,6 +207,8 @@ LECTURES = [
         "pptx": Path("data/PDF/종합설계 2026/07_시스템구조설계 및 개발환경.pptx"),
         "target_minutes": 18.0,
         "voice_match": True,
+        "ref_voice": Path("data/audio_ref/reference_v2.wav"),
+        "master_audio": True,
     },
     {
         "id": "11_종합설계_07_시스템구조_30분이상",
@@ -215,8 +218,14 @@ LECTURES = [
         "target_minutes": 33.0,
         "min_minutes": 30.0,
         "voice_match": True,
+        "ref_voice": Path("data/audio_ref/reference_v2.wav"),
+        "master_audio": True,
     },
 ]
+# ``ref_voice`` / ``master_audio`` are read by the web job runner, which sets
+# LECTURE_AUTO_REF_VOICE / LECTURE_AUTO_MASTER_AUDIO for the one lecture a job
+# runs; on the CLI those env vars still have to be exported by hand.
+LECTURES.extend(load_web_lectures())
 
 _MIN_MINUTES_MARGIN = 1.0
 
