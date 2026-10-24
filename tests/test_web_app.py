@@ -189,7 +189,9 @@ def test_job_runs_queues_conflicts_and_cancels(sandbox):
     with c:
         c.post("/api/login", json={"password": PASSWORD})
         first = c.post(f"/api/lectures/{LID}/jobs", json={"kind": "assemble"}).json()
-        running = runner.wait(first["id"], ("running",), timeout=10)
+        with runner._lock:
+            assert runner._lock.wait_for(lambda: runner._jobs[first["id"]]["pid"], timeout=10)
+        running = runner.get(first["id"])
         assert running["status"] == "running"
         assert c.post(f"/api/lectures/{LID}/jobs", json={"kind": "scripts"}).status_code == 409
         assert c.put(f"/api/lectures/{LID}/slides/1/script", json={"script": "x"}).status_code == 409
@@ -231,3 +233,41 @@ def test_restart_marks_dead_running_job_interrupted(sandbox):
              "pid": 2 ** 22 + 7, "created_at": 1.0}
     (settings.jobs_dir / "old.json").write_text(json.dumps(stale), encoding="utf-8")
     assert JobRunner(settings).get("old")["status"] == "interrupted"
+
+
+def test_cancel_while_the_runner_is_starting_the_job_still_cancels(sandbox, monkeypatch):
+    import threading
+
+    import lecture_auto.web.runner as runner_mod
+
+    settings, fake = sandbox
+    s = Settings(root=settings.root, password=PASSWORD, secret=b"s" * 32, python=str(fake),
+                 extra_env={"FAKE_SLEEP": "30"})
+    picked, release, spawned = threading.Event(), threading.Event(), threading.Event()
+    real_popen = runner_mod.subprocess.Popen
+
+    started = []
+
+    def slow_popen(*args, **kwargs):
+        picked.set()
+        release.wait(10)
+        started.append(real_popen(*args, **kwargs))
+        spawned.set()
+        return started[-1]
+
+    monkeypatch.setattr(runner_mod.subprocess, "Popen", slow_popen)
+    runner = JobRunner(s)
+    runner.start()
+    job = runner.submit("assemble", {"id": LID})
+    assert picked.wait(10)
+    runner.cancel(job["id"])
+    release.set()
+    if spawned.wait(5):
+        try:
+            assert started[0].wait(timeout=8) != 0
+        finally:
+            if started[0].poll() is None:
+                os.killpg(started[0].pid, 9)
+    final = runner.wait(job["id"], ("cancelled", "succeeded", "failed"), timeout=20)
+    runner.stop()
+    assert final["status"] == "cancelled"

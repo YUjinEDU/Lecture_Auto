@@ -192,6 +192,8 @@ class JobRunner:
             job["cancel_requested"] = True
             self._save(job)
             pid = job["pid"]
+            if pid is None:
+                return dict(job)
         try:
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -225,6 +227,8 @@ class JobRunner:
                 if self._stop:
                     return
                 item = self._items.pop(job["id"], None)
+                job.update(status="running", pid=None, started_at=time.time())
+                self._save(job)
             self._run(job, item)
 
     def _run(self, job: dict, item: dict | None) -> None:
@@ -251,10 +255,14 @@ class JobRunner:
                 self._finish(job, "failed", None)
             return
         with self._lock:
-            job.update(status="running", pid=proc.pid, started_at=time.time())
+            job["pid"] = proc.pid
             self._procs[job["id"]] = proc
             self._save(job)
             self._lock.notify_all()
+            cancel_now = job.get("cancel_requested")
+        if cancel_now:
+            os.killpg(proc.pid, signal.SIGTERM)
+            threading.Timer(KILL_GRACE_SECONDS, self._force_kill, args=(job["id"], proc.pid)).start()
         code = proc.wait()
         log.close()
         with self._lock:
