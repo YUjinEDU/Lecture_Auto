@@ -11,8 +11,8 @@ orchestration layers**:
 | Driver | Entry point | Use case |
 |--------|-------------|----------|
 | **Interactive CLI** | `run.py` | Local, human-in-the-loop 6-stage run with `[y/n]` gates |
-| **Async API + workers** | `lecture_auto/api/` + `lecture_auto/tasks/` | Production: FastAPI + Celery/Redis, SSE progress, resumable checkpoints |
-| **Demo workflow** | `lecture_auto/demo/` + `lecture_auto/demo_static/` | Self-contained presentation demo with CPU fallbacks (no GPU/Redis required) |
+| **Batch production CLI** | `scripts/batch_generate_lectures.py` + `scripts/produce.py` | Production: per-slide cached scripts/TTS/QC, approvals, video assembly |
+| **Professor web UI** | `lecture_auto/web/` | FastAPI + static UI over the batch CLI: upload, review, approve, queued GPU jobs (`docs/WEB_UI.md`) |
 
 The **core value**: a professor drops in slides, reviews/edits the generated script as
 plain text, and gets cloned-voice audio — this flow must never break.
@@ -33,7 +33,6 @@ plain text, and gets cloned-voice audio — this flow must never break.
 | Directory | Purpose |
 |-----------|---------|
 | `lecture_auto/` | Python backend package — pipeline core + all three drivers (see `lecture_auto/AGENTS.md`). |
-| `portal/` | Next.js pages/components to drop into the lab's **existing** portal (see `portal/AGENTS.md`). |
 | `tests/` | Pytest suite mirroring the backend modules (see `tests/AGENTS.md`). |
 | `data/` | **Runtime output, not source** — `data/work/<id>/` and `data/demo_jobs/<id>/` hold per-job `input/parsed/vlm/scripts/audio` artifacts. Never hand-edit; regenerate via the pipeline. |
 | `docs/` | Superpowers planning artifacts (UX redesign plans/specs). |
@@ -51,7 +50,7 @@ plain text, and gets cloned-voice audio — this flow must never break.
 - **Reviewability is a hard constraint**: script artifacts are plain-text/JSON the
   professor can edit by hand — keep output formats human-legible.
 - Treat `data/` as ephemeral. The three drivers share the `pipeline/` core but persist
-  state differently (CLI = files only; API = Redis + files; demo = JSON snapshots).
+  state on disk (`data/work_batch/<id>/`, `output/<id>/`; the web UI adds `data/web/`).
 
 ### Testing Requirements
 - Run `pytest` from repo root (config in `pyproject.toml`). Lint with `ruff check`.

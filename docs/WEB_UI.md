@@ -1,0 +1,76 @@
+# Lecture Auto 스튜디오 — 웹 화면 사용·운영 안내
+
+교수님이 명령어 없이 강의 제작 전 과정을 진행하는 웹 화면. 제작 엔진은 그대로
+`scripts/batch_generate_lectures.py`·`scripts/produce.py`이고, 웹은 그 명령을 버튼으로
+실행하고 `data/work_batch/<id>/`·`output/<id>/` 파일을 보여 줄 뿐이다
+(파일이 진실의 원천 — CLI로 한 작업도 웹에 그대로 보인다).
+
+## 1. 서버 켜기 (GPU 서버에서)
+
+```bash
+cd ~/workspace/Lecture_Auto
+LECTURE_WEB_PASSWORD='<교수님께 드릴 비밀번호>' .venv/bin/python -m lecture_auto.web --host 0.0.0.0 --port 8800
+```
+
+- 비밀번호 환경변수가 없으면 서버가 시작하지 않는다.
+- 로그인 쿠키 서명 키는 처음 실행 때 `data/web/secret.key`(권한 600)에 만들어진다. 이 파일을 지우면 모두 로그아웃된다.
+- 오래 켜 둘 때는 tmux 등에서 실행. 서버를 껐다 켜도 **실행 중이던 제작 작업은 계속 돌고**, 다시 켠 서버가 그 작업을 이어서 추적한다.
+- 외부(연구실 홈페이지)에서 쓰려면 홈페이지 서버가 이 주소로 프록시한다. 화면은 상대 경로만 쓰므로 `/lecture/` 같은 하위 경로 아래에 붙여도 된다. GPU 서버 포트를 인터넷에 직접 열지 말 것.
+
+| 환경변수 | 기본값 | 뜻 |
+|---|---|---|
+| `LECTURE_WEB_PASSWORD` | (필수) | 로그인 비밀번호 |
+| `LECTURE_WEB_GPU` | `0` | 제작에 쓸 GPU 번호(nvidia-smi 기준). **GPU1은 다른 사람 학습용 — 쓰지 말 것** |
+| `LECTURE_WEB_SECRET` | `data/web/secret.key` | 쿠키 서명 키를 직접 지정 |
+| `LECTURE_WEB_ROOT` | 저장소 루트 | `data/`·`output/`·`config/`가 있는 폴더(테스트용 사본을 가리킬 때) |
+
+LLM 키(`FACTCHAT_*`)는 지금처럼 `.env`에서 읽는다.
+
+## 2. 교수님 사용 순서
+
+1. **새 강의 등록** — PPTX/PDF, 제목, 과목, 목표 길이(분), 필요하면 최소 길이.
+2. **1. 대본 생성** — 슬라이드를 읽고 대본을 만든다(GPU 안 씀, 수 분).
+3. **대본 검토·수정** — 슬라이드별 대본을 고치고 "대본 저장". 고친 대본은 "대본 직접 수정됨"으로 표시되고, 대본을 다시 생성해도 덮어쓰지 않는다.
+4. **2. 음성·영상 제작** — 전체 음성 + 영상(GPU, 강의 길이의 약 5배 시간). 끝나면 실패한 슬라이드를 한 번 자동 복구한다.
+5. **확인 필요 탭** — 검사에 걸린 슬라이드를 듣고:
+   - 괜찮으면 **현재 음성 승인**
+   - 새로 만든 후보가 있으면 들어보고 **후보 채택**
+   - 대본을 고친 뒤 "다시 만들기 선택" 체크 → **선택 슬라이드 다시 만들기**
+6. **영상 다시 조립** → "결과물 내려받기"에서 mp4·검수 보고서를 받는다.
+   모든 슬라이드가 통과/승인이면 `<id>.mp4`(최종), 아니면 `<id>_DRAFT.mp4`.
+
+작업은 한 번에 하나만 실행되고 나머지는 대기한다. 작업 중인 강의는 대본 수정·승인이 잠긴다(409).
+"작업 중단"은 프로세스 그룹 전체를 종료하며, 이미 만들어진 음성은 남는다.
+
+## 3. 버튼과 실제 명령
+
+| 버튼 | 실행 명령 (`--only <id>`) |
+|---|---|
+| 대본 생성 | `batch_generate_lectures --skip-tts` |
+| 음성·영상 제작 | `produce --gpus 0 --fix-failed --heal` |
+| 선택 슬라이드 다시 만들기 | `batch_generate_lectures --slides N,M --gpu 0` (후보로 저장) |
+| 보류 슬라이드 자동 복구 | `batch_generate_lectures --heal --gpu 0` |
+| 영상 다시 조립 | `batch_generate_lectures --assemble-only` |
+| 발음 점검 | `batch_generate_lectures --check` |
+| 현재 음성 승인 / 후보 채택 | `--approve N` / `--promote N [--allow-failed]` (즉시 실행) |
+
+작업마다 `CUDA_VISIBLE_DEVICES=<LECTURE_WEB_GPU>`, 강의별 참조 음성
+(`LECTURE_AUTO_REF_VOICE`: 10·11번과 웹 등록 강의는 `reference_v2.wav`, 그 이전 강의는 `reference_v1.wav`),
+마스터링(`LECTURE_AUTO_MASTER_AUDIO=1`: 10·11번과 웹 등록 강의)을 자동으로 넣는다.
+CLI로 직접 돌릴 때는 지금처럼 이 환경변수를 손으로 지정해야 한다.
+
+## 4. 파일 위치
+
+| 경로 | 내용 |
+|---|---|
+| `data/web/lectures.json` | 웹에서 등록한 강의 목록. batch CLI의 `LECTURES` 뒤에 붙는다(`LECTURE_AUTO_WEB_REGISTRY`로 변경) |
+| `data/web/uploads/<id>/` | 올린 PPTX/PDF |
+| `data/web/jobs/<job>.json`, `.log` | 작업 기록과 전체 로그("작업 기록" 화면) |
+| `data/web/secret.key` | 로그인 쿠키 서명 키 |
+
+`data/web/`은 git에 올리지 않는다. 웹에서 강의를 "목록에서 삭제"하면 등록만 지우고 파일은 남긴다.
+
+## 5. 개발
+
+- 코드: `lecture_auto/web/` (`app.py` 라우트, `store.py` 파일 조회·대본 저장, `runner.py` 작업 큐, `registry.py`, `static/` 화면 — 빌드 없는 HTML/JS/CSS).
+- 테스트: `tests/test_web_app.py`, `tests/test_web_registry.py` — 임시 폴더 사본과 가짜 실행 파일로 실제 작업 큐·취소·CLI 승인을 검증한다.

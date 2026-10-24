@@ -31,9 +31,11 @@ implemented today:
 - Script generation also runs through **OpenAI** (`lecture_auto/llm/openai_client.py`, models
   `gpt-5.6-luna` / `gpt-5.4-mini`, overridable via `LLM_SCRIPT_MODEL` / `LLM_VLM_MODEL`), not
   `claude -p`.
-- TTS runs through `pipeline/raon_tts.py` (Raon-Speech) and Qwen3-TTS, with CPU fallbacks
-  (flite, a local Korean synth) in the demo driver (`lecture_auto/demo/synthesis.py`) — see
-  `lecture_auto/tts/` and `pipeline/AGENTS.md`.
+- TTS runs through `pipeline/raon_tts.py` (Raon-Speech) — see `lecture_auto/tts/` and
+  `pipeline/AGENTS.md`.
+- **The FastAPI+Celery job API, the demo driver, the review page and `portal/` were deleted
+  (2026-10-25).** The web UI is now `lecture_auto/web/`, a thin layer over the batch/produce
+  engine (`docs/WEB_UI.md`). Celery/Redis/Supabase/Next.js rows below are history only.
 - PPTX parsing has already been supplemented with a PDF parser (`pipeline/parser_pdf.py` +
   PyMuPDF/pdfplumber), matching the "Phase 3" note in the python-pptx row below.
 
@@ -58,54 +60,43 @@ uv sync --extra dev
 # Interactive CLI pipeline (local, human-in-the-loop, 6 stages)
 python run.py --pptx path/to/lecture.pptx
 
-# API server (FastAPI) — single worker, GPU is not shared
-uvicorn lecture_auto.api.main:app --workers 1 --reload
+# Professor web UI (docs/WEB_UI.md) -- jobs run one at a time on GPU 0
+LECTURE_WEB_PASSWORD=... .venv/bin/python -m lecture_auto.web --host 0.0.0.0 --port 8800
 
-# Celery worker — concurrency MUST stay 1 to avoid GPU OOM (see "What NOT to Use")
-celery -A lecture_auto.tasks.celery_app worker --concurrency 1
-
-# Redis (Celery broker/backend + SSE progress pub/sub) must be running locally
-redis-server
-
-# Self-contained demo (no GPU/Redis required, served by the same FastAPI app)
-uvicorn lecture_auto.api.main:app --reload   # then open the demo route it mounts
+# Production CLI (what the web UI's buttons run)
+.venv/bin/python -m scripts.batch_generate_lectures --status
 
 # Real-model smoke tests (hit OpenAI / GPU — not run in CI)
 python scripts/smoke_e2e.py --stage script   # OPENAI_API_KEY only, no GPU
 python scripts/produce.py --only <lec> --slides 1,2,3   # few-slide real TTS + video via the batch
 ```
 
-No linter is configured in this repo (no ruff/flake8/eslint config committed) — don't assume
-`ruff check` works despite older docs referencing it.
+No linter config is committed; `uvx ruff check <paths>` works with ruff defaults (pre-existing
+findings remain in older modules -- keep new/changed files clean).
 
 ## Architecture
 
-One shared pipeline core, three independent drivers on top of it:
+One shared pipeline core; production is driven by the batch CLI, and the web UI drives the CLI:
 
 ```
 parse → render → VLM → script → TTS → video      (lecture_auto/pipeline/*.py)
-         ↑                                  ↑
-   run.py (CLI, sync,          lecture_auto/api/ + tasks/ (FastAPI + Celery,
-   [y/n] gates)                 SSE progress, resumable checkpoints)
-                                       ↑
-                         lecture_auto/demo/ + demo_static/
-                         (in-process, CPU-fallback, no GPU/Redis)
+         ↑
+   scripts/batch_generate_lectures.py + scripts/produce.py   (files in data/work_batch, output)
+         ↑ subprocess jobs (serial queue, GPU 0)
+   lecture_auto/web/  (FastAPI + static HTML/JS, professor login)     run.py (old interactive CLI)
 ```
 
 - `lecture_auto/pipeline/` — pure, driver-agnostic stage functions (one slide = one atomic
   unit, e.g. `generate_single_note`, `synthesize_slide`). No orchestration or persistence
   logic belongs here; that lives in the three drivers above it.
 - `lecture_auto/schemas/` — Pydantic v2 models that are the contract between every layer
-  (and must stay in sync with the TypeScript types under `portal/`).
+.
 - `lecture_auto/storage/` — per-job filesystem path helpers; job artifacts live under
   `data/work/<id>/{input,parsed,vlm,scripts,audio}` and are regenerated, never hand-edited.
-- `portal/` — Next.js pages/components meant to be **copied into** the lab's existing
-  portal repo (not a standalone app here). All browser calls go through a same-origin
-  `/api/gpu/*` proxy to the internal GPU FastAPI server; the GPU box is never exposed
-  directly — see `portal/AGENTS.md`.
-- `lecture_auto/demo/` exists specifically to run the full flow on one machine with no
-  GPU/Redis, for presentations — it duplicates orchestration (not stage logic) from
-  `tasks/` with CPU fallbacks.
+- `lecture_auto/web/` — the professor's web UI. It never re-implements pipeline steps: jobs are
+  batch/produce subprocesses, approvals go through the batch CLI, and the only direct write is a
+  script edit saved as a hand edit. Public access goes through the lab homepage as a reverse
+  proxy; the GPU box is never exposed directly.
 
 **Documentation map:** almost every directory here has its own `AGENTS.md` (Purpose / Key
 Files / Subdirectories / For AI Agents / Dependencies), generated and kept current as the

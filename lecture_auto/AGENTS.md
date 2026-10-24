@@ -6,8 +6,8 @@
 ## Purpose
 The Python backend. Contains the **stage modules** that do the real work (`pipeline/`)
 and the **three orchestration layers** that drive them: synchronous stages exposed to the
-CLI (`run.py`), async Celery tasks behind a FastAPI app (`api/` + `tasks/`), and a
-self-contained local demo (`demo/` + `demo_static/`). Cross-cutting concerns live in
+CLI (`run.py`), the batch production CLI (`scripts/`), and the professor web UI (`web/`)
+that drives the batch CLI. Cross-cutting concerns live in
 `schemas/` (Pydantic models) and `storage/` (disk-path conventions, voice files).
 
 ## Key Files
@@ -19,10 +19,7 @@ self-contained local demo (`demo/` + `demo_static/`). Cross-cutting concerns liv
 | Directory | Purpose |
 |-----------|---------|
 | `pipeline/` | The shared stage core: parse → render → VLM → script → TTS → video (see `pipeline/AGENTS.md`). |
-| `tasks/` | Celery tasks wrapping the stages with checkpointing + Redis progress (see `tasks/AGENTS.md`). |
-| `api/` | FastAPI app: routes for jobs, scripts, TTS, download, demo (see `api/AGENTS.md`). |
-| `demo/` | Self-contained demo orchestration with CPU fallbacks (see `demo/AGENTS.md`). |
-| `demo_static/` | Vanilla-JS single-page UI for the demo, served by FastAPI (see `demo_static/AGENTS.md`). |
+| `web/` | Professor web UI: FastAPI routes, serial subprocess job queue, file views, static HTML/JS (see `docs/WEB_UI.md`). |
 | `schemas/` | Pydantic v2 models shared across layers (manifest, script, tts, job status) (see `schemas/AGENTS.md`). |
 | `storage/` | Per-job filesystem path helpers + voice-reference storage (see `storage/AGENTS.md`). |
 
