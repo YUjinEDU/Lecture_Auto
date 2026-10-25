@@ -20,10 +20,25 @@ const JOB_STATE = {
   queued: ["대기 중", "b-info"],
   running: ["실행 중", "b-info"],
   succeeded: ["완료", "b-ok"],
-  failed: ["실패/일부 보류", "b-bad"],
+  failed: ["실패", "b-bad"],
   cancelled: ["취소됨", "b-none"],
   interrupted: ["중단됨", "b-warn"],
 };
+
+// produce.py exits non-zero both when it crashed and when it only left slides held
+// back, so the exit code alone cannot say which happened -- runner records what the
+// lecture looks like on disk afterwards and that decides the wording.
+function jobState(job) {
+  const base = JOB_STATE[job.status] || [job.status, "b-none"];
+  const o = job.kind === "produce" ? job.outcome : null;
+  if (job.status === "failed" && o && !o.error && o.held_back > 0 && o.audio > 0) {
+    return [`확인 필요 ${o.held_back}장`, "b-warn"];
+  }
+  if (job.status === "succeeded" && o && !o.error && o.held_back > 0) {
+    return [`완료 (확인 필요 ${o.held_back}장)`, "b-warn"];
+  }
+  return base;
+}
 const ACTIONS = [
   ["scripts", "1. 대본 생성", "슬라이드를 읽고 강의 대본을 만듭니다 (GPU 사용 안 함, 수 분)."],
   ["produce", "2. 음성·영상 제작", "모든 슬라이드 음성을 만들고 영상을 조립합니다 (GPU, 강의 길이의 약 5배 시간)."],
@@ -119,7 +134,7 @@ function lectureCard(lec) {
   const held = lec.held_back.length;
   return h("a", { class: "card lecture-card", href: `#/lecture/${enc(lec.id)}` },
     h("div", { class: "row spread" }, badge(VIDEO[lec.video_state]),
-      lec.job ? badge([`${lec.job.label} ${JOB_STATE[lec.job.status][0]}`, "b-info"]) : null),
+      lec.job ? badge([`${lec.job.label} ${jobState(lec.job)[0]}`, "b-info"]) : null),
     h("div", { class: "title" }, lec.name),
     h("div", { class: "muted small" }, `${lec.subject} · ${lec.id}`),
     h("div", { class: "chips" },
@@ -274,7 +289,7 @@ function jobPanel(lec) {
   if (state.logJob !== job.id) { state.logJob = job.id; state.logOffset = 0; }
   return h("section", { class: "card" },
     h("div", { class: "row spread" },
-      h("div", {}, h("h2", { style: "margin:0" }, `${job.label} `, badge(JOB_STATE[job.status])),
+      h("div", {}, h("h2", { style: "margin:0" }, `${job.label} `, badge(jobState(job))),
         h("p", { class: "muted small" }, `시작 ${fmtTime(job.started_at || job.created_at)}${job.slides ? ` · 슬라이드 ${job.slides.join(", ")}` : ""}`)),
       h("button", { class: "danger", onclick: () => guard(async () => {
         if (!confirm("작업을 중단할까요? 이미 만들어진 음성은 그대로 남습니다.")) return;
@@ -299,7 +314,8 @@ async function pollLog(lectureId) {
   if (job.status === "queued" || job.status === "running") {
     state.pollTimer = setTimeout(() => guard(() => pollLog(lectureId)), 2000);
   } else {
-    toast(`${job.label}: ${JOB_STATE[job.status][0]}`, job.status !== "succeeded");
+    const [text, cls] = jobState(job);
+    toast(`${job.label}: ${text}`, cls === "b-bad");
     state.logJob = null;
     renderLecture(lectureId);
   }
@@ -364,7 +380,9 @@ async function renderLecture(id) {
       h("div", { class: "row" }, badge(VIDEO[lec.video_state]), h("span", { class: "muted small" },
         `${lec.subject} · 슬라이드 ${lec.slides}장 · ${minutes}${lec.target_minutes ? ` · 목표 ${lec.target_minutes}분` : ""}`)),
       lec.held_back.length ? h("p", { class: "small", style: "color:var(--bad)" },
-        `확인이 필요한 슬라이드: ${lec.held_back.join(", ")} — 듣고 승인하거나, 대본을 고친 뒤 다시 만드세요.`) : null),
+        `확인이 필요한 슬라이드: ${lec.held_back.join(", ")} — 듣고 승인하거나, 대본을 고친 뒤 다시 만드세요.`) : null,
+      lec.no_audio.length ? h("p", { class: "small muted" },
+        `아직 음성이 없는 슬라이드: ${lec.no_audio.join(", ")} — "2. 음성·영상 제작"을 실행하면 만들어집니다.`) : null),
     jobPanel(lec), lectureActions(lec, busy), filesSection(lec),
     h("section", {}, h("div", { class: "tabs", role: "tablist" }, tab("all", "전체"), tab("todo", "확인 필요"), tab("approved", "승인됨")), list),
     lec.web && !busy ? h("p", { class: "small" }, h("button", { class: "link danger", onclick: () => guard(async () => {
@@ -396,7 +414,7 @@ async function renderJobs() {
       h("tbody", {}, jobs.map((j) => h("tr", {},
         h("td", {}, j.label, j.slides ? ` (${j.slides.join(",")})` : ""),
         h("td", {}, h("a", { href: `#/lecture/${enc(j.lecture_id)}` }, j.lecture_id)),
-        h("td", {}, badge(JOB_STATE[j.status] || [j.status, "b-none"])),
+        h("td", {}, badge(jobState(j))),
         h("td", {}, fmtTime(j.started_at || j.created_at)),
         h("td", {}, h("button", { onclick: () => show(j) }, "로그")))))) : h("div", { class: "empty" }, "아직 작업이 없습니다.")),
     pre));

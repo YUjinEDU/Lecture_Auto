@@ -126,10 +126,31 @@ class JobRunner:
     def log_path(self, job_id: str) -> Path:
         return self.dir / f"{job_id}.log"
 
-    def _finish(self, job: dict, status: str, code: int | None) -> None:
-        job.update(status=status, exit_code=code, finished_at=time.time())
+    def _finish(self, job: dict, status: str, code: int | None, outcome: dict | None = None) -> None:
+        job.update(status=status, exit_code=code, finished_at=time.time(), outcome=outcome)
         self._save(job)
         self._lock.notify_all()
+
+    def _outcome(self, lecture_id: str) -> dict | None:
+        """What the lecture looks like on disk now the job is over.
+
+        ``produce.py`` exits non-zero both when it crashed and when it merely left
+        slides held back, so the exit code alone cannot tell the professor which of
+        the two happened; this snapshot can.
+        """
+        from lecture_auto.web.store import get_lecture, lecture_summary
+
+        try:
+            summary = lecture_summary(self.settings, get_lecture(self.settings, lecture_id))
+        except Exception as e:  # noqa: BLE001 - a bad snapshot must not leave the job "running" forever
+            return {"error": repr(e)}
+        return {
+            "video_state": summary["video_state"],
+            "held_back": len(summary["held_back"]),
+            "scripts": summary["scripts"],
+            "audio": summary["audio"],
+            "candidates": summary["candidates"],
+        }
 
     def list(self) -> list[dict]:
         with self._lock:
@@ -265,13 +286,14 @@ class JobRunner:
             threading.Timer(KILL_GRACE_SECONDS, self._force_kill, args=(job["id"], proc.pid)).start()
         code = proc.wait()
         log.close()
+        outcome = self._outcome(job["lecture_id"])
         with self._lock:
             self._procs.pop(job["id"], None)
             if job.get("cancel_requested"):
                 status = "cancelled"
             else:
                 status = "succeeded" if code == 0 else "failed"
-            self._finish(job, status, code)
+            self._finish(job, status, code, outcome)
             self._lock.notify_all()
 
     def read_log(self, job_id: str, offset: int, limit: int = 256 * 1024) -> tuple[str, int]:

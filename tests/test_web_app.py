@@ -110,7 +110,8 @@ def test_dashboard_and_slide_states(client):
     mine = lectures[LID]
     assert mine["web"] is True
     assert mine["video_state"] == "draft"
-    assert mine["held_back"] == [2, 3]
+    assert mine["held_back"] == [2]
+    assert mine["no_audio"] == [3]
     views = {v["number"]: v for v in client.get(f"/api/lectures/{LID}").json()["slide_list"]}
     assert views[1]["state"] == "pass"
     assert views[2]["state"] == "held" and views[2]["candidate"] is True
@@ -129,7 +130,9 @@ def test_script_edit_is_kept_as_hand_edit(client, sandbox):
         assert json.loads((scripts / f"script_{n:03d}.json").read_text(encoding="utf-8"))["script"] == "고친 대본입니다."
         assert bgl._hand_edited(scripts / f"script_{n:03d}.json") is not None
     assert cache_path_for(scripts / "script_003.json").exists()
-    assert client.get(f"/api/lectures/{LID}").json()["held_back"] == [1, 2, 3]
+    lec = client.get(f"/api/lectures/{LID}").json()
+    assert lec["held_back"] == [1, 2]
+    assert lec["no_audio"] == [3]
 
 
 def test_approve_and_promote_go_through_the_cli(client, sandbox):
@@ -224,6 +227,9 @@ def test_job_success_and_failure_exit_codes(sandbox):
         runner.stop()
         assert done["status"] == status
         assert "--gpus 0 --fix-failed --heal" in runner.read_log(job["id"], 0)[0]
+        assert done["outcome"] == {"video_state": "draft", "held_back": 1, "scripts": 3, "audio": 2,
+                                   "candidates": 1}
+        assert runner.get(job["id"])["outcome"] == done["outcome"]
 
 
 def test_restart_marks_dead_running_job_interrupted(sandbox):

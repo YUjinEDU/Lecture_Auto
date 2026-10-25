@@ -87,7 +87,12 @@ def lecture_summary(settings: Settings, item: dict) -> dict:
     work = settings.work_dir / item["id"]
     scripts = _load_scripts(work)
     approved = set(load_approvals(work, item["id"]).slides) if work.exists() else set()
-    held = sorted(_invalid(settings, item, scripts) - approved) if scripts else []
+    pending = (_invalid(settings, item, scripts) - approved) if scripts else set()
+    # The batch counts a slide with no audio at all among the ones holding a lecture
+    # back from being final, which is right for it and wrong for the professor: "listen
+    # to it and approve" is impossible before any audio exists.
+    missing = sorted(n for n in pending if not (work / "audio" / f"slide_{n:03d}.wav").exists())
+    held = sorted(set(pending) - set(missing))
     return {
         "id": item["id"],
         "name": item.get("name", item["id"]),
@@ -102,6 +107,7 @@ def lecture_summary(settings: Settings, item: dict) -> dict:
         "candidates": st.candidates,
         "approved": st.approved,
         "held_back": held,
+        "no_audio": missing,
         "video_state": st.video_state,
         "video": st.video_path.name if st.video_path else None,
         "script_chars": sum(len(s.get("script", "")) for s in scripts.values()),
