@@ -148,6 +148,11 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
 
     def _register(file, data, suffix, name, subject, target_minutes, min_minutes):
         existing = [lec["id"] for lec in store.all_lectures(settings)]
+        # A deleted lecture's files stay on disk; reusing its id would hand the new deck
+        # its approvals, hand-edited scripts and final video.
+        for d in (settings.work_dir, settings.output_dir, settings.uploads_dir):
+            if d.is_dir():
+                existing += [p.name for p in d.iterdir()]
         lecture_id = new_lecture_id(name, existing)
         rel = Path("data/web/uploads") / lecture_id / f"{lecture_id}{suffix}"
         dest = settings.root / rel
@@ -176,6 +181,10 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         if not item.get("web"):
             raise HTTPException(400, "기본 등록 강의는 웹에서 삭제할 수 없습니다")
         ensure_idle(lecture_id)
+        if runner.active():
+            # produce.py addresses lectures by list position for its assemble/heal steps,
+            # so removing an entry while any job runs would retarget them.
+            raise HTTPException(409, "다른 작업이 끝난 뒤에 삭제할 수 있습니다")
         with registry_lock:
             entries = [e for e in load_web_lectures(settings.registry) if e["id"] != lecture_id]
             save_web_lectures(entries, settings.registry)

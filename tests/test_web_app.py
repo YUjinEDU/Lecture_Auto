@@ -293,3 +293,33 @@ def test_unapprove_and_restore_previous_through_the_cli(client, sandbox):
     assert (audio / "slide_002.wav").read_bytes() == old
     assert view["approval"] is None and view["previous"] is True
     assert client.get(f"/api/lectures/{LID}/slides/2/audio/prev").status_code == 200
+
+
+def test_reuploading_a_deleted_title_does_not_inherit_its_files(client, sandbox):
+    settings, _ = sandbox
+    deck = {"file": ("deck.pdf", b"%PDF-1.4 test")}
+    first = client.post("/api/lectures", data={"name": "요구사항 분석"}, files=deck).json()["id"]
+    (settings.work_dir / first / "scripts").mkdir(parents=True)
+    (settings.output_dir / first).mkdir(parents=True)
+    (settings.output_dir / first / f"{first}.mp4").write_bytes(b"old final")
+    assert client.delete(f"/api/lectures/{first}").status_code == 200
+    again = client.post("/api/lectures", data={"name": "요구사항 분석"}, files=deck).json()
+    assert again["id"] != first
+    assert again["video_state"] == "none"
+
+
+def test_delete_is_refused_while_any_job_is_active(sandbox):
+    settings, fake = sandbox
+    s = Settings(root=settings.root, password=PASSWORD, secret=b"s" * 32, python=str(fake),
+                 extra_env={"FAKE_SLEEP": "30"})
+    runner = JobRunner(s)
+    c = TestClient(create_app(s, runner))
+    with c:
+        c.post("/api/login", json={"password": PASSWORD})
+        other = c.post("/api/lectures", data={"name": "다른 강의"}, files={"file": ("d.pdf", b"%PDF-1.4")}).json()["id"]
+        job = c.post(f"/api/lectures/{LID}/jobs", json={"kind": "produce"}).json()
+        assert c.delete(f"/api/lectures/{other}").status_code == 409
+        c.post(f"/api/jobs/{job['id']}/cancel")
+        runner.wait(job["id"], ("cancelled", "succeeded", "failed"), timeout=20)
+        assert c.delete(f"/api/lectures/{other}").status_code == 200
+

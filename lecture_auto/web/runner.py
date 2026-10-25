@@ -166,6 +166,10 @@ class JobRunner:
             self._lock.wait_for(lambda: self._jobs[job_id]["status"] in statuses, timeout=timeout)
             return dict(self._jobs[job_id])
 
+    def active(self) -> bool:
+        with self._lock:
+            return any(j["status"] in ACTIVE for j in self._jobs.values())
+
     def busy(self, lecture_id: str) -> dict | None:
         with self._lock:
             for job in self._jobs.values():
