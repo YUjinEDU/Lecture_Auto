@@ -227,8 +227,8 @@ def test_job_success_and_failure_exit_codes(sandbox):
         runner.stop()
         assert done["status"] == status
         assert "--gpus 0 --fix-failed --heal" in runner.read_log(job["id"], 0)[0]
-        assert done["outcome"] == {"video_state": "draft", "held_back": 1, "scripts": 3, "audio": 2,
-                                   "candidates": 1}
+        assert done["outcome"] == {"video_state": "draft", "held_back": 1, "no_audio": 1, "scripts": 3,
+                                   "audio": 2, "candidates": 1}
         assert runner.get(job["id"])["outcome"] == done["outcome"]
 
 
@@ -323,3 +323,42 @@ def test_delete_is_refused_while_any_job_is_active(sandbox):
         runner.wait(job["id"], ("cancelled", "succeeded", "failed"), timeout=20)
         assert c.delete(f"/api/lectures/{other}").status_code == 200
 
+
+def test_a_job_that_raises_fails_and_the_queue_keeps_going(sandbox, monkeypatch):
+    settings, fake = sandbox
+    s = Settings(root=settings.root, password=PASSWORD, secret=b"s" * 32, python=str(fake))
+    runner = JobRunner(s)
+    real_log_path = runner.log_path
+    broken = set()
+
+    def log_path(job_id):
+        if job_id in broken:
+            raise OSError("disk full")
+        return real_log_path(job_id)
+
+    monkeypatch.setattr(runner, "log_path", log_path)
+    first = runner.submit("assemble", {"id": LID})
+    broken.add(first["id"])
+    second = runner.submit("check", {"id": "92_다른강의"})
+    runner.start()
+    try:
+        assert runner.wait(first["id"], ("succeeded", "failed"), timeout=10)["status"] == "failed"
+        assert runner.wait(second["id"], ("succeeded", "failed"), timeout=10)["status"] == "succeeded"
+    finally:
+        runner.stop()
+
+
+def test_log_reads_never_split_a_utf8_character(sandbox):
+    settings, _ = sandbox
+    runner = JobRunner(settings)
+    body = "가" * 100_000
+    runner.log_path("x").write_bytes(body.encode())
+    text, offset, out = "", 0, []
+    while True:
+        text, nxt = runner.read_log("x", offset, limit=1000)
+        if nxt == offset:
+            break
+        out.append(text)
+        offset = nxt
+    assert "\ufffd" not in "".join(out)
+    assert "".join(out) == body

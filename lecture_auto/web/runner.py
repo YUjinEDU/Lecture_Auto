@@ -7,6 +7,8 @@ server must never throw away hours of GPU work.
 """
 from __future__ import annotations
 
+import codecs
+import contextlib
 import json
 import os
 import signal
@@ -147,6 +149,7 @@ class JobRunner:
         return {
             "video_state": summary["video_state"],
             "held_back": len(summary["held_back"]),
+            "no_audio": len(summary["no_audio"]),
             "scripts": summary["scripts"],
             "audio": summary["audio"],
             "candidates": summary["candidates"],
@@ -254,7 +257,12 @@ class JobRunner:
                 item = self._items.pop(job["id"], None)
                 job.update(status="running", pid=None, started_at=time.time())
                 self._save(job)
-            self._run(job, item)
+            try:
+                self._run(job, item)
+            except Exception as e:  # noqa: BLE001 - one broken job must not stop the only runner thread
+                with self._lock:
+                    self._procs.pop(job["id"], None)
+                    self._finish(job, "failed", None, {"error": repr(e)})
 
     def _run(self, job: dict, item: dict | None) -> None:
         from lecture_auto.web.store import LectureNotFound, get_lecture
@@ -286,7 +294,8 @@ class JobRunner:
             self._lock.notify_all()
             cancel_now = job.get("cancel_requested")
         if cancel_now:
-            os.killpg(proc.pid, signal.SIGTERM)
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
             threading.Timer(KILL_GRACE_SECONDS, self._force_kill, args=(job["id"], proc.pid)).start()
         code = proc.wait()
         log.close()
@@ -309,4 +318,7 @@ class JobRunner:
             chunk = f.read(limit)
         if len(chunk) == limit and b"\n" in chunk:
             chunk = chunk[: chunk.rfind(b"\n") + 1]
-        return chunk.decode("utf-8", errors="replace"), offset + len(chunk)
+        # A chunk can end inside a multi-byte character; leave those bytes for the next read.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        text = decoder.decode(chunk)
+        return text, offset + len(chunk) - len(decoder.getstate()[0])

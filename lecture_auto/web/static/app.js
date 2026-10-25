@@ -31,7 +31,7 @@ const JOB_STATE = {
 function jobState(job) {
   const base = JOB_STATE[job.status] || [job.status, "b-none"];
   const o = job.kind === "produce" ? job.outcome : null;
-  if (job.status === "failed" && o && !o.error && o.held_back > 0 && o.audio > 0) {
+  if (job.status === "failed" && o && !o.error && o.held_back > 0 && o.no_audio === 0) {
     return [`확인 필요 ${o.held_back}장`, "b-warn"];
   }
   if (job.status === "succeeded" && o && !o.error && o.held_back > 0) {
