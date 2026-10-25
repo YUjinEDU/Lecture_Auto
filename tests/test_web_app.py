@@ -362,3 +362,12 @@ def test_log_reads_never_split_a_utf8_character(sandbox):
         offset = nxt
     assert "\ufffd" not in "".join(out)
     assert "".join(out) == body
+
+
+def test_a_negative_log_offset_reads_the_tail(sandbox):
+    settings, _ = sandbox
+    runner = JobRunner(settings)
+    runner.log_path("x").write_bytes(b"start\n" + b"x" * 5000 + b"\nTraceback: boom\n")
+    text, offset = runner.read_log("x", -16)
+    assert text == "Traceback: boom\n"
+    assert offset == runner.log_path("x").stat().st_size

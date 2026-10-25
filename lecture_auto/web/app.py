@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import threading
 import time
@@ -84,6 +85,17 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         job = runner.busy(lecture_id)
         if job:
             raise HTTPException(409, f"이 강의는 작업 중입니다: {job['label']} ({job['status']})")
+
+    # Endpoints run in a thread pool: without this, two approvals could interleave their
+    # read-modify-write of approved.json, and a job could start between ensure_idle and
+    # the file change it guards.
+    edit_lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def idle(lecture_id: str):
+        with edit_lock:
+            ensure_idle(lecture_id)
+            yield
 
     def run_cli(item: dict, args: list[str]) -> str:
         proc = subprocess.run(
@@ -201,51 +213,51 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
     @app.put("/api/lectures/{lecture_id}/slides/{number}/script", dependencies=auth)
     def put_script(lecture_id: str, number: int, body: ScriptBody):
         item = lecture_or_404(lecture_id)
-        ensure_idle(lecture_id)
-        try:
-            store.save_script(settings, item, number, body.script.strip())
-        except FileNotFoundError:
-            raise HTTPException(404, "대본이 아직 없습니다") from None
-        return next(v for v in store.slide_views(settings, item) if v["number"] == number)
+        with idle(lecture_id):
+            try:
+                store.save_script(settings, item, number, body.script.strip())
+            except FileNotFoundError:
+                raise HTTPException(404, "대본이 아직 없습니다") from None
+            return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.post("/api/lectures/{lecture_id}/slides/{number}/approve", dependencies=auth)
     def approve(lecture_id: str, number: int):
         item = lecture_or_404(lecture_id)
-        ensure_idle(lecture_id)
-        if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.wav").exists():
-            raise HTTPException(404, "음성이 없습니다")
-        run_cli(item, ["--approve", str(number)])
-        return next(v for v in store.slide_views(settings, item) if v["number"] == number)
+        with idle(lecture_id):
+            if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.wav").exists():
+                raise HTTPException(404, "음성이 없습니다")
+            run_cli(item, ["--approve", str(number)])
+            return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.post("/api/lectures/{lecture_id}/slides/{number}/promote", dependencies=auth)
     def promote(lecture_id: str, number: int, body: PromoteBody):
         item = lecture_or_404(lecture_id)
-        ensure_idle(lecture_id)
-        if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.cand.wav.json").exists():
-            raise HTTPException(404, "후보 음성이 없습니다")
-        args = ["--promote", str(number), "--note", body.note or "웹에서 후보 채택"]
-        if body.allow_failed:
-            args.append("--allow-failed")
-        run_cli(item, args)
-        return next(v for v in store.slide_views(settings, item) if v["number"] == number)
+        with idle(lecture_id):
+            if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.cand.wav.json").exists():
+                raise HTTPException(404, "후보 음성이 없습니다")
+            args = ["--promote", str(number), "--note", body.note or "웹에서 후보 채택"]
+            if body.allow_failed:
+                args.append("--allow-failed")
+            run_cli(item, args)
+            return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.post("/api/lectures/{lecture_id}/slides/{number}/unapprove", dependencies=auth)
     def unapprove(lecture_id: str, number: int):
         item = lecture_or_404(lecture_id)
-        ensure_idle(lecture_id)
-        if number not in load_approvals(settings.work_dir / lecture_id, lecture_id).slides:
-            raise HTTPException(404, "승인된 슬라이드가 아닙니다")
-        run_cli(item, ["--unapprove", str(number)])
-        return next(v for v in store.slide_views(settings, item) if v["number"] == number)
+        with idle(lecture_id):
+            if number not in load_approvals(settings.work_dir / lecture_id, lecture_id).slides:
+                raise HTTPException(404, "승인된 슬라이드가 아닙니다")
+            run_cli(item, ["--unapprove", str(number)])
+            return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.post("/api/lectures/{lecture_id}/slides/{number}/restore-prev", dependencies=auth)
     def restore_prev(lecture_id: str, number: int):
         item = lecture_or_404(lecture_id)
-        ensure_idle(lecture_id)
-        if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.prev.wav").exists():
-            raise HTTPException(404, "되돌릴 이전 음성이 없습니다")
-        run_cli(item, ["--restore-prev", str(number)])
-        return next(v for v in store.slide_views(settings, item) if v["number"] == number)
+        with idle(lecture_id):
+            if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.prev.wav").exists():
+                raise HTTPException(404, "되돌릴 이전 음성이 없습니다")
+            run_cli(item, ["--restore-prev", str(number)])
+            return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.get("/api/lectures/{lecture_id}/slides/{number}/image", dependencies=auth)
     def slide_image(lecture_id: str, number: int):
@@ -282,7 +294,8 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         if body.kind not in KINDS:
             raise HTTPException(400, "알 수 없는 작업 종류")
         try:
-            return runner.submit(body.kind, item, body.slides)
+            with edit_lock:
+                return runner.submit(body.kind, item, body.slides)
         except JobError as e:
             raise HTTPException(409 if "이미" in str(e) else 400, str(e)) from None
 
@@ -297,7 +310,7 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
     def job_log(job_id: str, offset: int = 0):
         if runner.get(job_id) is None:
             raise HTTPException(404, "작업이 없습니다")
-        text, next_offset = runner.read_log(job_id, max(offset, 0))
+        text, next_offset = runner.read_log(job_id, offset)
         return {"text": text, "offset": next_offset}
 
     @app.post("/api/jobs/{job_id}/cancel", dependencies=auth)

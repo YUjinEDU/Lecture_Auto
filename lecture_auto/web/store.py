@@ -92,7 +92,7 @@ def lecture_summary(settings: Settings, item: dict) -> dict:
     # back from being final, which is right for it and wrong for the professor: "listen
     # to it and approve" is impossible before any audio exists.
     missing = sorted(n for n in pending if not (work / "audio" / f"slide_{n:03d}.wav").exists())
-    held = sorted(set(pending) - set(missing))
+    held = sorted(pending - set(missing))
     return {
         "id": item["id"],
         "name": item.get("name", item["id"]),

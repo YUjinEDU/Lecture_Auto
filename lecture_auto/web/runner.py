@@ -313,6 +313,8 @@ class JobRunner:
         path = self.log_path(job_id)
         if not path.exists():
             return "", offset
+        if offset < 0:  # the last -offset bytes: where a long log keeps its error
+            offset = max(path.stat().st_size + offset, 0)
         with path.open("rb") as f:
             f.seek(offset)
             chunk = f.read(limit)

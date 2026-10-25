@@ -224,7 +224,7 @@ function slideRow(lec, s, busy) {
     state.dirty[s.number] = textarea.value;
     saveBtn.disabled = textarea.value === s.script;
   });
-  if (state.dirty[s.number] !== undefined) saveBtn.disabled = false;
+  if (state.dirty[s.number] !== undefined && !busy) saveBtn.disabled = false;
   const check = h("input", { type: "checkbox", checked: state.selected.has(s.number), onchange: (ev) => {
     if (ev.target.checked) state.selected.add(s.number); else state.selected.delete(s.number);
     document.getElementById("regen-count").textContent = state.selected.size;
@@ -402,7 +402,7 @@ async function renderJobs() {
   const jobs = await api("jobs");
   const pre = h("pre", { class: "log", hidden: true });
   const show = (job) => guard(async () => {
-    const { text } = await api(`jobs/${job.id}/log?offset=0`);
+    const { text } = await api(`jobs/${job.id}/log?offset=-200000`);
     pre.hidden = false;
     pre.textContent = text.slice(-60000) || "(로그 없음)";
     pre.scrollIntoView({ behavior: "smooth" });
@@ -435,7 +435,18 @@ document.getElementById("logout").addEventListener("click", () => guard(async ()
   await api("logout", { method: "POST" });
   renderLogin();
 }));
-window.addEventListener("hashchange", route);
+// beforeunload does not fire on hash navigation, and opening another lecture resets
+// state.dirty -- ask before an unsaved script edit is thrown away.
+let currentHash = location.hash;
+window.addEventListener("hashchange", () => {
+  if (Object.keys(state.dirty).length && !confirm("저장하지 않은 대본 수정이 있습니다. 이동하면 사라집니다. 이동할까요?")) {
+    history.replaceState(null, "", currentHash || "#/");
+    return;
+  }
+  state.dirty = {};
+  currentHash = location.hash;
+  route();
+});
 window.addEventListener("beforeunload", (ev) => {
   if (Object.keys(state.dirty).length) ev.preventDefault();
 });
