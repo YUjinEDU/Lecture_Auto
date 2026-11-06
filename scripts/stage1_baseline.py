@@ -31,7 +31,7 @@ def snapshot() -> dict:
     for item in bgl.LECTURES:
         lec_id = item["id"]
         ref = Path(item.get("ref_voice") or DEFAULT_REF_VOICE)
-        ref_bytes = ref.read_bytes() if ref.exists() else b""
+        ref_bytes = bgl._ref_voice_bytes(item)
         scripts_dir = base_work / lec_id / "scripts"
         audio_dir = base_work / lec_id / "audio"
         slides = {}

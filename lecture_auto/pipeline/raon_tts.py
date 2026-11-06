@@ -46,6 +46,11 @@ _SAMPLE_RATE = 24000
 # key that actually captures what changes the generated audio.
 TTS_MODEL_ID = _DEFAULT_MODEL_ID
 TTS_TEMPERATURE = 0.85
+
+
+def active_temperature() -> float:
+    """Sampling temperature the model really uses (env override included); part of the TTS cache key."""
+    return float(os.environ.get("LECTURE_AUTO_TTS_TEMPERATURE", TTS_TEMPERATURE))
 # Bump whenever the segmentation/join/gate algorithm changes (not just the
 # model/temperature/seeds) -- content_hash() callers should include this so a
 # pure code change (e.g. switching segment joins to tts_continuation) forces
@@ -105,7 +110,7 @@ def load_raon_pipeline(
     # target duration instead, so a bad sample is bounded, not left to run wild.
     # 0.85 over the old 0.72 default: on 60 shipped segments the first draw failed the gate
     # 23% -> 8% of the time with no loss in pitch stability or speaker similarity.
-    active_temp = float(os.environ.get("LECTURE_AUTO_TTS_TEMPERATURE", TTS_TEMPERATURE))
+    active_temp = active_temperature()
     tuned = {
         "temperature": active_temp,
         "ras_enabled": True,

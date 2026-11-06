@@ -64,8 +64,7 @@ def _load_scripts(work: Path) -> dict[int, dict]:
 
 def _invalid(settings: Settings, item: dict, scripts: dict[int, dict]) -> set[int]:
     audio = settings.work_dir / item["id"] / "audio"
-    ref = ref_voice_path(settings, item)
-    ref_bytes = ref.read_bytes() if ref.exists() else b""
+    ref_bytes = bgl._ref_voice_bytes({**item, "ref_voice": ref_voice_path(settings, item)})
     wavs = {n: audio / f"slide_{n:03d}.wav" for n in scripts}
     return set(bgl._invalid_slides(sorted(scripts), wavs, scripts, ref_bytes, pronunciation_entries(settings)))
 

@@ -52,6 +52,11 @@ from lecture_auto.pipeline.cache import (
     write_cache_hash,
     write_text_atomic,
 )
+from lecture_auto.pipeline.gemini_tts import (
+    BazeTTSClient,
+    synthesize_gemini_slide,
+    voice_identity,
+)
 from lecture_auto.pipeline.lecture_plan import (
     _PLAN_SYSTEM_PROMPT,
     build_lecture_plan_prompt,
@@ -74,7 +79,7 @@ from lecture_auto.pipeline.raon_tts import (
     TTS_RESEED_SEEDS,
     TTS_SEEDS,
     TTS_SYNTH_VERSION,
-    TTS_TEMPERATURE,
+    active_temperature,
     load_raon_pipeline,
     synthesize_raon_slide,
 )
@@ -135,7 +140,18 @@ def _ref_voice(item: dict) -> Path:
     return Path(item.get("ref_voice") or DEFAULT_REF_VOICE)
 
 
+def _gemini(item: dict) -> tuple[str | None, str | None] | None:
+    """(voice, instructions) when the lecture uses Gemini TTS, else None."""
+    if item.get("tts_engine", "raon") != "gemini":
+        return None
+    return item.get("tts_voice"), item.get("tts_instructions")
+
+
 def _ref_voice_bytes(item: dict) -> bytes:
+    """The voice half of every TTS cache key: the Raon reference WAV, or the Gemini voice settings."""
+    gemini = _gemini(item)
+    if gemini is not None:
+        return voice_identity(*gemini)
     ref = _ref_voice(item)
     return ref.read_bytes() if ref.exists() else b""
 
@@ -216,7 +232,7 @@ def _tts_cache_key(
     """
     spoken_text = apply_pronunciation(script_text, list(entries))
     return content_hash(
-        spoken_text, ref_voice_bytes, TTS_MODEL_ID, str(TTS_TEMPERATURE), str(TTS_SEEDS), TTS_SYNTH_VERSION,
+        spoken_text, ref_voice_bytes, TTS_MODEL_ID, str(active_temperature()), str(TTS_SEEDS), TTS_SYNTH_VERSION,
         str(target_seconds),
     )
 
@@ -254,6 +270,7 @@ def _run_slide_tts(
     verify_stt: bool = True,
     ref_voice: Path = DEFAULT_REF_VOICE,
     voice_match: bool = False,
+    gemini: tuple[str | None, str | None] | None = None,
 ) -> bool:
     """Synthesize slide *n* audio if needed. Returns the quality-gate result
     for whatever happened this run (``True`` if the existing cache was reused
@@ -290,6 +307,17 @@ def _run_slide_tts(
     spoken_text = apply_pronunciation(script_text, list(entries))
     seeds = TTS_RESEED_SEEDS if force_regen else None
 
+    def _synthesize(path: Path):
+        if gemini is not None:
+            return synthesize_gemini_slide(
+                tts_pipe, spoken_text, path, voice=gemini[0], instructions=gemini[1], qc_path=qc_path_for(path),
+            )
+        return synthesize_raon_slide(
+            tts_pipe, spoken_text, path, speaker_audio=ref_voice, max_seconds=sc.get("target_seconds"),
+            verify_stt=verify_stt, qc_path=qc_path_for(path), seeds=seeds,
+            pronunciation_entries=list(entries), voice_match=voice_match,
+        )
+
     if not force_regen and is_cache_valid(out_wav, cache_key):
         logger.info("Slide %d audio cached, skipping...", n)
         return True
@@ -317,11 +345,7 @@ def _run_slide_tts(
             "synthesizing candidate %s (existing %s left untouched)",
             n, cand_wav, out_wav.name,
         )
-        _, ok = synthesize_raon_slide(
-            tts_pipe, spoken_text, cand_wav, speaker_audio=ref_voice, max_seconds=sc.get("target_seconds"),
-            verify_stt=verify_stt, qc_path=qc_path_for(cand_wav), seeds=seeds,
-            pronunciation_entries=list(entries), voice_match=voice_match,
-        )
+        _, ok = _synthesize(cand_wav)
         write_text_atomic(
             cand_json, json.dumps({"ok": ok, "cache_key": cache_key}, ensure_ascii=False, indent=2)
         )
@@ -332,11 +356,7 @@ def _run_slide_tts(
         return ok
 
     logger.info("Synthesizing slide %d audio (%d chars)...", n, len(script_text))
-    _, ok = synthesize_raon_slide(
-        tts_pipe, spoken_text, out_wav, speaker_audio=ref_voice, max_seconds=sc.get("target_seconds"),
-        verify_stt=verify_stt, qc_path=qc_path_for(out_wav), seeds=seeds,
-        pronunciation_entries=list(entries), voice_match=voice_match,
-    )
+    _, ok = _synthesize(out_wav)
     if ok:
         write_cache_hash(out_wav, cache_key)
     else:
@@ -362,6 +382,7 @@ def _synthesize_all_slides(
     claim: str | None = None,
     ref_voice: Path = DEFAULT_REF_VOICE,
     voice_match: bool = False,
+    gemini: tuple[str | None, str | None] | None = None,
 ) -> tuple[list[Path], list[int]]:
     """Stage 5 of ``process_lecture``, pulled out for direct testing: decide
     per slide whether to synthesize, skip (sharded/kept/approved), and
@@ -401,7 +422,7 @@ def _synthesize_all_slides(
             continue
         if not _synth_one(
             tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt,
-            ref_voice=ref_voice, voice_match=voice_match,
+            ref_voice=ref_voice, voice_match=voice_match, gemini=gemini,
         ):
             failed_slides.append(n)
 
@@ -422,7 +443,7 @@ def _synthesize_all_slides(
                 continue
             ok = _synth_one(
                 tts_pipe, n, scripts, audio_dir / f"slide_{n:03d}.wav", ref_voice_bytes, target_slides,
-                entries, verify_stt, ref_voice=ref_voice, voice_match=voice_match,
+                entries, verify_stt, ref_voice=ref_voice, voice_match=voice_match, gemini=gemini,
             )
             # Written for success AND gate failure; an exception skips it so a
             # restarted worker can retake the slide (kernel frees the flock).
@@ -436,13 +457,14 @@ def _synthesize_all_slides(
 def _synth_one(
     tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt,
     ref_voice: Path = DEFAULT_REF_VOICE, voice_match: bool = False,
+    gemini: tuple[str | None, str | None] | None = None,
 ) -> bool:
     sc = scripts[n]
     cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
     force_regen = target_slides is not None and n in target_slides
     return _run_slide_tts(
         tts_pipe, n, sc, out_wav, cache_key, force_regen, entries=entries, verify_stt=verify_stt,
-        ref_voice=ref_voice, voice_match=voice_match,
+        ref_voice=ref_voice, voice_match=voice_match, gemini=gemini,
     )
 
 
@@ -1039,7 +1061,7 @@ def process_lecture(
     wav_paths, failed_slides = _synthesize_all_slides(
         tts_pipe, slide_count, scripts, audio_dir, ref_voice_bytes, shard, target_slides, approved_numbers,
         entries=entries, verify_stt=verify_stt, claim=claim,
-        ref_voice=_ref_voice(item), voice_match=bool(item.get("voice_match")),
+        ref_voice=_ref_voice(item), voice_match=bool(item.get("voice_match")), gemini=_gemini(item),
     )
     _shard_index, shard_count = shard
 
@@ -1678,11 +1700,20 @@ def main(argv: list[str] | None = None):
             parser.error("--suggest-pron requires --only matching exactly one lecture")
         sys.exit(_cli_suggest_pron(selected[0], base_work, pronunciation_entries, llm_client))
 
-    tts_pipe = None
-    if not args.skip_tts:
-        logger.info("Loading Raon-Speech-9B TTS model on cuda:%d...", args.gpu)
-        tts_pipe = load_raon_pipeline(TTS_MODEL_ID, device=f"cuda:{args.gpu}", dtype="bfloat16")
-        logger.info("Raon-Speech-9B ready!")
+    raon_pipe = None
+
+    def tts_for(lec: dict):
+        """The lecture's TTS backend: the BAZE client for Gemini, else the Raon model (loaded once)."""
+        nonlocal raon_pipe
+        if args.skip_tts:
+            return None
+        if _gemini(lec) is not None:
+            return BazeTTSClient.from_env()
+        if raon_pipe is None:
+            logger.info("Loading Raon-Speech-9B TTS model on cuda:%d...", args.gpu)
+            raon_pipe = load_raon_pipeline(TTS_MODEL_ID, device=f"cuda:{args.gpu}", dtype="bfloat16")
+            logger.info("Raon-Speech-9B ready!")
+        return raon_pipe
 
     shard_index, shard_count = (int(x) for x in args.shard.split("/"))
     if not 0 <= shard_index < shard_count:
@@ -1702,12 +1733,12 @@ def main(argv: list[str] | None = None):
     for lec in selected:
         t0 = time.time()
         if args.heal:
-            still = _heal_lecture(lec, llm_client, tts_pipe, base_work, output_dir, pronunciation_entries, verify_stt)
+            still = _heal_lecture(lec, llm_client, tts_for(lec), base_work, output_dir, pronunciation_entries, verify_stt)
             results.append((lec["id"], f"heal: still held back {still}" if still else "heal: all slides pass", time.time() - t0))
             continue
         try:
             mp4_path = process_lecture(
-                lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
+                lec, llm_client, tts_for(lec), base_work, output_dir, shard, target_slides=target_slides,
                 entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
             )
         except ScriptTooShortError as e:
