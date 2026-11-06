@@ -25,9 +25,8 @@ plain text, and gets cloned-voice audio — this flow must never break.
 | `pyproject.toml` | Package metadata, runtime deps, pytest config (`testpaths=["tests"]`, `Test*`/`test_*` discovery). |
 | `requirements.txt` | Pinned runtime dependencies (mirror of `pyproject` deps). |
 | `uv.lock` | `uv` resolver lockfile. |
-| `.env.example` | Template for required env vars (Redis URL, Supabase, model paths). |
-| `api.txt` | ⚠️ **LEAKED SECRET** — contains an OpenAI API key. Must be removed from git and the key rotated. Do not read/echo its contents. |
-| `=2.0.0` | Junk file (stray `pip install` error output). Safe to delete. |
+| `.env.example` | Template for the env vars the code reads (`FACTCHAT_*` LLM gateway, `LECTURE_WEB_*`, rendering). |
+| `api.txt`, `=2.0.0` | Removed. Neither was ever tracked by git (`.env` is git-ignored too). If a key was ever kept in a local `api.txt`, confirm it was rotated. |
 
 ## Subdirectories
 | Directory | Purpose |
@@ -65,10 +64,10 @@ plain text, and gets cloned-voice audio — this flow must never break.
 ## Dependencies
 
 ### External
-- **VLM/TTS (GPU):** vLLM + Qwen3-VL-8B-Instruct, qwen-tts + Qwen3-TTS.
+- **TTS (GPU):** Raon-Speech-9B (`pipeline/raon_tts.py`, CC BY-NC 4.0). There is no local VLM: slide analysis goes through the OpenAI-compatible client. The old Qwen3-TTS path survives only in `pipeline/tts.py` / `run.py`.
 - **Rendering:** LibreOffice (`soffice` headless) → PDF, `pdf2image`/poppler → PNG, `ffmpeg` → MP4.
 - **Parsing:** PyMuPDF + pdfplumber (PDF), python-pptx (PPTX metadata).
-- **Backend:** FastAPI, Celery[redis], Redis, sse-starlette, Pydantic v2, Supabase.
-- **Script gen:** Claude via `claude -p` subprocess (primary); `openai` SDK is also a dep.
+- **Backend:** FastAPI (professor web UI, `lecture_auto/web/`), Pydantic v2. Celery/Redis/Supabase/sse-starlette were dropped on 2026-10-25.
+- **Script gen:** OpenAI-compatible gateway (`FACTCHAT_*`; models `gpt-5.6-luna` / `gpt-5.4-mini`), not `claude -p`.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
