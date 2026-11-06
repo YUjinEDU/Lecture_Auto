@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MODEL_ID = "KRAFTON/Raon-Speech-9B"
 _SAMPLE_RATE = 24000
 
-# Public: callers (batch_generate_lectures.py) need these to build a cache
+# Public: callers (lecture_auto/production/batch.py) need these to build a cache
 # key that actually captures what changes the generated audio.
 TTS_MODEL_ID = _DEFAULT_MODEL_ID
 TTS_TEMPERATURE = 0.85

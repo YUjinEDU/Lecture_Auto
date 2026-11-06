@@ -1,7 +1,7 @@
 """Tests for lecture_auto/pipeline/pronunciation.py (S6-d).
 
 Pure-function tests plus a cache-key integration check against
-scripts/batch_generate_lectures.py's _tts_cache_key -- no GPU/network.
+lecture_auto/production/batch.py's _tts_cache_key -- no GPU/network.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from lecture_auto.pipeline.pronunciation import (
     load_pronunciation_entries,
     normalize_transcript,
 )
-from scripts.batch_generate_lectures import _tts_cache_key
+from lecture_auto.production.batch import _tts_cache_key
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 

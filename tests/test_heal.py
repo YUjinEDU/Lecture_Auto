@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from lecture_auto.pipeline.cache import write_cache_hash
-from scripts import batch_generate_lectures as bgl
+from lecture_auto.production import batch as bgl
 from scripts import produce
 
 _ITEM = {"id": "healtest", "name": "t", "subject": "t", "pdf": Path("x.pdf")}

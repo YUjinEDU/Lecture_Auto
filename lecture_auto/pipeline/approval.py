@@ -1,7 +1,7 @@
 """Slide-audio approval + timeline construction (S2).
 
 Driver-agnostic pure functions: today called from
-``scripts/batch_generate_lectures.py``, later from a FastAPI approval
+``lecture_auto/production/batch.py``, later from a FastAPI approval
 endpoint. No Redis/DB/logging side effects -- only the filesystem paths the
 caller passes in, written atomically per the project convention
 (``pipeline/cache.py``'s ``write_text_atomic``).
@@ -16,7 +16,12 @@ from pathlib import Path
 
 import soundfile as sf
 
-from lecture_auto.pipeline.cache import cache_path_for, qc_path_for, write_cache_hash, write_text_atomic
+from lecture_auto.pipeline.cache import (
+    cache_path_for,
+    qc_path_for,
+    write_cache_hash,
+    write_text_atomic,
+)
 from lecture_auto.schemas.production import (
     ApprovalManifest,
     ApprovedSlide,

@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import scripts.batch_generate_lectures as bgl
 from lecture_auto.core.project import ProjectConfig, load_projects, save_project
 from lecture_auto.pipeline.cache import cache_path_for, content_hash, write_cache_hash
+from lecture_auto.production import batch as bgl
 from lecture_auto.web.app import create_app
 from lecture_auto.web.runner import JobRunner
 from lecture_auto.web.settings import Settings

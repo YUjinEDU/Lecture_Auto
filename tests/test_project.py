@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _batch_lecture_ids(env: dict[str, str]) -> list[str]:
-    code = "import json, scripts.batch_generate_lectures as b; print(json.dumps([l['id'] for l in b.LECTURES]))"
+    code = "import json, lecture_auto.production.batch as b; print(json.dumps([l['id'] for l in b.LECTURES]))"
     out = subprocess.run(
         [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True,
         env={**os.environ, **env},

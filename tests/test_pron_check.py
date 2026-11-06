@@ -10,7 +10,7 @@ from lecture_auto.pipeline.pronunciation import (
     find_speakability_risks,
     find_unlisted_latin_tokens,
 )
-from scripts import batch_generate_lectures as bgl
+from lecture_auto.production import batch as bgl
 
 _LEC = {"id": "testlec", "name": "t", "subject": "t", "pdf": Path("x.pdf")}
 

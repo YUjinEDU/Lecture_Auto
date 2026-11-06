@@ -1,4 +1,4 @@
-"""The lectures that were hard-coded in ``scripts/batch_generate_lectures.py`` before
+"""The lectures that were hard-coded in ``lecture_auto/production/batch.py`` before
 per-lecture ``project.json`` files existed. Only migration and the no-projects fallback read it."""
 from pathlib import Path
 

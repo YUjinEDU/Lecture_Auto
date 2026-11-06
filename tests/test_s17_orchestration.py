@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import scripts.batch_generate_lectures as bgl
 import scripts.produce as produce
 from lecture_auto.pipeline.cache import qc_path_for, write_cache_hash
+from lecture_auto.production import batch as bgl
 
 SCRIPTS = {1: {"script": "a" * 10, "target_seconds": 5.0},
            2: {"script": "b" * 50, "target_seconds": 5.0},

@@ -1,7 +1,7 @@
 """Approval + timeline contracts for the human-review step (S2).
 
 S1 made every existing slide WAV's cache key invalid the moment
-``target_seconds`` joined it (see ``scripts/batch_generate_lectures.py``'s
+``target_seconds`` joined it (see ``lecture_auto/production/batch.py``'s
 ``_tts_cache_key``), so a plain "is the hash valid" check can no longer tell
 a professor-approved take from stale/never-generated audio. ``ApprovalManifest``
 records what a human explicitly signed off on -- pinned by content hash, not

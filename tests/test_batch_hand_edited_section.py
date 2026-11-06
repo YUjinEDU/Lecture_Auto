@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from lecture_auto.pipeline.cache import content_hash, write_cache_hash
-from scripts.batch_generate_lectures import _section_fully_hand_edited
+from lecture_auto.production.batch import _section_fully_hand_edited
 
 
 def _write(scripts_dir: Path, n: int, text: str, edited: bool) -> None:

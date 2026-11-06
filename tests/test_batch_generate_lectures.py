@@ -1,4 +1,4 @@
-"""Unit tests for scripts/batch_generate_lectures.py's TTS cache/output-integrity
+"""Unit tests for lecture_auto/production/batch.py's TTS cache/output-integrity
 helpers (S1-c candidate protection, S1-d target_seconds cache key, S1-e DRAFT split).
 
 ``process_lecture`` itself pulls in PDF parsing, an LLM client, and the Raon TTS
@@ -13,18 +13,19 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import numpy as np
+import pytest
 import soundfile as sf
 
-from lecture_auto.pipeline.approval import approve, load_approvals, save_approvals, verify_approved
+from lecture_auto.pipeline.approval import (
+    approve,
+    load_approvals,
+    save_approvals,
+    verify_approved,
+)
 from lecture_auto.pipeline.cache import content_hash, qc_path_for, write_cache_hash
-from lecture_auto.schemas.lecture_plan import LecturePlan
-from lecture_auto.schemas.manifest import FontInfo, ShapeRecord, SlideRecord, TextParagraph, TextRun
-from lecture_auto.schemas.production import ApprovalManifest
 from lecture_auto.pipeline.raon_tts import TTS_RESEED_SEEDS
-from scripts.batch_generate_lectures import (
+from lecture_auto.production.batch import (
     LECTURES,
     _assemble_with_approvals,
     _cli_approve_passing,
@@ -41,6 +42,15 @@ from scripts.batch_generate_lectures import (
     compute_lecture_status,
     main,
 )
+from lecture_auto.schemas.lecture_plan import LecturePlan
+from lecture_auto.schemas.manifest import (
+    FontInfo,
+    ShapeRecord,
+    SlideRecord,
+    TextParagraph,
+    TextRun,
+)
+from lecture_auto.schemas.production import ApprovalManifest
 
 _MAIN_REPO_ROOT = Path("/home/dbsdosdb/workspace/Lecture_Auto")
 
@@ -86,7 +96,7 @@ def test_lecture_07_versions_are_registered_without_the_llm_reference_script():
 
 
 def test_plan_uses_the_lectures_own_target_minutes(tmp_path):
-    from scripts.batch_generate_lectures import (
+    from lecture_auto.production.batch import (
         PLAN_LENGTH_CALIBRATION,
         _generate_lecture_plan_cached,
     )
@@ -99,8 +109,8 @@ def test_plan_uses_the_lectures_own_target_minutes(tmp_path):
     llm_client.text_model = "gpt-x"
     llm_client.vlm_model = "gpt-y"
 
-    with patch("scripts.batch_generate_lectures.build_lecture_plan_prompt", return_value="prompt") as mock_prompt, \
-         patch("scripts.batch_generate_lectures.generate_lecture_plan", return_value=plan) as mock_gen:
+    with patch("lecture_auto.production.batch.build_lecture_plan_prompt", return_value="prompt") as mock_prompt, \
+         patch("lecture_auto.production.batch.generate_lecture_plan", return_value=plan) as mock_gen:
         _generate_lecture_plan_cached(
             llm_client, [], "subj", "name", tmp_path / "plan.json", target_minutes=33.0
         )
@@ -110,7 +120,7 @@ def test_plan_uses_the_lectures_own_target_minutes(tmp_path):
 
 
 def test_check_min_minutes_refuses_scripts_too_short_for_the_floor():
-    from scripts.batch_generate_lectures import _check_min_minutes
+    from lecture_auto.production.batch import _check_min_minutes
 
     item = {"id": "x", "min_minutes": 30.0}
     short = {1: {"script": "가" * int(7.5 * 60 * 20)}}
@@ -123,12 +133,12 @@ def test_check_min_minutes_refuses_scripts_too_short_for_the_floor():
 
 
 def test_lecture_voice_settings_reach_synthesis(tmp_path):
-    from scripts.batch_generate_lectures import _ref_voice
+    from lecture_auto.production.batch import _ref_voice
 
     assert _ref_voice({}) == Path("data/audio_ref/reference_v1.wav")
     assert _ref_voice({"ref_voice": Path("data/audio_ref/reference_v2.wav")}) == Path("data/audio_ref/reference_v2.wav")
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide", return_value=(tmp_path / "x", True)) as synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide", return_value=(tmp_path / "x", True)) as synth:
         _synthesize_all_slides(
             object(), 1, scripts, tmp_path, b"ref", (0, 1), None, set(),
             ref_voice=Path("v2.wav"), voice_match=True,
@@ -155,7 +165,7 @@ def test_run_slide_tts_candidate_preserves_existing_wav_on_forced_regen(tmp_path
     sc = {"script": "hello professor", "target_seconds": 20.0}
     cand_wav = out_wav.with_name("slide_001.cand.wav")
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (cand_wav, True)
         ok = _run_slide_tts(
             tts_pipe=object(),
@@ -196,7 +206,7 @@ def test_run_slide_tts_candidate_preserves_existing_wav_on_failure(tmp_path):
     sc = {"script": "hello professor", "target_seconds": 20.0}
     cand_wav = out_wav.with_name("slide_001.cand.wav")
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (cand_wav, False)
         ok = _run_slide_tts(
             tts_pipe=object(),
@@ -240,7 +250,7 @@ def test_run_slide_tts_reuses_matching_candidate_ok_true(tmp_path):
     out_wav = tmp_path / "slide_005.wav"
     _make_existing_candidate(out_wav, cache_key="same-key", ok=True)
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         ok = _run_slide_tts(
             tts_pipe=object(),
             n=5,
@@ -260,7 +270,7 @@ def test_run_slide_tts_reuses_matching_candidate_ok_false(tmp_path):
     out_wav = tmp_path / "slide_006.wav"
     _make_existing_candidate(out_wav, cache_key="same-key", ok=False)
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         ok = _run_slide_tts(
             tts_pipe=object(),
             n=6,
@@ -280,7 +290,7 @@ def test_run_slide_tts_resynthesizes_when_candidate_cache_key_differs(tmp_path):
     out_wav = tmp_path / "slide_007.wav"
     cand_wav = _make_existing_candidate(out_wav, cache_key="old-key", ok=True)
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (cand_wav, True)
         ok = _run_slide_tts(
             tts_pipe=object(),
@@ -304,7 +314,7 @@ def test_run_slide_tts_force_regen_resynthesizes_even_if_candidate_key_matches(t
     out_wav = tmp_path / "slide_008.wav"
     cand_wav = _make_existing_candidate(out_wav, cache_key="same-key", ok=True)
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (cand_wav, True)
         ok = _run_slide_tts(
             tts_pipe=object(),
@@ -327,7 +337,7 @@ def test_run_slide_tts_direct_write_when_out_wav_missing(tmp_path):
 
     sc = {"script": "second slide", "target_seconds": 10.0}
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (out_wav, True)
         ok = _run_slide_tts(
             tts_pipe=object(),
@@ -356,7 +366,7 @@ def test_run_slide_tts_defaults_verify_stt_true_and_sets_qc_path(tmp_path):
     out_wav = tmp_path / "slide_005.wav"
     sc = {"script": "fifth slide", "target_seconds": 10.0}
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (out_wav, True)
         _run_slide_tts(
             tts_pipe=object(), n=5, sc=sc, out_wav=out_wav, cache_key="key-5", force_regen=False,
@@ -373,7 +383,7 @@ def test_run_slide_tts_no_stt_flag_passes_verify_stt_false(tmp_path):
     out_wav = tmp_path / "slide_006.wav"
     sc = {"script": "sixth slide", "target_seconds": 10.0}
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (out_wav, True)
         _run_slide_tts(
             tts_pipe=object(), n=6, sc=sc, out_wav=out_wav, cache_key="key-6", force_regen=False,
@@ -390,7 +400,7 @@ def test_run_slide_tts_force_regen_uses_reseed_seeds(tmp_path):
     out_wav = tmp_path / "slide_009.wav"
     sc = {"script": "ninth slide", "target_seconds": 10.0}
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (out_wav, True)
         _run_slide_tts(
             tts_pipe=object(), n=9, sc=sc, out_wav=out_wav, cache_key="key-9", force_regen=True,
@@ -405,7 +415,7 @@ def test_run_slide_tts_normal_synthesis_uses_default_seeds(tmp_path):
     out_wav = tmp_path / "slide_010.wav"
     sc = {"script": "tenth slide", "target_seconds": 10.0}
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (out_wav, True)
         _run_slide_tts(
             tts_pipe=object(), n=10, sc=sc, out_wav=out_wav, cache_key="key-10", force_regen=False,
@@ -419,7 +429,7 @@ def test_run_slide_tts_direct_write_failure_leaves_no_hash(tmp_path):
 
     sc = {"script": "third slide", "target_seconds": 10.0}
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (out_wav, False)
         ok = _run_slide_tts(
             tts_pipe=object(),
@@ -439,7 +449,7 @@ def test_run_slide_tts_skips_synthesis_when_cached(tmp_path):
     out_wav.write_bytes(b"cached-audio")
     write_cache_hash(out_wav, "same-key")
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         ok = _run_slide_tts(
             tts_pipe=object(),
             n=4,
@@ -527,7 +537,7 @@ def test_synthesize_all_slides_skips_approved_slide_despite_stale_cache(tmp_path
     write_cache_hash(out_wav, "stale-hash-unrelated-to-current-cache-key")
 
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         wav_paths, failed = _synthesize_all_slides(
             tts_pipe=object(),
             slide_count=1,
@@ -558,7 +568,7 @@ def test_synthesize_all_slides_approved_and_in_target_slides_uses_candidate_flow
     manifest = approve(ApprovalManifest(lecture_id="lec1"), audio_dir, 1, source="existing", gate_ok=True)
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
 
-    with patch("scripts.batch_generate_lectures.synthesize_raon_slide") as mock_synth:
+    with patch("lecture_auto.production.batch.synthesize_raon_slide") as mock_synth:
         mock_synth.return_value = (cand_wav, True)
         wav_paths, failed = _synthesize_all_slides(
             tts_pipe=object(),
@@ -606,7 +616,7 @@ def test_assemble_with_approvals_final_path_when_approved_despite_stale_cache(tm
 
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
     out_mp4 = tmp_path / "lecture.mp4"
-    with patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+    with patch("lecture_auto.production.batch.assemble_video") as mock_assemble:
         target = _assemble_with_approvals(
             lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
         )
@@ -645,7 +655,7 @@ def test_assemble_with_approvals_aborts_when_approved_audio_contaminated(tmp_pat
 
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
     out_mp4 = tmp_path / "lecture.mp4"
-    with patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+    with patch("lecture_auto.production.batch.assemble_video") as mock_assemble:
         with pytest.raises(RuntimeError, match=r"\[lec1\].*slide.*1"):
             _assemble_with_approvals(
                 lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
@@ -683,15 +693,15 @@ def test_cli_approval_commands_without_only_error(monkeypatch, tmp_path, argv_ta
 
 def test_cli_approve_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+    monkeypatch.setattr("lecture_auto.production.batch.LECTURES", [_FAKE_LECTURE])
 
     audio_dir = tmp_path / "data" / "work_batch" / "testlec" / "audio"
     audio_dir.mkdir(parents=True)
     (audio_dir / "slide_001.wav").write_bytes(b"SOME-AUDIO")
 
     monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--approve", "1"])
-    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
-         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts:
+    with patch("lecture_auto.production.batch.OpenAILLMClient") as mock_llm, \
+         patch("lecture_auto.production.batch.load_raon_pipeline") as mock_tts:
         main()
 
     mock_llm.assert_not_called()
@@ -704,7 +714,7 @@ def test_cli_approve_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
 
 def test_cli_promote_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+    monkeypatch.setattr("lecture_auto.production.batch.LECTURES", [_FAKE_LECTURE])
 
     audio_dir = tmp_path / "data" / "work_batch" / "testlec" / "audio"
     audio_dir.mkdir(parents=True)
@@ -714,8 +724,8 @@ def test_cli_promote_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--promote", "1"])
-    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
-         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts:
+    with patch("lecture_auto.production.batch.OpenAILLMClient") as mock_llm, \
+         patch("lecture_auto.production.batch.load_raon_pipeline") as mock_tts:
         main()
 
     mock_llm.assert_not_called()
@@ -725,7 +735,7 @@ def test_cli_promote_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
 
 def test_cli_assemble_only_does_not_load_llm_or_tts_model(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+    monkeypatch.setattr("lecture_auto.production.batch.LECTURES", [_FAKE_LECTURE])
 
     work_dir = tmp_path / "data" / "work_batch" / "testlec"
     rendered_dir = work_dir / "rendered"
@@ -744,9 +754,9 @@ def test_cli_assemble_only_does_not_load_llm_or_tts_model(monkeypatch, tmp_path)
     write_cache_hash(wav1, _tts_cache_key("s1", b"", 3.0))  # REF_VOICE doesn't exist -> b""
 
     monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "testlec", "--assemble-only"])
-    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
-         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts, \
-         patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+    with patch("lecture_auto.production.batch.OpenAILLMClient") as mock_llm, \
+         patch("lecture_auto.production.batch.load_raon_pipeline") as mock_tts, \
+         patch("lecture_auto.production.batch.assemble_video") as mock_assemble:
         main()
 
     mock_llm.assert_not_called()
@@ -811,7 +821,7 @@ def test_resolve_pdf_input_converts_pptx_via_pptx_to_pdf(tmp_path):
     input_dir.mkdir()
     item = {"pptx": pptx_path}
 
-    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+    with patch("lecture_auto.production.batch.pptx_to_pdf") as mock_convert:
         mock_convert.return_value = (input_dir / "lecture.pdf", "")
         result = _resolve_pdf_input(item, input_dir, "lec1")
 
@@ -833,7 +843,7 @@ def test_resolve_pdf_input_skips_reconversion_when_pdf_is_up_to_date(tmp_path):
     os.utime(converted, (2_000, 2_000))  # newer than the pptx
     item = {"pptx": pptx_path}
 
-    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+    with patch("lecture_auto.production.batch.pptx_to_pdf") as mock_convert:
         result = _resolve_pdf_input(item, input_dir, "lec1")
 
     mock_convert.assert_not_called()
@@ -851,7 +861,7 @@ def test_resolve_pdf_input_reconverts_when_pptx_is_newer_than_existing_pdf(tmp_p
     os.utime(pptx_path, (2_000, 2_000))  # newer than the stale PDF
     item = {"pptx": pptx_path}
 
-    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+    with patch("lecture_auto.production.batch.pptx_to_pdf") as mock_convert:
         mock_convert.return_value = (converted, "")
         _resolve_pdf_input(item, input_dir, "lec1")
 
@@ -864,7 +874,7 @@ def test_resolve_pdf_input_uses_pdf_key_unchanged(tmp_path):
     pdf_path.write_bytes(b"pdf-bytes")
     item = {"pdf": pdf_path}
 
-    with patch("scripts.batch_generate_lectures.pptx_to_pdf") as mock_convert:
+    with patch("lecture_auto.production.batch.pptx_to_pdf") as mock_convert:
         result = _resolve_pdf_input(item, tmp_path / "input", "lec1")
 
     mock_convert.assert_not_called()
@@ -1020,7 +1030,7 @@ def test_assemble_final_writes_nested_folder_with_timeline_and_report(tmp_path):
 
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
     out_mp4 = _lecture_output_mp4(lec_id, tmp_path / "output")
-    with patch("scripts.batch_generate_lectures.assemble_video") as mock_assemble:
+    with patch("lecture_auto.production.batch.assemble_video") as mock_assemble:
         target = _assemble_with_approvals(
             lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
         )
@@ -1057,7 +1067,7 @@ def test_assemble_final_deletes_stale_draft_trio(tmp_path):
     draft_report.write_text("old report", encoding="utf-8")
 
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
-    with patch("scripts.batch_generate_lectures.assemble_video"):
+    with patch("lecture_auto.production.batch.assemble_video"):
         target = _assemble_with_approvals(
             lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
         )
@@ -1094,7 +1104,7 @@ def test_assemble_draft_does_not_touch_existing_final(tmp_path):
     final_report.write_text("final report", encoding="utf-8")
 
     scripts = {1: {"script": "s1", "target_seconds": 5.0}}
-    with patch("scripts.batch_generate_lectures.assemble_video"):
+    with patch("lecture_auto.production.batch.assemble_video"):
         target = _assemble_with_approvals(
             lec_id, work_dir, audio_dir, video_dir, out_mp4, 1, scripts, [png1], [wav1], b"ref",
         )
@@ -1180,7 +1190,7 @@ def test_cli_status_does_not_load_models_or_write_files(monkeypatch, tmp_path, c
     """Required test 4 (CLI half): --status reads disk only, loads no
     TTS/LLM model, and writes no files."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("scripts.batch_generate_lectures.LECTURES", [_FAKE_LECTURE])
+    monkeypatch.setattr("lecture_auto.production.batch.LECTURES", [_FAKE_LECTURE])
 
     rendered_dir = tmp_path / "data" / "work_batch" / "testlec" / "rendered"
     rendered_dir.mkdir(parents=True)
@@ -1189,8 +1199,8 @@ def test_cli_status_does_not_load_models_or_write_files(monkeypatch, tmp_path, c
     before = {p for p in tmp_path.rglob("*") if p.is_file()}
 
     monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--status"])
-    with patch("scripts.batch_generate_lectures.OpenAILLMClient") as mock_llm, \
-         patch("scripts.batch_generate_lectures.load_raon_pipeline") as mock_tts:
+    with patch("lecture_auto.production.batch.OpenAILLMClient") as mock_llm, \
+         patch("lecture_auto.production.batch.load_raon_pipeline") as mock_tts:
         main()
 
     mock_llm.assert_not_called()
@@ -1215,7 +1225,7 @@ def test_lecture_plan_generation_uses_calibrated_minutes(tmp_path):
     target, so that shortfall is compensated upstream. Same value at both
     call sites (prompt build + generation) so the cache key matches what was
     actually generated."""
-    from scripts.batch_generate_lectures import (
+    from lecture_auto.production.batch import (
         PLAN_LENGTH_CALIBRATION,
         TARGET_MINUTES,
         _generate_lecture_plan_cached,
@@ -1232,8 +1242,8 @@ def test_lecture_plan_generation_uses_calibrated_minutes(tmp_path):
     llm_client.vlm_model = "gpt-y"
     plan_path = tmp_path / "plan.json"
 
-    with patch("scripts.batch_generate_lectures.build_lecture_plan_prompt", return_value="prompt") as mock_prompt, \
-         patch("scripts.batch_generate_lectures.generate_lecture_plan", return_value=plan) as mock_gen:
+    with patch("lecture_auto.production.batch.build_lecture_plan_prompt", return_value="prompt") as mock_prompt, \
+         patch("lecture_auto.production.batch.generate_lecture_plan", return_value=plan) as mock_gen:
         _generate_lecture_plan_cached(llm_client, [], "subj", "name", plan_path)
 
     expected_minutes = TARGET_MINUTES * PLAN_LENGTH_CALIBRATION

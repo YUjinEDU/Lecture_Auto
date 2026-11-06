@@ -3,10 +3,14 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import scripts.batch_generate_lectures as bgl
 from lecture_auto.pipeline.cache import content_hash, write_cache_hash
 from lecture_auto.pipeline.restyle import RestyleResult, compute_metrics
-from lecture_auto.schemas.lecture_plan import CarryForward, SectionScriptResult, SectionSlideScript
+from lecture_auto.production import batch as bgl
+from lecture_auto.schemas.lecture_plan import (
+    CarryForward,
+    SectionScriptResult,
+    SectionSlideScript,
+)
 
 
 def _section(scripts: dict[int, str]) -> SectionScriptResult:

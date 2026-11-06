@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.batch_generate_lectures import (  # noqa: E402
+from lecture_auto.production.batch import (  # noqa: E402
     EXIT_NO_RETRY,
     LECTURES,
     _format_status_line,

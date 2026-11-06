@@ -31,17 +31,32 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lecture_auto.pipeline.cache import qc_path_for, write_text_atomic
-from lecture_auto.pipeline.highlight import concat_manifest, draw_highlight, load_blocks, map_segment, slide_pieces
+from lecture_auto.pipeline.highlight import (
+    concat_manifest,
+    draw_highlight,
+    load_blocks,
+    map_segment,
+    slide_pieces,
+)
+from lecture_auto.pipeline.pronunciation import (
+    apply_pronunciation,
+    load_pronunciation_entries,
+)
+from lecture_auto.pipeline.subtitles import (
+    segment_spans,
+    split_cue,
+    to_srt,
+    to_vtt,
+    written_segments,
+)
 from lecture_auto.pipeline.tts import merge_audio
-from lecture_auto.pipeline.pronunciation import apply_pronunciation, load_pronunciation_entries
-from lecture_auto.pipeline.subtitles import segment_spans, split_cue, to_srt, to_vtt, written_segments
 from lecture_auto.schemas.production import SlideQC, Timeline
 
 try:
-    from scripts.batch_generate_lectures import LECTURES
+    from lecture_auto.production.batch import LECTURES
 except ImportError:  # run as ``python scripts/annotate_lecture.py``
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from batch_generate_lectures import LECTURES
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from lecture_auto.production.batch import LECTURES
 
 REPO = Path(__file__).resolve().parent.parent
 

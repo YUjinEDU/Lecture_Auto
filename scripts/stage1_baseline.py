@@ -23,7 +23,7 @@ DEFAULT_REF_VOICE = Path("data/audio_ref/reference_v1.wav")
 
 def snapshot() -> dict:
     from lecture_auto.pipeline.cache import is_cache_valid
-    from scripts import batch_generate_lectures as bgl
+    from lecture_auto.production import batch as bgl
 
     entries = bgl.load_pronunciation_entries(Path("config/pronunciation.yaml"))
     base_work, output_dir = Path("data/work_batch"), Path("output")

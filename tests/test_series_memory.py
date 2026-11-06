@@ -7,7 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lecture_auto.pipeline.lecture_plan import build_lecture_plan_prompt, build_section_prompt
+from lecture_auto.pipeline.lecture_plan import (
+    build_lecture_plan_prompt,
+    build_section_prompt,
+)
 from lecture_auto.schemas.lecture_plan import CarryForward, LecturePlan
 from tests.test_lecture_plan import _make_slide, _valid_plan_dict
 
@@ -24,7 +27,7 @@ def _sec_slides():
 
 def _golden_outputs(tmp_path: Path) -> dict[str, str]:
     """Every no-`previous` prompt string and cache key the batch can produce."""
-    from scripts.batch_generate_lectures import (
+    from lecture_auto.production.batch import (
         _generate_lecture_plan_cached,
         _generate_section_scripts_cached,
     )
@@ -81,7 +84,10 @@ def test_golden_no_previous_is_byte_identical_to_master(tmp_path, name):
 # ---------------------------------------------------------------------------
 # With memory
 # ---------------------------------------------------------------------------
-from lecture_auto.pipeline.series_memory import load_or_create_memory, summarize_lecture  # noqa: E402
+from lecture_auto.pipeline.series_memory import (  # noqa: E402
+    load_or_create_memory,
+    summarize_lecture,
+)
 from lecture_auto.schemas.lecture_plan import LectureMemory  # noqa: E402
 
 _MEM = LectureMemory(
@@ -148,7 +154,7 @@ def test_memory_missing_scripts_is_clear_error(tmp_path):
 def test_process_lecture_without_previous_never_touches_series_memory(tmp_path):
     from unittest.mock import patch
 
-    import scripts.batch_generate_lectures as b
+    import lecture_auto.production.batch as b
 
     item = {"id": "x", "name": "n", "subject": "s", "pdf": tmp_path / "x.pdf"}
     for i, (extra, expect_called) in enumerate((({}, False), ({"previous": "p"}, True))):

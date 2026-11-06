@@ -1,6 +1,6 @@
 """Lectures registered from the web UI.
 
-Built-in lectures stay in ``scripts/batch_generate_lectures.LECTURES``; the ones a
+Built-in lectures stay in ``lecture_auto.core.legacy_lectures``; the ones a
 professor adds through the web UI live in a JSON file (default
 ``data/web/lectures.json``, override with ``LECTURE_AUTO_WEB_REGISTRY``) so that
 the batch CLI started by the web job runner sees them too.
