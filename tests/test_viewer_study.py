@@ -26,8 +26,8 @@ def _tone(seconds: float) -> np.ndarray:
     return (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
 
 
-def _lecture(root: Path) -> tuple[Path, Path]:
-    work, out = root / "work", root / "out"
+def _lecture(root: Path, work: Path | None = None, out: Path | None = None) -> tuple[Path, Path]:
+    work, out = work or root / "work", out or root / "out"
     audio, scripts = work / LID / "audio", work / LID / "scripts"
     audio.mkdir(parents=True)
     scripts.mkdir(parents=True)
