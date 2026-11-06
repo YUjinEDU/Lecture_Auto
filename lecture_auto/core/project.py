@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -39,13 +40,17 @@ class ProjectConfig(BaseModel):
     restyle: bool = False
     web: bool = False
     created_at: str | None = None
+    owner: str | None = None
+    tts_engine: Literal["raon", "gemini"] = "raon"
+    tts_voice: str | None = None
+    tts_instructions: str | None = None
 
     def model_post_init(self, _context) -> None:
         if not _ID.match(self.id):
             raise ValueError(f"project id may only hold letters, digits, '_' and '-': {self.id!r}")
 
     def as_item(self) -> dict:
-        return {k: v for k, v in self.model_dump().items() if v is not None and v is not False}
+        return self.model_dump(exclude_defaults=True)
 
 
 def projects_dir() -> Path:
