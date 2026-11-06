@@ -17,20 +17,18 @@ lecture's output folder).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-import soundfile as sf
 from PIL import Image
 
 # Make this checkout's lecture_auto win over any other editable install.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lecture_auto.pipeline.cache import qc_path_for, write_text_atomic
+from lecture_auto.pipeline.cache import write_text_atomic
 from lecture_auto.pipeline.highlight import (
     concat_manifest,
     draw_highlight,
@@ -39,18 +37,16 @@ from lecture_auto.pipeline.highlight import (
     slide_pieces,
 )
 from lecture_auto.pipeline.pronunciation import (
-    apply_pronunciation,
     load_pronunciation_entries,
 )
 from lecture_auto.pipeline.subtitles import (
-    segment_spans,
-    split_cue,
     to_srt,
     to_vtt,
-    written_segments,
 )
 from lecture_auto.pipeline.tts import merge_audio
-from lecture_auto.schemas.production import SlideQC, Timeline
+from lecture_auto.production.viewer import load_timeline as _load_timeline
+from lecture_auto.production.viewer import slide_cues as _slide_cues
+from lecture_auto.production.viewer import slide_segments as _slide_segments
 
 try:
     from lecture_auto.production.batch import LECTURES
@@ -59,55 +55,6 @@ except ImportError:  # run as ``python scripts/annotate_lecture.py``
     from lecture_auto.production.batch import LECTURES
 
 REPO = Path(__file__).resolve().parent.parent
-
-
-def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _slide_segments(entry, audio_dir: Path, scripts_dir: Path, entries: list[dict]):
-    """-> ((texts, spans, wav_seconds), info), or (None, info) when the slide must be skipped."""
-    n = entry.slide_number
-    info: dict = {"slide": n}
-    wav_path = audio_dir / entry.wav
-    if not wav_path.exists() or _sha(wav_path) != entry.wav_sha256:
-        info["skipped"] = "wav sha256 differs from timeline (or wav missing)"
-        return None, info
-    script = json.loads((scripts_dir / f"script_{n:03d}.json").read_text(encoding="utf-8"))["script"]
-    wav, sr = sf.read(str(wav_path), dtype="float32")
-    if wav.ndim > 1:
-        wav = wav.mean(axis=1)
-    qc_file = qc_path_for(wav_path)
-    qc = SlideQC.model_validate_json(qc_file.read_text(encoding="utf-8")) if qc_file.exists() else None
-    if qc is None or not qc.segments:
-        texts, spans, method, source = [script], [(0.0, len(wav) / sr)], "proportional", "written"
-    else:
-        spoken = [s.text for s in qc.segments]
-        spans, method = segment_spans(wav, sr, len(spoken), [len(t) for t in spoken])
-        spoken_full = apply_pronunciation(script, entries)
-        hash_ok = qc.spoken_text_sha256 in {
-            hashlib.sha256(t.encode("utf-8")).hexdigest() for t in (spoken_full, spoken_full.strip())
-        }
-        written = written_segments(script, spoken, entries) if hash_ok else None
-        texts, source = (written, "written") if written else (spoken, "spoken")
-        if not hash_ok:
-            info["spoken_hash_mismatch"] = True
-    info.update(method=method, source=source)
-    return (texts, spans, len(wav) / sr), info
-
-
-def _slide_cues(entry, audio_dir: Path, scripts_dir: Path, entries: list[dict]):
-    """-> (cues, info), or (None, info) when the slide must be skipped."""
-    seg, info = _slide_segments(entry, audio_dir, scripts_dir, entries)
-    if seg is None:
-        return None, info
-    texts, spans, _ = seg
-    cues = [
-        (entry.start_seconds + s, entry.start_seconds + e, t)
-        for (s0, e0), txt in zip(spans, texts)
-        for s, e, t in split_cue(txt, s0, e0)
-    ]
-    return cues, info
 
 
 def _esc(p: str) -> str:
@@ -127,14 +74,6 @@ def burn(mp4: Path, srt: Path, out: Path, font: str) -> None:
     res = subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=srt.parent)
     if res.returncode != 0:
         raise RuntimeError(f"ffmpeg failed (exit {res.returncode}):\n{res.stderr[-2000:]}")
-
-
-def _load_timeline(lec_out: Path, lec_id: str) -> tuple[Timeline, str]:
-    candidates = (lec_out / f"{lec_id}.timeline.json", lec_out / f"{lec_id}_DRAFT.timeline.json")
-    tl_path = next((p for p in candidates if p.exists()), None)
-    if tl_path is None:
-        raise FileNotFoundError(f"no timeline.json under {lec_out}")
-    return Timeline.model_validate_json(tl_path.read_text(encoding="utf-8")), tl_path.name[: -len(".timeline.json")]
 
 
 def parse_slides(spec: str) -> set[int]:
