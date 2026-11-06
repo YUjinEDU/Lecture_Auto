@@ -1,0 +1,9 @@
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:8800:8800"   # put an HTTPS reverse proxy in front; never expose this port directly
+    env_file: .env              # LECTURE_WEB_PASSWORD (first admin), LECTURE_WEB_SIGNUP, BAZE_API_KEY, FACTCHAT_*
+    volumes:
+      - ./docker-data:/data     # lectures, accounts db, uploads, outputs
+    restart: unless-stopped
