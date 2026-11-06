@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from collections import defaultdict, deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,6 +19,8 @@ from lecture_auto.web.settings import Settings
 from lecture_auto.web.shares import resolve_share
 
 STATIC = Path(__file__).parent / "static"
+REPORTS_PER_LINK = 10
+REPORT_WINDOW_SECONDS = 3600
 
 
 class ReportBody(BaseModel):
@@ -47,6 +52,8 @@ def make_public_router(
     must return None so their links stop working); ``on_report(lecture_id, token, body)`` stores a report."""
     router = APIRouter()
     db = settings.web_dir / "app.db"
+    reports_by_token: dict[str, deque[float]] = defaultdict(deque)
+    report_lock = threading.Lock()
 
     def lecture_for(token: str) -> dict:
         lecture_id = resolve_share(db, token)
@@ -82,6 +89,14 @@ def make_public_router(
     @router.post("/api/public/{token}/report")
     def report(token: str, body: ReportBody):
         item = lecture_for(token)
+        now = time.monotonic()
+        with report_lock:
+            recent = reports_by_token[token]
+            while recent and now - recent[0] > REPORT_WINDOW_SECONDS:
+                recent.popleft()
+            if len(recent) >= REPORTS_PER_LINK:
+                raise HTTPException(429, "신고가 너무 많습니다. 잠시 뒤에 다시 해 주세요")
+            recent.append(now)
         on_report(item["id"], token, body)
         return {"ok": True}
 

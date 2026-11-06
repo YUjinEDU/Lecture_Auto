@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 import sqlite3
 from collections.abc import Iterator
@@ -10,10 +11,12 @@ from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from typing import Literal
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, ConfigDict, Field
 
 from lecture_auto.web.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 def timestamp() -> str:
@@ -149,7 +152,16 @@ class Accounts:
     def api_key(self, uid: str) -> str | None:
         with self.connect() as db:
             row = db.execute("SELECT encrypted FROM api_keys WHERE user_id=?", (uid,)).fetchone()
-        return self.cipher.decrypt(row["encrypted"]).decode() if row else None
+        if row is None:
+            return None
+        try:
+            return self.cipher.decrypt(row["encrypted"]).decode()
+        except InvalidToken:
+            # The server secret changed (secret.key deleted or LECTURE_WEB_SECRET rotated): the key is
+            # unrecoverable, so drop it and let the user register it again instead of failing every job.
+            logger.warning("stored API key of user %s cannot be decrypted with the current secret; removed", uid)
+            self.delete_key(uid)
+            return None
 
     def key_last4(self, uid: str) -> str | None:
         with self.connect() as db:

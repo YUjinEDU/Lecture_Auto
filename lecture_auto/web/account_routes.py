@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+import time
+from collections import deque
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,6 +15,8 @@ from lecture_auto.web.accounts import Accounts, Registration, ReportBody
 from lecture_auto.web.settings import Settings
 
 GATEWAY = "https://factchat-cloud.mindlogic.ai/v1/gateway"
+SIGNUP_MAX = 20  # accounts per window, across all clients (each signup costs one scrypt hash)
+SIGNUP_WINDOW_SECONDS = 600
 
 
 class SignupBody(Registration):
@@ -41,6 +46,8 @@ class DisabledBody(BaseModel):
 
 def account_router(settings: Settings, accounts: Accounts) -> APIRouter:
     router = APIRouter()
+    signups: deque[float] = deque()
+    signup_lock = threading.Lock()
 
     @router.get("/api/signup")
     def signup_mode():
@@ -52,6 +59,13 @@ def account_router(settings: Settings, accounts: Accounts) -> APIRouter:
             raise HTTPException(403, "현재 회원가입을 받지 않습니다")
         if not body.terms_accepted:
             raise HTTPException(400, "이용약관에 동의해 주세요")
+        now = time.monotonic()
+        with signup_lock:
+            while signups and now - signups[0] > SIGNUP_WINDOW_SECONDS:
+                signups.popleft()
+            if len(signups) >= SIGNUP_MAX:
+                raise HTTPException(429, "가입 요청이 많습니다. 잠시 뒤에 다시 해 주세요")
+            signups.append(now)
         try:
             return accounts.signup(body)
         except PermissionError:
