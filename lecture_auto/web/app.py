@@ -14,11 +14,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from lecture_auto.web import store
-from lecture_auto.web.access import can_access, session_user
+from lecture_auto.web.access import can_access, current_user, session_user
 from lecture_auto.web.account_routes import account_router
-from lecture_auto.web.accounts import Accounts
+from lecture_auto.web.accounts import Accounts, ReportBody
 from lecture_auto.web.auth import COOKIE_NAME, issue_token
 from lecture_auto.web.lecture_routes import lecture_router
+from lecture_auto.web.owner_routes import make_owner_router
+from lecture_auto.web.public import ReportBody as PublicReportBody
+from lecture_auto.web.public import make_public_router
 from lecture_auto.web.review_routes import review_router
 from lecture_auto.web.runner import JobRunner
 from lecture_auto.web.settings import Settings
@@ -64,7 +67,7 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
     async def reject_before_reading_body(request: Request, call_next):
         path = request.url.path
         public = {"/api/login", "/api/logout", "/api/signup"}
-        if path.startswith("/api/") and path not in public:
+        if path.startswith("/api/") and path not in public and not path.startswith("/api/public/"):
             user = session_user(request, settings, accounts)
             if user is None:
                 return JSONResponse({"detail": "로그인이 필요합니다"}, status_code=401)
@@ -143,6 +146,35 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
     app.include_router(voices_router(settings, accounts))
     app.include_router(lecture_router(settings, runner, accounts))
     app.include_router(review_router(settings, runner))
+
+    def public_item(lecture_id: str) -> dict | None:
+        try:
+            item = store.get_lecture(settings, lecture_id)
+        except store.LectureNotFound:
+            return None
+        owner = accounts.get(item["owner"]) if item.get("owner") else None
+        if accounts.resource_disabled("lecture", lecture_id) or (item.get("owner") and (owner is None or owner.disabled)):
+            return None
+        return item
+
+    def public_report(lecture_id: str, token: str, body: PublicReportBody) -> None:
+        where = f" ({int(body.at_seconds // 60)}분 {int(body.at_seconds % 60)}초)" if body.at_seconds is not None else ""
+        accounts.report("public", ReportBody(
+            target_type="lecture", target_id=lecture_id,
+            reason=f"[학생 페이지 신고: {body.kind}{where}, 링크 {token[:6]}…] {body.text or '(내용 없음)'}",
+        ))
+
+    def owned_lecture(request: Request, lecture_id: str) -> dict:
+        try:
+            item = store.get_lecture(settings, lecture_id)
+        except store.LectureNotFound:
+            raise HTTPException(404, "강의를 찾을 수 없습니다") from None
+        if not can_access(current_user(request), item):
+            raise HTTPException(404, "강의를 찾을 수 없습니다")
+        return item
+
+    app.include_router(make_public_router(settings, public_item, public_report))
+    app.include_router(make_owner_router(settings, owned_lecture, lambda request: current_user(request).id))
 
     @app.get("/", response_class=HTMLResponse)
     def index():

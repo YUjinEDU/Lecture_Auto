@@ -238,7 +238,7 @@ async function renderLecture(id) {
         `확인이 필요한 슬라이드: ${lec.held_back.join(", ")} — 듣고 승인하거나, 대본을 고친 뒤 다시 만드세요.`) : null,
       lec.no_audio.length ? h("p", { class: "small muted" },
         `아직 음성이 없는 슬라이드: ${lec.no_audio.join(", ")} — "2. 음성·영상 제작"을 실행하면 만들어집니다.`) : null),
-    h("div", { class: "actions" }, h("button", { disabled: busy, onclick: () => guard(() => lectureSettingsDialog(lec)) }, "음성 설정"), h("button", { onclick: () => reportDialog("lecture", lec.id) }, "신고")),
+    h("div", { class: "actions" }, h("button", { disabled: busy, onclick: () => guard(() => lectureSettingsDialog(lec)) }, "음성 설정"), h("a", { class: "btn", href: `static/manage.html?lecture=${enc(lec.id)}` }, "학생 공유·복습 자료"), h("button", { onclick: () => reportDialog("lecture", lec.id) }, "신고")),
     jobPanel(lec), lectureActions(lec, busy), filesSection(lec),
     h("section", {}, h("div", { class: "tabs", role: "tablist" }, tab("all", "전체"), tab("todo", "확인 필요"), tab("approved", "승인됨")), list),
     lec.web && !busy ? h("p", { class: "small" }, h("button", { class: "link danger", onclick: () => guard(async () => {
