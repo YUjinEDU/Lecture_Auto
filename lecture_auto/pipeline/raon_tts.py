@@ -22,7 +22,6 @@ from typing import Literal
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
-import torch
 
 from lecture_auto.pipeline.cache import write_text_atomic
 from lecture_auto.pipeline.pronunciation import normalize_transcript
@@ -895,6 +894,8 @@ def _synthesize_segment_with_gate(
     )
     # S9-b/D-15: four plain-tts draws (see plan_attempts).
     attempts = plan_attempts(False, seeds=seeds)
+
+    import torch  # GPU extra only; the Gemini/API path imports this module without it
 
     for seed, _ in attempts:
         torch.manual_seed(seed)

@@ -18,6 +18,8 @@ dependencies = [
     "python-multipart>=0.0.22",
     "openai>=1.30.0",
     "pyyaml>=6.0",
+    "pyloudnorm>=0.2.0",
+    "scipy",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +40,6 @@ gpu = [
     "speechbrain>=1.1",
     "scipy",
     "sentencepiece",
-    "pyloudnorm>=0.2.0",
 ]
 
 [tool.uv.sources]
