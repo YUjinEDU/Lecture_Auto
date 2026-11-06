@@ -577,7 +577,9 @@ name = "lecture-auto"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "numpy" },
     { name = "openai" },
     { name = "pdf2image" },
@@ -613,7 +615,9 @@ gpu = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'gpu'" },
+    { name = "cryptography", specifier = ">=46.0" },
     { name = "fastapi", specifier = ">=0.135.1" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "openai", specifier = ">=1.30.0" },
     { name = "pdf2image", specifier = ">=1.17" },

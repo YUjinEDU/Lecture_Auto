@@ -18,6 +18,8 @@ dependencies = [
     "python-multipart>=0.0.22",
     "openai>=1.30.0",
     "pyyaml>=6.0",
+    "cryptography>=46.0",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
