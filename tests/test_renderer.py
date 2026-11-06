@@ -229,3 +229,15 @@ def test_render_slides_passes_stderr_to_detect_font_issues(tmp_path):
     call_args = mock_detect.call_args[0]
     assert call_args[0] == stderr_with_warning
     assert warnings == ["font warning"]
+
+
+def test_pdf_to_pngs_removes_slides_left_over_from_a_longer_deck(tmp_path):
+    for n in (1, 2, 3, 4):
+        (tmp_path / f"slide_{n:03d}.png").write_bytes(b"old")
+    (tmp_path / "notes.png").write_bytes(b"keep")
+    fake_images = [Image.new("RGB", (100, 75)) for _ in range(2)]
+
+    with patch("lecture_auto.pipeline.renderer.convert_from_path", return_value=fake_images):
+        pdf_to_pngs(tmp_path / "test.pdf", tmp_path)
+
+    assert sorted(p.name for p in tmp_path.glob("*.png")) == ["notes.png", "slide_001.png", "slide_002.png"]

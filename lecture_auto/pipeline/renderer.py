@@ -99,6 +99,11 @@ def pdf_to_pngs(
         dpi = int(os.environ.get("RENDER_DPI", "150"))
 
     images = convert_from_path(str(pdf_path), dpi=dpi)
+    # A shorter deck re-rendered into the same directory must not leave the old, higher-numbered
+    # slides behind: callers that glob the directory would pick them up.
+    for stale in output_dir.glob("slide_[0-9][0-9][0-9].png"):
+        if int(stale.stem.removeprefix("slide_")) > len(images):
+            stale.unlink()
     paths = []
     for idx, img in enumerate(images, start=1):
         out = output_dir / f"slide_{idx:03d}.png"

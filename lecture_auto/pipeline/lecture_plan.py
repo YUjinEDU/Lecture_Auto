@@ -234,6 +234,12 @@ def validate_plan_covers_slides(plan: LecturePlan, slide_count: int) -> None:
     A dropped or duplicated slide here means a missing or doubled-up wav/png
     pairing much later in assemble_video -- fail loudly now instead.
     """
+    out_of_range = sorted({n for s in plan.sections for n in s.slides if not 1 <= n <= slide_count})
+    if out_of_range:
+        raise ValueError(f"lecture plan names slides outside 1..{slide_count}: {out_of_range}")
+    no_time = [s.title for s in plan.sections if s.minutes <= 0]
+    if no_time:
+        raise ValueError(f"lecture plan gives no minutes to sections: {no_time}")
     owner: dict[int, str] = {}
     for section in plan.sections:
         for n in section.slides:

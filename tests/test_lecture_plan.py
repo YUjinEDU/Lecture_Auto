@@ -455,3 +455,17 @@ def test_generate_section_scripts_raises_if_json_stays_malformed(tmp_path):
 
     with pytest.raises(json.JSONDecodeError):
         generate_section_scripts(client, plan, section, slides, [png, png], None, False)
+
+
+def test_validate_plan_covers_slides_raises_on_out_of_range_slide():
+    data = _valid_plan_dict()
+    data["sections"][1]["slides"] = [*data["sections"][1]["slides"], 9]
+    with pytest.raises(ValueError, match="outside 1..5"):
+        validate_plan_covers_slides(LecturePlan(**data), slide_count=5)
+
+
+def test_validate_plan_covers_slides_raises_on_section_without_minutes():
+    plan = LecturePlan(**_valid_plan_dict())
+    object.__setattr__(plan.sections[0], "minutes", 0.0)
+    with pytest.raises(ValueError, match="no minutes"):
+        validate_plan_covers_slides(plan, slide_count=5)
