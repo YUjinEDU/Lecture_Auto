@@ -1,0 +1,22 @@
+.m-main { max-width: 960px; margin: 0 auto; padding: 1.25rem; }
+.m-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.1rem 1.25rem; margin: 1rem 0; }
+.m-card h3 { font-size: 1rem; margin: 1.2rem 0 .4rem; }
+.m-muted { color: var(--muted); font-size: .92rem; }
+.m-error { padding: .8rem 1rem; background: var(--bad-bg); color: var(--bad); border-radius: var(--radius); }
+.m-row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.m-grow { flex: 1; }
+.m-card button { padding: .45rem .9rem; border-radius: 8px; border: 1px solid var(--line); background: #fff; cursor: pointer; font: inherit; }
+.m-card button.m-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.m-card button.m-small { padding: .1rem .5rem; font-size: .85rem; }
+.m-card button:disabled { opacity: .5; cursor: default; }
+.m-shares { list-style: none; padding: 0; margin: .8rem 0 0; }
+.m-shares li { display: flex; gap: .5rem; align-items: center; padding: .45rem 0; border-top: 1px solid var(--line); }
+.m-shares input { flex: 1; font: inherit; padding: .35rem .5rem; border: 1px solid var(--line); border-radius: 6px; }
+.m-shares .m-revoked input { color: var(--muted); text-decoration: line-through; }
+.m-item { border: 1px solid var(--line); border-radius: 8px; padding: .7rem; margin: .5rem 0; display: grid; gap: .4rem; }
+.m-item.m-on { border-color: var(--ok); background: var(--ok-bg); }
+.m-item input[type=text], .m-item textarea { width: 100%; font: inherit; padding: .35rem .5rem; border: 1px solid var(--line); border-radius: 6px; }
+.m-item .m-choices { display: grid; gap: .3rem; }
+.m-item .m-choices label { display: flex; gap: .4rem; align-items: center; }
+.m-item .m-head { display: flex; gap: .8rem; align-items: center; font-size: .9rem; }
+.m-item .m-head input[type=number] { width: 4.5rem; }
