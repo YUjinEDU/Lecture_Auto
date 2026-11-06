@@ -40,9 +40,20 @@ def test_save_load_delete_roundtrip(tmp_path):
 
 
 def test_projects_load_in_id_order(tmp_path):
-    for i in ("10_b", "02_a", "11_c"):
+    for i in ("10_b", "02_a", "11_c", "99_x", "100_y", "11_z"):
         save_project(ProjectConfig(id=i, name=i, subject="s"), tmp_path)
-    assert [p.id for p in load_projects(tmp_path)] == ["02_a", "10_b", "11_c"]
+    assert [p.id for p in load_projects(tmp_path)] == ["02_a", "10_b", "11_c", "11_z", "99_x", "100_y"]
+
+
+@pytest.mark.parametrize("content", ['{"id":', '{"id":"bad id","name":"x","subject":"s"}'])
+def test_corrupt_project_does_not_hide_valid_projects(tmp_path, caplog, content):
+    good = ProjectConfig(id="01_good", name="good", subject="s")
+    save_project(good, tmp_path)
+    bad = tmp_path / "02_bad" / "project.json"
+    bad.parent.mkdir()
+    bad.write_text(content)
+    assert load_projects(tmp_path) == [good]
+    assert str(bad) in caplog.text
 
 
 def test_as_item_matches_the_old_lectures_dict_shape():
@@ -61,6 +72,7 @@ def test_new_id_takes_the_next_free_number():
     assert new_lecture_id("06 Product/Backlog", existing) == "12_06_Product_Backlog"
     assert new_lecture_id("x", ["12_x_y", "11_q"]) == "13_x"
     assert new_lecture_id("x", ["13_x", "12_y"]) == "14_x"
+    assert new_lecture_id("next", ["99_x", "100_y", "11_z"]) == "101_next"
 
 
 def test_migrate_writes_builtins_and_registry_once(tmp_path):

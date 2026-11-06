@@ -5,12 +5,13 @@ shape the old ``LECTURES`` list had; this module owns validation and storage.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from lecture_auto.pipeline.cache import write_text_atomic
 
@@ -61,8 +62,14 @@ def load_projects(root: Path | None = None) -> list[ProjectConfig]:
     root = projects_dir() if root is None else root
     if not root.is_dir():
         return []
-    files = sorted(root.glob(f"*/{PROJECT_FILE}"))
-    return [ProjectConfig.model_validate_json(f.read_text(encoding="utf-8")) for f in files]
+    projects = []
+    for path in root.glob(f"*/{PROJECT_FILE}"):
+        try:
+            projects.append(ProjectConfig.model_validate_json(path.read_text(encoding="utf-8")))
+        except (OSError, UnicodeError, ValidationError):
+            logging.getLogger(__name__).warning("Skipping invalid project: %s", path)
+    return sorted(projects, key=lambda p: (
+        int(m.group(1)) if (m := re.match(r"^(\d+)_", p.id)) else 0, p.id))
 
 
 def save_project(project: ProjectConfig, root: Path | None = None) -> Path:
