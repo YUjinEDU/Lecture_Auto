@@ -13,8 +13,9 @@
     const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
     return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(s).padStart(2, "0")}`;
   };
-  const el = (tag, props = {}, ...kids) => {
+  const el = (tag, { dataset, ...props } = {}, ...kids) => {
     const n = Object.assign(document.createElement(tag), props);
+    if (dataset) Object.assign(n.dataset, dataset);
     kids.forEach((k) => n.append(k));
     return n;
   };
