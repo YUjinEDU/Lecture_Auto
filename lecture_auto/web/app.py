@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import subprocess
 import threading
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -18,7 +20,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -37,6 +39,10 @@ STATIC = Path(__file__).parent / "static"
 UPLOAD_MAGIC = {".pptx": b"PK\x03\x04", ".pdf": b"%PDF"}
 AUDIO_KINDS = {"main": "slide_{:03d}.wav", "cand": "slide_{:03d}.cand.wav", "prev": "slide_{:03d}.prev.wav"}
 CLI_TIMEOUT_SECONDS = 600
+LOGIN_FAILURES_MAX = 10  # wrong passwords per window, across all clients
+LOGIN_WINDOW_SECONDS = 60
+LOGIN_FAILURE_DELAY = 1.0
+SMALL_BODY_BYTES = 1024 * 1024  # every API body except the upload
 
 
 class LoginBody(BaseModel):
@@ -70,6 +76,23 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
     app = FastAPI(title="Lecture Auto 스튜디오", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.runner = runner
+
+    @app.middleware("http")
+    async def reject_before_reading_body(request: Request, call_next):
+        # FastAPI parses a multipart upload before a route dependency runs, so the cookie
+        # is checked here, ahead of any body being read; oversize bodies are refused too.
+        path = request.url.path
+        if path.startswith("/api/") and path not in ("/api/login", "/api/logout") and not token_valid(
+            settings.secret, request.cookies.get(COOKIE_NAME)
+        ):
+            return JSONResponse({"detail": "로그인이 필요합니다"}, status_code=401)
+        limit = SMALL_BODY_BYTES
+        if request.method == "POST" and path == "/api/lectures":
+            limit += settings.max_upload_mb * 1024 * 1024
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > limit:
+            return JSONResponse({"detail": "요청이 너무 큽니다"}, status_code=413)
+        return await call_next(request)
 
     def require_auth(request: Request) -> None:
         if not token_valid(settings.secret, request.cookies.get(COOKIE_NAME)):
@@ -110,14 +133,28 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
 
     auth = [Depends(require_auth)]
 
+    login_failures: deque[float] = deque()
+
     @app.post("/api/login")
-    def login(body: LoginBody, response: Response):
+    async def login(body: LoginBody, request: Request, response: Response):
+        # One shared password: cap wrong guesses globally. No await between the check and the
+        # append, so a burst of parallel guesses cannot slip past the limit.
+        now = time.monotonic()
+        while login_failures and now - login_failures[0] > LOGIN_WINDOW_SECONDS:
+            login_failures.popleft()
+        if len(login_failures) >= LOGIN_FAILURES_MAX:
+            raise HTTPException(429, "로그인 시도가 너무 많습니다. 1분 뒤에 다시 해 주세요")
         if not check_password(body.password, settings.password):
-            time.sleep(1)
+            login_failures.append(now)
+            await asyncio.sleep(LOGIN_FAILURE_DELAY)  # does not hold a worker thread, unlike time.sleep
             raise HTTPException(401, "비밀번호가 맞지 않습니다")
+        # Secure only when the browser reached us over HTTPS (directly or via the proxy);
+        # on a plain-HTTP LAN address a Secure cookie would never be sent back.
+        forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
         response.set_cookie(
             COOKIE_NAME, issue_token(settings.secret, settings.session_hours),
             max_age=settings.session_hours * 3600, httponly=True, samesite="strict", path="/",
+            secure=request.url.scheme == "https" or forwarded == "https",
         )
         return {"ok": True}
 

@@ -81,16 +81,32 @@ def job_argv(settings: Settings, kind: str, lecture_id: str, slides: list[int] |
     return [settings.python] + args
 
 
-def _pid_alive(pid: int | None) -> bool:
+def _proc_identity(pid: int | None) -> str | None:
+    """Boot id + the process's start tick: a pid recycled after a crash or reboot differs."""
+    if not pid:
+        return None
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
+    # Field 22 (starttime); split after the last ')' because the command name may hold spaces.
+    return f"{boot_id}:{stat.rsplit(')', 1)[1].split()[19]}"
+
+
+def _pid_alive(pid: int | None, identity: str | None = None) -> bool:
+    """Is *our* child still running under this pid?
+
+    Our children belong to this user, so ``PermissionError`` means the pid now belongs to
+    someone else's process; ``identity`` catches a recycled pid of the same user.
+    """
     if not pid:
         return False
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return False
-    except PermissionError:
-        return True
-    return True
+    return identity is None or _proc_identity(pid) == identity
 
 
 class JobRunner:
@@ -108,7 +124,7 @@ class JobRunner:
             self._jobs[job["id"]] = job
         with self._lock:
             for job in self._jobs.values():
-                if job["status"] == "running" and not _pid_alive(job.get("pid")):
+                if job["status"] == "running" and not _pid_alive(job.get("pid"), job.get("pid_id")):
                     self._finish(job, "interrupted", None)
         self._thread = threading.Thread(target=self._loop, name="job-runner", daemon=True)
 
@@ -220,22 +236,26 @@ class JobRunner:
             job["cancel_requested"] = True
             self._save(job)
             pid = job["pid"]
+            pid_id = job.get("pid_id")
             if pid is None:
                 return dict(job)
-        try:
+        if not _pid_alive(pid, pid_id):
+            # Nothing of ours answers on this pid any more (recycled after a crash or reboot):
+            # never signal whatever process holds the number now.
+            with self._lock:
+                if job["status"] == "running":
+                    self._finish(job, "interrupted", None)
+            return self.get(job_id)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
         threading.Timer(KILL_GRACE_SECONDS, self._force_kill, args=(job_id, pid)).start()
         return self.get(job_id)
 
     def _force_kill(self, job_id: str, pid: int) -> None:
         job = self.get(job_id)
         if job and job["status"] == "running" and job["pid"] == pid:
-            try:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
     def _next(self) -> dict | None:
         if any(j["status"] == "running" for j in self._jobs.values()):
@@ -250,7 +270,7 @@ class JobRunner:
                     adopted = [j for j in self._jobs.values() if j["status"] == "running" and j["id"] not in self._procs]
                     self._lock.wait(timeout=5 if adopted else None)
                     for j in adopted:
-                        if not _pid_alive(j.get("pid")):
+                        if not _pid_alive(j.get("pid"), j.get("pid_id")):
                             self._finish(j, "interrupted", None)
                 if self._stop:
                     return
@@ -289,6 +309,7 @@ class JobRunner:
             return
         with self._lock:
             job["pid"] = proc.pid
+            job["pid_id"] = _proc_identity(proc.pid)
             self._procs[job["id"]] = proc
             self._save(job)
             self._lock.notify_all()

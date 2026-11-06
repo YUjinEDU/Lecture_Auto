@@ -371,3 +371,58 @@ def test_a_negative_log_offset_reads_the_tail(sandbox):
     text, offset = runner.read_log("x", -16)
     assert text == "Traceback: boom\n"
     assert offset == runner.log_path("x").stat().st_size
+
+
+def test_wrong_passwords_are_capped_across_clients(sandbox, monkeypatch):
+    import lecture_auto.web.app as web_app
+
+    monkeypatch.setattr(web_app, "LOGIN_FAILURE_DELAY", 0)
+    settings, _ = sandbox
+    c = _client(settings)
+    for _ in range(web_app.LOGIN_FAILURES_MAX):
+        assert c.post("/api/login", json={"password": "wrong"}).status_code == 401
+    # Past the cap even the right password is refused, so guessing cannot continue.
+    assert c.post("/api/login", json={"password": PASSWORD}).status_code == 429
+    c.__exit__(None, None, None)
+
+
+def test_anonymous_requests_are_refused_before_the_body_is_read(sandbox):
+    settings, _ = sandbox
+    c = _client(settings)
+    # A body FastAPI cannot parse would answer 400 if the upload were parsed before auth.
+    r = c.post("/api/lectures", content=b"not multipart", headers={"content-type": "multipart/form-data; boundary=x"})
+    assert r.status_code == 401
+    big = c.post("/api/login", content=b"x" * (1024 * 1024 + 1), headers={"content-type": "application/json"})
+    assert big.status_code == 413
+    c.__exit__(None, None, None)
+
+
+def test_session_cookie_is_secure_only_behind_https(sandbox):
+    settings, _ = sandbox
+    c = _client(settings)
+    plain = c.post("/api/login", json={"password": PASSWORD})
+    assert "secure" not in plain.headers["set-cookie"].lower()
+    c.cookies.clear()
+    https = c.post("/api/login", json={"password": PASSWORD}, headers={"x-forwarded-proto": "https"})
+    assert "secure" in https.headers["set-cookie"].lower()
+    c.__exit__(None, None, None)
+
+
+def test_a_recycled_pid_is_not_adopted_and_cancel_never_signals_it(sandbox):
+    from lecture_auto.web.runner import _proc_identity
+
+    settings, _ = sandbox
+    settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+    me = os.getpid()
+    base = {"kind": "produce", "label": "x", "lecture_id": LID, "status": "running", "created_at": 1.0, "pid": me}
+    for name, ident in (("recycled", "boot:0"), ("ours", _proc_identity(me))):
+        job = {**base, "id": name, "pid_id": ident}
+        (settings.jobs_dir / f"{name}.json").write_text(json.dumps(job), encoding="utf-8")
+    runner = JobRunner(settings)
+    # The same pid answers kill(0) for both, but only the one whose start tick matches is ours.
+    assert runner.get("recycled")["status"] == "interrupted"
+    assert runner.get("ours")["status"] == "running"
+    # The pid is recycled between adoption and a cancel: nothing may be signalled (a killpg
+    # on this test process's own group would take the test run down with it).
+    runner._jobs["ours"]["pid_id"] = "boot:0"
+    assert runner.cancel("ours")["status"] == "interrupted"
