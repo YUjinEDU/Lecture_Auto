@@ -42,6 +42,13 @@ implemented today:
 Treat the tables as historical rationale for *why* a technology was chosen, not as a live
 description of what's wired up — check `lecture_auto/*/AGENTS.md` and the code for current state.
 
+## Workflow
+
+- Edit files directly; no wrapper workflow command is required before changing code.
+- Do multi-commit work on a feature branch in its own git worktree (e.g. `feat/product` in
+  `../Lecture_Auto_wt_product`) so `master` and the running web UI stay untouched.
+- Before a commit: `.venv/bin/python -m pytest -q` passes and changed files are `ruff`-clean.
+
 ## Commands
 
 ```bash

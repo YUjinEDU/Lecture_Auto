@@ -20,7 +20,7 @@ plain text, and gets cloned-voice audio — this flow must never break.
 ## Key Files
 | File | Description |
 |------|-------------|
-| `CLAUDE.md` | Project constitution: tech stack, version pins, rationale, "what NOT to use", GSD workflow rules. Read first. |
+| `CLAUDE.md` | Project constitution: tech stack, version pins, rationale, "what NOT to use", workflow notes. Read first. |
 | `run.py` | Interactive CLI orchestrator — runs the 6-stage pipeline with confirmation prompts, SHA-256 input hashing, and a summary JSON. |
 | `pyproject.toml` | Package metadata, runtime deps, pytest config (`testpaths=["tests"]`, `Test*`/`test_*` discovery). |
 | `requirements.txt` | Pinned runtime dependencies (mirror of `pyproject` deps). |
@@ -41,9 +41,8 @@ plain text, and gets cloned-voice audio — this flow must never break.
 ## For AI Agents
 
 ### Working In This Directory
-- **GSD workflow is enforced** (per `CLAUDE.md`): start file-changing work through a GSD
-  command (`/gsd:quick`, `/gsd:debug`, `/gsd:execute-phase`) unless the user explicitly
-  asks to bypass it. Direct edits to `AGENTS.md`/`CLAUDE.md`/`.claude/**`/`.omc/**` are exempt.
+- Edit files directly; no wrapper workflow command is required. Do multi-commit work on a
+  feature branch in its own worktree so `master` stays usable.
 - **Reproducibility is a hard constraint**: same input + same settings must re-run to the
   same result. The pipeline keys on SHA-256 of the input file.
 - **Reviewability is a hard constraint**: script artifacts are plain-text/JSON the
