@@ -317,7 +317,7 @@ def test_reuploading_a_deleted_title_does_not_inherit_its_files(client, sandbox)
     assert again["video_state"] == "none"
 
 
-def test_delete_is_refused_while_any_job_is_active(sandbox):
+def test_delete_is_refused_only_for_the_busy_lecture(sandbox):
     settings, fake = sandbox
     s = Settings(root=settings.root, password=PASSWORD, secret=b"s" * 32, python=str(fake),
                  extra_env={"FAKE_SLEEP": "30"})
@@ -325,12 +325,15 @@ def test_delete_is_refused_while_any_job_is_active(sandbox):
     c = TestClient(create_app(s, runner))
     with c:
         c.post("/api/login", json={"password": PASSWORD})
-        other = c.post("/api/lectures", data={"name": "다른 강의"}, files={"file": ("d.pdf", b"%PDF-1.4")}).json()["id"]
-        job = c.post(f"/api/lectures/{LID}/jobs", json={"kind": "produce"}).json()
-        assert c.delete(f"/api/lectures/{other}").status_code == 409
+        deck = {"file": ("d.pdf", b"%PDF-1.4")}
+        busy = c.post("/api/lectures", data={"name": "작업 중 강의"}, files=deck).json()["id"]
+        other = c.post("/api/lectures", data={"name": "다른 강의"}, files=deck).json()["id"]
+        job = c.post(f"/api/lectures/{busy}/jobs", json={"kind": "produce"}).json()
+        assert c.delete(f"/api/lectures/{busy}").status_code == 409
+        assert c.delete(f"/api/lectures/{other}").status_code == 200
         c.post(f"/api/jobs/{job['id']}/cancel")
         runner.wait(job["id"], ("cancelled", "succeeded", "failed"), timeout=20)
-        assert c.delete(f"/api/lectures/{other}").status_code == 200
+        assert c.delete(f"/api/lectures/{busy}").status_code == 200
 
 
 def test_a_job_that_raises_fails_and_the_queue_keeps_going(sandbox, monkeypatch):

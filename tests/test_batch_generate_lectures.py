@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from lecture_auto.core.legacy_lectures import BUILTIN_LECTURES as LECTURES
 from lecture_auto.pipeline.approval import (
     approve,
     load_approvals,
@@ -26,7 +27,6 @@ from lecture_auto.pipeline.approval import (
 from lecture_auto.pipeline.cache import content_hash, qc_path_for, write_cache_hash
 from lecture_auto.pipeline.raon_tts import TTS_RESEED_SEEDS
 from lecture_auto.production.batch import (
-    LECTURES,
     _assemble_with_approvals,
     _cli_approve_passing,
     _draft_or_final_path,
@@ -768,10 +768,8 @@ def test_cli_assemble_only_does_not_load_llm_or_tts_model(monkeypatch, tmp_path)
 
 
 def test_cli_only_ambiguous_match_errors_for_approval_command(monkeypatch, tmp_path):
-    """--only must resolve to exactly one lecture for an approval command --
-    a substring matching several real lecture ids (e.g. shared '종합설계')
-    must not silently pick the first match and promote the wrong lecture's
-    audio."""
+    """--only takes exact ids only: a shared fragment such as '종합설계' matches
+    nothing instead of picking a lecture and promoting the wrong audio."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.argv", ["batch_generate_lectures.py", "--only", "종합설계", "--approve", "1"])
     with pytest.raises(SystemExit):

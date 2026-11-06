@@ -19,6 +19,8 @@ that drives the batch CLI. Cross-cutting concerns live in
 | Directory | Purpose |
 |-----------|---------|
 | `pipeline/` | The shared stage core: parse → render → VLM → script → TTS → video (see `pipeline/AGENTS.md`). |
+| `core/` | Per-lecture settings (`project.py`, `data/projects/<id>/project.json`), job specs (`jobs.py`), the job process entry point (`worker.py`), one-time `migrate.py` and the pre-project lecture list it reads (`legacy_lectures.py`). |
+| `production/` | Batch production logic (`batch.py`): scripts, synthesis, approvals, assembly; `scripts/batch_generate_lectures.py` is its CLI. |
 | `web/` | Professor web UI: FastAPI routes, serial subprocess job queue, file views, static HTML/JS (see `docs/WEB_UI.md`). |
 | `schemas/` | Pydantic v2 models shared across layers (manifest, script, tts, job status) (see `schemas/AGENTS.md`). |
 | `storage/` | Per-job filesystem path helpers + voice-reference storage (see `storage/AGENTS.md`). |

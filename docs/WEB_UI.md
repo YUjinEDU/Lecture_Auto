@@ -54,6 +54,10 @@ LLM 키(`FACTCHAT_*`)는 지금처럼 `.env`에서 읽는다.
 
 ## 3. 버튼과 실제 명령
 
+작업 버튼은 `data/web/jobs/specs/<job>.json`(작업 명세: 종류·강의 id·슬라이드)을 쓰고
+`python -m lecture_auto.core.worker <명세>`를 실행한다. worker가 명세를 아래 명령으로 바꾼다(`lecture_auto/core/jobs.py`).
+승인·후보 채택·승인 취소·되돌리기는 작업이 아니라 웹 프로세스 안에서 바로 처리한다.
+
 | 버튼 | 실행 명령 (`--only <id>`) |
 |---|---|
 | 대본 생성 | `batch_generate_lectures --skip-tts` |
@@ -62,29 +66,41 @@ LLM 키(`FACTCHAT_*`)는 지금처럼 `.env`에서 읽는다.
 | 보류 슬라이드 자동 복구 | `batch_generate_lectures --heal --gpu 0` |
 | 영상 다시 조립 | `batch_generate_lectures --assemble-only` |
 | 발음 점검 | `batch_generate_lectures --check` |
-| 현재 음성 승인 / 후보 채택 | `--approve N` / `--promote N [--allow-failed]` (즉시 실행) |
-| 승인 취소 / 이전 음성으로 되돌리기 | `--unapprove N` / `--restore-prev N` (즉시 실행) |
+| 현재 음성 승인 / 후보 채택 | CLI의 `--approve N` / `--promote N [--allow-failed]`와 같은 동작 (즉시) |
+| 승인 취소 / 이전 음성으로 되돌리기 | CLI의 `--unapprove N` / `--restore-prev N`와 같은 동작 (즉시) |
 
-작업마다 `CUDA_VISIBLE_DEVICES=<LECTURE_WEB_GPU>`, 강의별 참조 음성
-(`LECTURE_AUTO_REF_VOICE`: 10·11번과 웹 등록 강의는 `reference_v2.wav`, 그 이전 강의는 `reference_v1.wav`),
-마스터링(`LECTURE_AUTO_MASTER_AUDIO=1`: 10·11번과 웹 등록 강의)을 자동으로 넣는다.
-CLI로 직접 돌릴 때는 지금처럼 이 환경변수를 손으로 지정해야 한다.
+작업 프로세스에는 `CUDA_VISIBLE_DEVICES=<LECTURE_WEB_GPU>`와 `LECTURE_AUTO_PROJECTS=<root>/data/projects`만 넣는다.
+참조 음성(`ref_voice`), 음색 보정(`voice_match`), 마스터링(`master_audio`)은 강의의 `project.json`에 있고,
+웹에서 등록한 강의는 `reference_v2.wav` + 음색 보정 + 마스터링으로 만들어진다. CLI로 직접 돌려도 같은 설정을 쓴다
+(환경변수를 손으로 지정할 필요 없음).
 
 ## 4. 파일 위치
 
 | 경로 | 내용 |
 |---|---|
-| `data/web/lectures.json` | 웹에서 등록한 강의 목록. batch CLI의 `LECTURES` 뒤에 붙는다(`LECTURE_AUTO_WEB_REGISTRY`로 변경) |
+| `data/projects/<id>/project.json` | 강의 하나의 설정(입력 파일, 목표 길이, 참조 음성 등). 웹과 CLI가 모두 여기서 강의 목록을 읽는다(`LECTURE_AUTO_PROJECTS`로 변경) |
 | `data/web/uploads/<id>/` | 올린 PPTX/PDF |
 | `data/web/jobs/<job>.json`, `.log` | 작업 기록과 전체 로그("작업 기록" 화면) |
+| `data/web/jobs/specs/<job>.json` | worker에 넘긴 작업 명세 |
 | `data/web/secret.key` | 로그인 쿠키 서명 키 |
 
-`data/web/`은 git에 올리지 않는다. 웹에서 강의를 "목록에서 삭제"하면 등록만 지우고 파일은 남긴다.
+`data/`는 git에 올리지 않는다. 웹에서 강의를 "목록에서 삭제"하면 `project.json`만 지우고 파일은 남긴다.
 그래서 같은 제목으로 다시 올리면 남은 폴더와 겹치지 않는 새 번호를 받는다(옛 승인·대본·영상을 물려받지 않음).
-삭제는 어떤 작업이든 대기·실행 중이면 거부된다(409): `produce.py`가 조립·복구 단계에서 강의를 목록 순번으로
-가리키므로, 실행 중에 목록이 바뀌면 다른 강의를 건드리게 된다.
+작업이 대기·실행 중인 강의는 삭제가 거부된다(409). 다른 강의의 작업은 상관없다: 모든 명령이 강의를 id로 가리킨다.
+
+### 처음 한 번: 강의 목록 이전
+
+`project.json`이 생기기 전의 저장소(강의 목록이 코드 상수 + `data/web/lectures.json`)에서 올라온 경우, 서버를 켜기 전에 한 번 실행한다.
+이미 `project.json`이 있는 강의는 건드리지 않으므로 다시 실행해도 안전하다.
+
+```bash
+.venv/bin/python -m lecture_auto.core.migrate   # data/projects/<id>/project.json 생성
+```
+
+이걸 하지 않으면 강의 목록이 비어 보인다.
 
 ## 5. 개발
 
-- 코드: `lecture_auto/web/` (`app.py` 라우트, `store.py` 파일 조회·대본 저장, `runner.py` 작업 큐, `registry.py`, `static/` 화면 — 빌드 없는 HTML/JS/CSS).
-- 테스트: `tests/test_web_app.py`, `tests/test_web_registry.py` — 임시 폴더 사본과 가짜 실행 파일로 실제 작업 큐·취소·CLI 승인을 검증한다.
+- 코드: `lecture_auto/web/` (`app.py` 라우트, `store.py` 파일 조회·대본 저장, `runner.py` 작업 큐, `static/` 화면 — 빌드 없는 HTML/JS/CSS).
+  강의 설정·작업 명세·worker는 `lecture_auto/core/`, 제작 로직은 `lecture_auto/production/batch.py`.
+- 테스트: `tests/test_web_app.py`, `tests/test_project.py`, `tests/test_jobs.py` — 임시 폴더 사본과 가짜 실행 파일로 실제 작업 큐·취소·승인을 검증한다.

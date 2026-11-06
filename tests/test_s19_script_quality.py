@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from lecture_auto.core.legacy_lectures import BUILTIN_LECTURES
 from lecture_auto.pipeline.cache import content_hash, write_cache_hash
 from lecture_auto.pipeline.restyle import RestyleResult, compute_metrics
 from lecture_auto.production import batch as bgl
@@ -121,7 +122,7 @@ def test_restyle_report_written(tmp_path):
 
 
 def test_lectures_have_no_restyle_key_by_default():
-    assert not any("restyle" in lec for lec in bgl.LECTURES)
+    assert not any("restyle" in lec for lec in BUILTIN_LECTURES)
 
 
 # ---- --suggest-pron ----

@@ -1,5 +1,5 @@
 """The lectures that were hard-coded in ``lecture_auto/production/batch.py`` before
-per-lecture ``project.json`` files existed. Only migration and the no-projects fallback read it."""
+per-lecture ``project.json`` files existed. Only ``lecture_auto.core.migrate`` reads it."""
 from pathlib import Path
 
 BUILTIN_LECTURES: list[dict] = [

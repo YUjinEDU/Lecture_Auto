@@ -31,7 +31,6 @@ from pathlib import Path
 
 import yaml
 
-from lecture_auto.core.legacy_lectures import BUILTIN_LECTURES
 from lecture_auto.core.project import DEFAULT_REF_VOICE, load_projects
 from lecture_auto.llm.openai_client import OpenAILLMClient
 from lecture_auto.pipeline.approval import (
@@ -100,7 +99,6 @@ from lecture_auto.schemas.lecture_plan import (
     SectionScriptResult,
 )
 from lecture_auto.schemas.manifest import LectureStyle
-from lecture_auto.web.registry import load_web_lectures
 
 logging.basicConfig(
     level=logging.INFO,
@@ -143,12 +141,9 @@ def _ref_voice_bytes(item: dict) -> bytes:
 
 
 def load_lectures(root: Path | None = None) -> list[dict]:
-    """Lectures from ``project.json`` files; before ``python -m lecture_auto.core.migrate``
-    has run (no project files yet) the old built-in list plus the web registry."""
-    projects = load_projects(root)
-    if projects:
-        return [p.as_item() for p in projects]
-    return [dict(lec) for lec in BUILTIN_LECTURES] + load_web_lectures()
+    """Every lecture's ``project.json`` as a dict, in id order (``python -m lecture_auto.core.migrate``
+    writes them for the lectures that predate project files)."""
+    return [p.as_item() for p in load_projects(root)]
 
 
 LECTURES = load_lectures()
@@ -1477,8 +1472,8 @@ def _format_status_line(idx: int, lec_id: str, st: LectureStatus) -> str:
 
 
 def _select_lectures(only: str, error) -> list[dict]:
-    """S17-b: ``--only`` as comma-separated tokens (1-based index or id
-    substring); LECTURES order, de-duplicated; a token matching nothing is an error."""
+    """S17-b: ``--only`` as comma-separated tokens (1-based index or exact id);
+    LECTURES order, de-duplicated; a token matching nothing is an error."""
     picked: set[int] = set()
     for tok in (t.strip() for t in only.split(",") if t.strip()):
         if tok.isdigit():
@@ -1486,7 +1481,7 @@ def _select_lectures(only: str, error) -> list[dict]:
                 error(f"--only {tok}: index must be in 1..{len(LECTURES)}")
             hits = [int(tok) - 1]
         else:
-            hits = [i for i, lec in enumerate(LECTURES) if tok in lec["id"]]
+            hits = [i for i, lec in enumerate(LECTURES) if tok == lec["id"]]
             if not hits:
                 error(f"--only {tok!r} matches no lecture")
         picked.update(hits)
@@ -1497,7 +1492,7 @@ def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Batch lecture video generation")
     parser.add_argument(
         "--only", type=str, default=None,
-        help=f"Run only specific lectures: comma-separated ids/substrings or indexes (1-{len(LECTURES)})",
+        help=f"Run only specific lectures: comma-separated exact ids or indexes (1-{len(LECTURES)})",
     )
     parser.add_argument(
         "--claim", type=str, default=None, metavar="RUN_ID",

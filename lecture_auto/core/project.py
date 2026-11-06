@@ -79,13 +79,12 @@ _UNSAFE = re.compile(r"[^0-9A-Za-z가-힣_-]+")
 
 
 def new_lecture_id(name: str, existing_ids: list[str]) -> str:
-    """``NN_<name>`` with the next free number; never a substring of an existing id
-    (the CLI's ``--only`` matches by substring) and vice versa."""
+    """``NN_<name>`` with the next free number, never equal to an existing id."""
     slug = _UNSAFE.sub("_", name).strip("_")[:40] or "lecture"
     numbers = [int(m.group(1)) for i in existing_ids if (m := re.match(r"^(\d+)_", i))]
     n = max(numbers, default=0) + 1
     while True:
         candidate = f"{n:02d}_{slug}"
-        if not any(candidate in i or i in candidate for i in existing_ids):
+        if candidate not in existing_ids:
             return candidate
         n += 1

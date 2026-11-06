@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from lecture_auto.core.legacy_lectures import BUILTIN_LECTURES
 from lecture_auto.pipeline.cache import write_cache_hash
 from lecture_auto.production import batch as bgl
 from scripts import produce
@@ -18,6 +19,8 @@ _real_free_vram_mib = produce._free_vram_mib
 @pytest.fixture(autouse=True)
 def _no_gpu_query(monkeypatch):
     monkeypatch.setattr(produce, "_free_vram_mib", dict)
+    monkeypatch.setattr(bgl, "LECTURES", BUILTIN_LECTURES)
+    monkeypatch.setattr(produce, "LECTURES", BUILTIN_LECTURES)
 
 
 @pytest.fixture

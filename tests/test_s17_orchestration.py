@@ -91,7 +91,9 @@ def _err(msg):
 def test_select_lectures_multi(monkeypatch):
     monkeypatch.setattr(bgl, "LECTURES", LECS)
     assert [l["id"] for l in bgl._select_lectures("7,8", _err)] == ["07_xb", "08_xa"]
-    assert [l["id"] for l in bgl._select_lectures("09,02_x,9", _err)] == ["02_xa", "09_xb"]
+    assert [l["id"] for l in bgl._select_lectures("09,02_xa,9", _err)] == ["02_xa", "09_xb"]
+    with pytest.raises(ValueError):
+        bgl._select_lectures("02_x", _err)
     assert len(bgl._select_lectures("08", _err)) == 1
     with pytest.raises(ValueError):
         bgl._select_lectures("7,nomatch", _err)

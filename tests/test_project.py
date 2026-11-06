@@ -16,7 +16,6 @@ from lecture_auto.core.project import (
     new_lecture_id,
     save_project,
 )
-from lecture_auto.web.registry import save_web_lectures
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -57,15 +56,16 @@ def test_invalid_project_is_rejected(bad):
         ProjectConfig.model_validate({"id": "01_x", "name": "n", "subject": "s", **bad})
 
 
-def test_new_id_takes_next_number_and_avoids_substring_clash():
+def test_new_id_takes_the_next_free_number():
     existing = ["01_a", "11_종합설계_07_시스템구조_30분이상"]
     assert new_lecture_id("06 Product/Backlog", existing) == "12_06_Product_Backlog"
     assert new_lecture_id("x", ["12_x_y", "11_q"]) == "13_x"
+    assert new_lecture_id("x", ["13_x", "12_y"]) == "14_x"
 
 
 def test_migrate_writes_builtins_and_registry_once(tmp_path):
     reg = tmp_path / "lectures.json"
-    save_web_lectures([{"id": "99_webtest", "name": "w", "subject": "s", "pdf": Path("a.pdf"), "created_at": "t"}], reg)
+    reg.write_text(json.dumps([{"id": "99_webtest", "name": "w", "subject": "s", "pdf": "a.pdf", "created_at": "t"}]))
     root = tmp_path / "projects"
     written = migrate(root, reg)
     assert written == [lec["id"] for lec in BUILTIN_LECTURES] + ["99_webtest"]
@@ -80,8 +80,5 @@ def test_batch_reads_projects_when_present(tmp_path):
     assert _batch_lecture_ids({"LECTURE_AUTO_PROJECTS": str(tmp_path)}) == ["99_only"]
 
 
-def test_batch_falls_back_to_builtins_and_registry_without_projects(tmp_path):
-    reg = tmp_path / "lectures.json"
-    save_web_lectures([{"id": "99_webtest", "name": "w", "subject": "s", "pdf": Path("a.pdf")}], reg)
-    ids = _batch_lecture_ids({"LECTURE_AUTO_PROJECTS": str(tmp_path / "none"), "LECTURE_AUTO_WEB_REGISTRY": str(reg)})
-    assert ids == [lec["id"] for lec in BUILTIN_LECTURES] + ["99_webtest"]
+def test_batch_has_no_lectures_without_projects(tmp_path):
+    assert _batch_lecture_ids({"LECTURE_AUTO_PROJECTS": str(tmp_path / "none")}) == []

@@ -88,8 +88,9 @@ One shared pipeline core; production is driven by the batch CLI, and the web UI 
 ```
 parse → render → VLM → script → TTS → video      (lecture_auto/pipeline/*.py)
          ↑
-   scripts/batch_generate_lectures.py + scripts/produce.py   (files in data/work_batch, output)
-         ↑ subprocess jobs (serial queue, GPU 0)
+   lecture_auto/production/batch.py (CLI: scripts/batch_generate_lectures.py) + scripts/produce.py
+         ↑ job spec -> python -m lecture_auto.core.worker (serial queue, GPU 0)
+   lecture_auto/core/   (project.json per lecture in data/projects, job specs, worker, migrate)
    lecture_auto/web/  (FastAPI + static HTML/JS, professor login)     run.py (old interactive CLI)
 ```
 
@@ -101,7 +102,8 @@ parse → render → VLM → script → TTS → video      (lecture_auto/pipelin
 - `lecture_auto/storage/` — per-job filesystem path helpers; job artifacts live under
   `data/work/<id>/{input,parsed,vlm,scripts,audio}` and are regenerated, never hand-edited.
 - `lecture_auto/web/` — the professor's web UI. It never re-implements pipeline steps: jobs are
-  batch/produce subprocesses, approvals go through the batch CLI, and the only direct write is a
+  worker subprocesses fed a typed job spec; approvals run in-process through the same batch
+  functions the CLI uses, and the only other direct write is a
   script edit saved as a hand edit. Public access goes through the lab homepage as a reverse
   proxy; the GPU box is never exposed directly.
 
@@ -261,7 +263,9 @@ Hardening work is tracked in `docs/hardening/` (status board in its `README.md`)
   writes `<mp4 stem>.timeline.json`.
 - STT fidelity check is ON by default in the batch (`--no-stt` to skip); each WAV gets a `.qc.json`.
   Pronunciation overrides live in `config/pronunciation.yaml` (only `approved: true` entries apply).
-- S19 restyle (opt-in): a `LECTURES` item with `"restyle": True` runs `pipeline/restyle.py` once per section after script generation
+- Lectures live in `data/projects/<id>/project.json` (`lecture_auto/core/project.py`); run
+  `python -m lecture_auto.core.migrate` once on a checkout that predates them. `--only` takes exact ids or 1-based indexes.
+- S19 restyle (opt-in): a lecture whose project.json has `"restyle": true` runs `pipeline/restyle.py` once per section after script generation
   (cache `sections/section_NNN.restyled.json`, report `restyle_report.json`); the result is written as our own script (`.hash` matches, not hand-edited). No key = unchanged.
 - S19 `--suggest-pron --only <id>`: one text-LLM call for Korean readings of unlisted Latin tokens -> `data/work_batch/<id>/pronunciation_suggestions.yaml`
   (`approved: false`, `source: llm`; never edits `config/pronunciation.yaml`, loads no TTS model). A human copies approved entries over.

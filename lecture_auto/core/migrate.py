@@ -8,6 +8,7 @@ Writes every built-in lecture and every web-registered one; an id that already h
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -18,13 +19,21 @@ from lecture_auto.core.project import (
     projects_dir,
     save_project,
 )
-from lecture_auto.web.registry import load_web_lectures, registry_path
+
+DEFAULT_REGISTRY = Path("data/web/lectures.json")
 
 
-def migrate(root: Path, registry: Path) -> list[str]:
+def _web_registry(path: Path) -> list[dict]:
+    """The web UI's old lecture list (``data/web/lectures.json``), entries marked ``web``."""
+    if not path.exists():
+        return []
+    return [{**entry, "web": True} for entry in json.loads(path.read_text(encoding="utf-8"))]
+
+
+def migrate(root: Path, registry: Path = DEFAULT_REGISTRY) -> list[str]:
     existing = {p.id for p in load_projects(root)}
     written = []
-    for item in [*BUILTIN_LECTURES, *load_web_lectures(registry)]:
+    for item in [*BUILTIN_LECTURES, *_web_registry(registry)]:
         if item["id"] in existing:
             continue
         save_project(ProjectConfig.model_validate(item), root)
@@ -39,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry", type=Path, default=None)
     args = parser.parse_args(argv)
     root = args.projects_dir or projects_dir()
-    written = migrate(root, args.registry or registry_path())
+    written = migrate(root, args.registry or DEFAULT_REGISTRY)
     print(f"{len(written)} project(s) written to {root}: {written}")
     return 0
 

@@ -66,7 +66,7 @@ class PromoteBody(BaseModel):
 
 def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
     runner = runner or JobRunner(settings)
-    registry_lock = threading.Lock()
+    projects_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -192,7 +192,7 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
             raise HTTPException(413, f"파일이 너무 큽니다 (최대 {settings.max_upload_mb}MB)")
         if not data.startswith(UPLOAD_MAGIC[suffix]):
             raise HTTPException(400, "파일 내용이 PPTX/PDF 형식이 아닙니다")
-        with registry_lock:
+        with projects_lock:
             return _register(file, data, suffix, name, subject, target_minutes, min_minutes)
 
     def _register(file, data, suffix, name, subject, target_minutes, min_minutes):
@@ -228,11 +228,7 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         if not item.get("web"):
             raise HTTPException(400, "기본 등록 강의는 웹에서 삭제할 수 없습니다")
         ensure_idle(lecture_id)
-        if runner.active():
-            # produce.py addresses lectures by list position for its assemble/heal steps,
-            # so removing an entry while any job runs would retarget them.
-            raise HTTPException(409, "다른 작업이 끝난 뒤에 삭제할 수 있습니다")
-        with registry_lock:
+        with projects_lock:
             delete_project(lecture_id, settings.projects_dir)
         return {"ok": True}
 

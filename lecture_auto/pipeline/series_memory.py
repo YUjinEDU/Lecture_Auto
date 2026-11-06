@@ -1,7 +1,7 @@
 """S16 (D-18): summarize what an earlier lecture of a series actually said.
 
 Input is the final on-disk scripts (what was spoken, hand edits included), not
-the plan. Opt-in only: the batch calls this when a LECTURES entry has an
+the plan. Opt-in only: the batch calls this when a lecture's project.json has an
 explicit ``previous`` key.
 """
 from __future__ import annotations
