@@ -1038,7 +1038,15 @@ def process_lecture(
         for n in range(2, slide_count + 1):
             src_file = src_dir / "scripts" / f"script_{n:03d}.json"
             dst_file = scripts_dir / f"script_{n:03d}.json"
+            edited = _hand_edited(dst_file)
+            if edited is not None:
+                logger.info("Slide %d script in the clone was edited by hand -- keeping it", n)
+                scripts[n] = edited
+                continue
             shutil.copy2(src_file, dst_file)
+            # Without a sidecar _hand_edited() treats the file as ours, so a later edit would
+            # go unnoticed and the next run would overwrite it.
+            write_cache_hash(dst_file, content_hash(dst_file.read_text(encoding="utf-8")))
             scripts[n] = json.loads(dst_file.read_text(encoding="utf-8"))
         logger.info("Copied %d scripts from source, generated custom slide 1", slide_count - 1)
     else:
