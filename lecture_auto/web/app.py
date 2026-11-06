@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import subprocess
 import threading
 import time
 from collections import deque
@@ -30,16 +29,17 @@ from lecture_auto.core.project import (
     new_lecture_id,
     save_project,
 )
+from lecture_auto.pipeline import approval as approvals
 from lecture_auto.pipeline.approval import load_approvals
+from lecture_auto.production import batch as bgl
 from lecture_auto.web import store
 from lecture_auto.web.auth import COOKIE_NAME, check_password, issue_token, token_valid
-from lecture_auto.web.runner import BATCH, KINDS, JobError, JobRunner, job_env
+from lecture_auto.web.runner import KINDS, JobError, JobRunner
 from lecture_auto.web.settings import NEW_LECTURE_REF_VOICE, Settings
 
 STATIC = Path(__file__).parent / "static"
 UPLOAD_MAGIC = {".pptx": b"PK\x03\x04", ".pdf": b"%PDF"}
 AUDIO_KINDS = {"main": "slide_{:03d}.wav", "cand": "slide_{:03d}.cand.wav", "prev": "slide_{:03d}.prev.wav"}
-CLI_TIMEOUT_SECONDS = 600
 LOGIN_FAILURES_MAX = 10  # wrong passwords per window, across all clients
 LOGIN_WINDOW_SECONDS = 60
 LOGIN_FAILURE_DELAY = 1.0
@@ -121,16 +121,15 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
             ensure_idle(lecture_id)
             yield
 
-    def run_cli(item: dict, args: list[str]) -> str:
-        proc = subprocess.run(
-            [settings.python, *BATCH, "--only", item["id"], *args],
-            cwd=settings.root, env=job_env(settings, item), capture_output=True, text=True,
-            timeout=CLI_TIMEOUT_SECONDS, check=False,
-        )
-        output = (proc.stdout + proc.stderr)[-4000:]
-        if proc.returncode != 0:
-            raise HTTPException(400, f"명령 실패: {output.strip().splitlines()[-1] if output.strip() else proc.returncode}")
-        return output
+    def review(lecture_id: str, change) -> None:
+        """Approval-file changes run in this process: they take a second, not a job."""
+        try:
+            change(settings.work_dir / lecture_id)
+        except (ValueError, OSError) as e:
+            raise HTTPException(400, f"명령 실패: {e}") from None
+
+    def with_root_paths(item: dict) -> dict:
+        return {**item, "ref_voice": store.ref_voice_path(settings, item)}
 
     auth = [Depends(require_auth)]
 
@@ -261,7 +260,8 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         with idle(lecture_id):
             if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.wav").exists():
                 raise HTTPException(404, "음성이 없습니다")
-            run_cli(item, ["--approve", str(number)])
+            review(lecture_id, lambda _w: bgl._cli_approve(
+                with_root_paths(item), settings.work_dir, str(number), store.pronunciation_entries(settings)))
             return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.post("/api/lectures/{lecture_id}/slides/{number}/promote", dependencies=auth)
@@ -270,10 +270,8 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         with idle(lecture_id):
             if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.cand.wav.json").exists():
                 raise HTTPException(404, "후보 음성이 없습니다")
-            args = ["--promote", str(number), "--note", body.note or "웹에서 후보 채택"]
-            if body.allow_failed:
-                args.append("--allow-failed")
-            run_cli(item, args)
+            review(lecture_id, lambda _w: bgl._cli_promote(
+                item, settings.work_dir, str(number), body.allow_failed, body.note or "웹에서 후보 채택"))
             return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.post("/api/lectures/{lecture_id}/slides/{number}/unapprove", dependencies=auth)
@@ -282,7 +280,8 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         with idle(lecture_id):
             if number not in load_approvals(settings.work_dir / lecture_id, lecture_id).slides:
                 raise HTTPException(404, "승인된 슬라이드가 아닙니다")
-            run_cli(item, ["--unapprove", str(number)])
+            review(lecture_id, lambda w: approvals.save_approvals(
+                w, approvals.unapprove(approvals.load_approvals(w, lecture_id), number)))
             return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.post("/api/lectures/{lecture_id}/slides/{number}/restore-prev", dependencies=auth)
@@ -291,7 +290,8 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         with idle(lecture_id):
             if not (settings.work_dir / lecture_id / "audio" / f"slide_{number:03d}.prev.wav").exists():
                 raise HTTPException(404, "되돌릴 이전 음성이 없습니다")
-            run_cli(item, ["--restore-prev", str(number)])
+            review(lecture_id, lambda w: approvals.save_approvals(
+                w, approvals.restore_previous(approvals.load_approvals(w, lecture_id), w / "audio", number)))
             return next(v for v in store.slide_views(settings, item) if v["number"] == number)
 
     @app.get("/api/lectures/{lecture_id}/slides/{number}/image", dependencies=auth)

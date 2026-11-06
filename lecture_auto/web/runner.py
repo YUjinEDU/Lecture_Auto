@@ -18,10 +18,10 @@ import time
 import uuid
 from pathlib import Path
 
+from lecture_auto.core.jobs import JobSpec, write_spec
 from lecture_auto.web.settings import Settings
 
-BATCH = ["-m", "scripts.batch_generate_lectures"]
-PRODUCE = ["-m", "scripts.produce"]
+WORKER = ["-m", "lecture_auto.core.worker"]
 KINDS = {
     "scripts": "대본 생성",
     "produce": "음성·영상 제작",
@@ -52,30 +52,13 @@ def job_env(settings: Settings, item: dict) -> dict[str, str]:
     return env
 
 
-def _slides_arg(slides: list[int] | None) -> str:
-    if not slides or any(not isinstance(n, int) or n < 1 for n in slides):
-        raise JobError("다시 만들 슬라이드 번호를 지정하세요")
-    return ",".join(str(n) for n in sorted(set(slides)))
-
-
-def job_argv(settings: Settings, kind: str, lecture_id: str, slides: list[int] | None = None) -> list[str]:
-    only = ["--only", lecture_id]
-    if kind == "scripts":
-        args = BATCH + only + ["--skip-tts"]
-    elif kind == "produce":
-        workers = [] if settings.gpu == "0" else ["--workers-per-gpu", "1"]
-        args = PRODUCE + only + ["--gpus", "0", "--fix-failed", "--heal"] + workers
-    elif kind == "regen":
-        args = BATCH + only + ["--slides", _slides_arg(slides), "--gpu", "0"]
-    elif kind == "heal":
-        args = BATCH + only + ["--heal", "--gpu", "0"]
-    elif kind == "assemble":
-        args = BATCH + only + ["--assemble-only"]
-    elif kind == "check":
-        args = BATCH + only + ["--check"]
-    else:
+def job_spec(settings: Settings, kind: str, lecture_id: str, slides: list[int] | None = None) -> JobSpec:
+    if kind not in KINDS:
         raise JobError(f"알 수 없는 작업 종류: {kind}")
-    return [settings.python] + args
+    if kind == "regen" and (not slides or any(not isinstance(n, int) or n < 1 for n in slides)):
+        raise JobError("다시 만들 슬라이드 번호를 지정하세요")
+    workers = 1 if kind == "produce" and settings.gpu != "0" else None
+    return JobSpec(kind=kind, project_id=lecture_id, slides=slides or None, workers_per_gpu=workers)
 
 
 def _proc_identity(pid: int | None) -> str | None:
@@ -194,9 +177,12 @@ class JobRunner:
         return None
 
     def submit(self, kind: str, item: dict, slides: list[int] | None = None) -> dict:
-        argv = job_argv(self.settings, kind, item["id"], slides)
+        spec = job_spec(self.settings, kind, item["id"], slides)
+        job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        spec_path = self.settings.jobs_dir / "specs" / f"{job_id}.json"
+        argv = [self.settings.python, *WORKER, str(spec_path)]
         job = {
-            "id": time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6],
+            "id": job_id,
             "kind": kind,
             "label": KINDS[kind],
             "lecture_id": item["id"],
@@ -213,6 +199,7 @@ class JobRunner:
         with self._lock:
             if any(j["lecture_id"] == item["id"] and j["status"] in ACTIVE for j in self._jobs.values()):
                 raise JobError("이 강의에 이미 대기 중이거나 실행 중인 작업이 있습니다")
+            write_spec(spec, spec_path)
             self._jobs[job["id"]] = job
             self._save(job)
             self._items[job["id"]] = item

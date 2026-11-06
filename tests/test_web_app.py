@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from lecture_auto.core.jobs import command, read_spec
 from lecture_auto.core.project import ProjectConfig, load_projects, save_project
 from lecture_auto.pipeline.cache import cache_path_for, content_hash, write_cache_hash
 from lecture_auto.production import batch as bgl
@@ -213,7 +214,9 @@ def test_job_runs_queues_conflicts_and_cancels(sandbox):
         c.post(f"/api/jobs/{queued['id']}/cancel")
         runner.wait(queued["id"], ("cancelled", "succeeded", "failed"), timeout=10)
         log = c.get(f"/api/jobs/{first['id']}/log").json()["text"]
-        assert f"fake-args: -m scripts.batch_generate_lectures --only {LID} --assemble-only" in log
+        assert "fake-args: -m lecture_auto.core.worker " in log
+        spec = read_spec(settings.jobs_dir / "specs" / f"{first['id']}.json")
+        assert command(spec) == ("batch", ["--only", LID, "--assemble-only"])
         assert first["env"]["LECTURE_AUTO_PROJECTS"] == str(settings.projects_dir)
         assert "LECTURE_AUTO_REF_VOICE" not in first["env"] and "LECTURE_AUTO_MASTER_AUDIO" not in first["env"]
         assert first["env"]["CUDA_VISIBLE_DEVICES"] == "0"
@@ -230,7 +233,9 @@ def test_job_success_and_failure_exit_codes(sandbox):
         done = runner.wait(job["id"], ("succeeded", "failed"), timeout=10)
         runner.stop()
         assert done["status"] == status
-        assert "--gpus 0 --fix-failed --heal" in runner.read_log(job["id"], 0)[0]
+        assert "-m lecture_auto.core.worker" in runner.read_log(job["id"], 0)[0]
+        target, args = command(read_spec(s.jobs_dir / "specs" / f"{job['id']}.json"))
+        assert target == "produce" and args[2:] == ["--gpus", "0", "--fix-failed", "--heal"]
         assert done["outcome"] == {"video_state": "draft", "held_back": 1, "no_audio": 1, "scripts": 3,
                                    "audio": 2, "candidates": 1}
         assert runner.get(job["id"])["outcome"] == done["outcome"]

@@ -1493,7 +1493,7 @@ def _select_lectures(only: str, error) -> list[dict]:
     return [LECTURES[i] for i in sorted(picked)]
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Batch lecture video generation")
     parser.add_argument(
         "--only", type=str, default=None,
@@ -1597,7 +1597,7 @@ def main():
              "tokens; writes data/work_batch/<id>/pronunciation_suggestions.yaml (approved: false). "
              "Never edits config/pronunciation.yaml. Loads no TTS model.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     base_work = Path("data/work_batch")
     output_dir = Path("output")

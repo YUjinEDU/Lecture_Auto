@@ -92,12 +92,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"workers per gpu: {per_gpu}")
     workers = [(g, k, base + common + ["--gpu", g]) for g in gpus for k in range(per_gpu[g])]
     assembles = [
-        base + ["--only", str(LECTURES.index(lec) + 1), "--assemble-only"] for lec in selected
+        base + ["--only", lec["id"], "--assemble-only"] for lec in selected
     ]
 
     first_gpu = args.gpus.split(",")[0].strip()
     heals = [
-        base + ["--only", str(LECTURES.index(lec) + 1), "--heal", "--gpu", first_gpu] for lec in selected
+        base + ["--only", lec["id"], "--heal", "--gpu", first_gpu] for lec in selected
     ] if args.heal else []
 
     if args.dry_run:

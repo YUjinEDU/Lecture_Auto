@@ -42,7 +42,7 @@ def ref_voice_path(settings: Settings, item: dict) -> Path:
     return settings.root / Path(item.get("ref_voice") or DEFAULT_REF_VOICE)
 
 
-def _entries(settings: Settings) -> list[dict]:
+def pronunciation_entries(settings: Settings) -> list[dict]:
     return load_pronunciation_entries(settings.root / "config" / "pronunciation.yaml")
 
 
@@ -67,7 +67,7 @@ def _invalid(settings: Settings, item: dict, scripts: dict[int, dict]) -> set[in
     ref = ref_voice_path(settings, item)
     ref_bytes = ref.read_bytes() if ref.exists() else b""
     wavs = {n: audio / f"slide_{n:03d}.wav" for n in scripts}
-    return set(bgl._invalid_slides(sorted(scripts), wavs, scripts, ref_bytes, _entries(settings)))
+    return set(bgl._invalid_slides(sorted(scripts), wavs, scripts, ref_bytes, pronunciation_entries(settings)))
 
 
 def output_files(settings: Settings, lecture_id: str) -> list[dict]:
