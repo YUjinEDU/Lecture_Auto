@@ -44,6 +44,10 @@ class Settings:
         return self.web_dir / "lectures.json"
 
     @property
+    def projects_dir(self) -> Path:
+        return self.root / "data" / "projects"
+
+    @property
     def jobs_dir(self) -> Path:
         return self.web_dir / "jobs"
 

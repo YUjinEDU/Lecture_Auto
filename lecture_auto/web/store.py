@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import scripts.batch_generate_lectures as bgl
+from lecture_auto.core.project import load_projects
 from lecture_auto.pipeline.approval import load_approvals
 from lecture_auto.pipeline.cache import (
     cache_path_for,
@@ -16,7 +17,6 @@ from lecture_auto.pipeline.cache import (
     write_text_atomic,
 )
 from lecture_auto.pipeline.pronunciation import load_pronunciation_entries
-from lecture_auto.web.registry import load_web_lectures
 from lecture_auto.web.settings import DEFAULT_REF_VOICE, Settings
 
 _NUM = re.compile(r"_(\d{3})\.")
@@ -28,8 +28,7 @@ class LectureNotFound(KeyError):
 
 
 def all_lectures(settings: Settings) -> list[dict]:
-    builtin = [lec for lec in bgl.LECTURES if not lec.get("web")]
-    return builtin + load_web_lectures(settings.registry)
+    return [p.as_item() for p in load_projects(settings.projects_dir)]
 
 
 def get_lecture(settings: Settings, lecture_id: str) -> dict:

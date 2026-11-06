@@ -8,14 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import scripts.batch_generate_lectures as bgl
+from lecture_auto.core.project import ProjectConfig, load_projects, save_project
 from lecture_auto.pipeline.cache import cache_path_for, content_hash, write_cache_hash
 from lecture_auto.web.app import create_app
-from lecture_auto.web.registry import save_web_lectures
 from lecture_auto.web.runner import JobRunner
 from lecture_auto.web.settings import Settings
 
 ROOT = Path(__file__).resolve().parent.parent
 LID = "90_웹테스트"
+BUILTIN = "09_종합설계_06_Product_Backlog"
 PASSWORD = "pw-test"
 FAKE_PY = """#!/bin/sh
 echo "fake-args: $*"
@@ -71,10 +72,11 @@ def sandbox(tmp_path):
     fake.write_text(FAKE_PY)
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     settings = Settings(root=root, password=PASSWORD, secret=b"s" * 32)
-    save_web_lectures([{
-        "id": LID, "name": "웹 테스트", "subject": "테스트", "pdf": "data/x.pdf",
-        "ref_voice": "data/audio_ref/reference_v2.wav",
-    }], settings.registry)
+    save_project(ProjectConfig(
+        id=LID, name="웹 테스트", subject="테스트", pdf="data/x.pdf",
+        ref_voice="data/audio_ref/reference_v2.wav", web=True,
+    ), settings.projects_dir)
+    save_project(ProjectConfig(id=BUILTIN, name="기본", subject="종합설계", pdf="data/b.pdf"), settings.projects_dir)
     return settings, fake
 
 
@@ -106,7 +108,7 @@ def test_api_requires_login(sandbox):
 
 def test_dashboard_and_slide_states(client):
     lectures = {lec["id"]: lec for lec in client.get("/api/lectures").json()}
-    assert "09_종합설계_06_Product_Backlog" in lectures
+    assert BUILTIN in lectures
     mine = lectures[LID]
     assert mine["web"] is True
     assert mine["video_state"] == "draft"
@@ -163,12 +165,14 @@ def test_upload_validation_and_registration(client, sandbox):
     assert ok.status_code == 200, ok.text
     new_id = ok.json()["id"]
     assert new_id == "91_08_새_강의"
-    entry = json.loads(settings.registry.read_text(encoding="utf-8"))[-1]
-    assert entry["pdf"] == f"data/web/uploads/{new_id}/{new_id}.pdf"
-    assert entry["ref_voice"] == "data/audio_ref/reference_v2.wav" and entry["master_audio"] is True
-    assert (settings.root / entry["pdf"]).read_bytes() == b"%PDF-1.4 test"
-    assert client.delete("/api/lectures/09_종합설계_06_Product_Backlog").status_code == 400
+    [entry] = [p for p in load_projects(settings.projects_dir) if p.id == new_id]
+    assert entry.pdf == Path(f"data/web/uploads/{new_id}/{new_id}.pdf")
+    assert entry.ref_voice == Path("data/audio_ref/reference_v2.wav") and entry.master_audio and entry.web
+    assert entry.target_minutes == 25 and entry.min_minutes is None
+    assert (settings.root / entry.pdf).read_bytes() == b"%PDF-1.4 test"
+    assert client.delete(f"/api/lectures/{BUILTIN}").status_code == 400
     assert client.delete(f"/api/lectures/{new_id}").status_code == 200
+    assert new_id not in {p.id for p in load_projects(settings.projects_dir)}
 
 
 def test_file_endpoints_reject_traversal_and_unknowns(client):
@@ -183,8 +187,7 @@ def test_file_endpoints_reject_traversal_and_unknowns(client):
 
 def test_job_runs_queues_conflicts_and_cancels(sandbox):
     settings, fake = sandbox
-    second = {"id": "92_다른강의", "name": "b", "subject": "s", "pdf": "data/y.pdf"}
-    save_web_lectures(json.loads(settings.registry.read_text(encoding="utf-8")) + [second], settings.registry)
+    save_project(ProjectConfig(id="92_다른강의", name="b", subject="s", pdf="data/y.pdf", web=True), settings.projects_dir)
     settings = Settings(root=settings.root, password=PASSWORD, secret=b"s" * 32, python=str(fake),
                         extra_env={"FAKE_SLEEP": "30"})
     runner = JobRunner(settings)

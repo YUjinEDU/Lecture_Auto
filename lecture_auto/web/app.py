@@ -24,14 +24,15 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from lecture_auto.core.project import (
+    ProjectConfig,
+    delete_project,
+    new_lecture_id,
+    save_project,
+)
 from lecture_auto.pipeline.approval import load_approvals
 from lecture_auto.web import store
 from lecture_auto.web.auth import COOKIE_NAME, check_password, issue_token, token_valid
-from lecture_auto.web.registry import (
-    load_web_lectures,
-    new_lecture_id,
-    save_web_lectures,
-)
 from lecture_auto.web.runner import BATCH, KINDS, JobError, JobRunner, job_env
 from lecture_auto.web.settings import NEW_LECTURE_REF_VOICE, Settings
 
@@ -207,21 +208,19 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
         dest = settings.root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        entry = {
-            "id": lecture_id,
-            "name": name.strip(),
-            "subject": subject.strip() or "강의",
-            suffix.lstrip("."): rel,
-            "target_minutes": target_minutes,
-            "voice_match": True,
-            "ref_voice": NEW_LECTURE_REF_VOICE,
-            "master_audio": True,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        if min_minutes:
-            entry["min_minutes"] = min_minutes
-        entries = load_web_lectures(settings.registry)
-        save_web_lectures(entries + [entry], settings.registry)
+        save_project(ProjectConfig(
+            id=lecture_id,
+            name=name.strip(),
+            subject=subject.strip() or "강의",
+            **{suffix.lstrip("."): rel},
+            target_minutes=target_minutes,
+            min_minutes=min_minutes or None,
+            voice_match=True,
+            ref_voice=NEW_LECTURE_REF_VOICE,
+            master_audio=True,
+            web=True,
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        ), settings.projects_dir)
         return store.lecture_summary(settings, store.get_lecture(settings, lecture_id))
 
     @app.delete("/api/lectures/{lecture_id}", dependencies=auth)
@@ -235,8 +234,7 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
             # so removing an entry while any job runs would retarget them.
             raise HTTPException(409, "다른 작업이 끝난 뒤에 삭제할 수 있습니다")
         with registry_lock:
-            entries = [e for e in load_web_lectures(settings.registry) if e["id"] != lecture_id]
-            save_web_lectures(entries, settings.registry)
+            delete_project(lecture_id, settings.projects_dir)
         return {"ok": True}
 
     @app.get("/api/lectures/{lecture_id}", dependencies=auth)

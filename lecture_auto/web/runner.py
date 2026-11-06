@@ -46,7 +46,7 @@ def job_env(settings: Settings, item: dict) -> dict[str, str]:
         "PYTHONUNBUFFERED": "1",
         "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
         "CUDA_VISIBLE_DEVICES": settings.gpu,
-        "LECTURE_AUTO_WEB_REGISTRY": str(settings.registry),
+        "LECTURE_AUTO_PROJECTS": str(settings.projects_dir),
         "LECTURE_AUTO_REF_VOICE": str(item.get("ref_voice") or DEFAULT_REF_VOICE),
     })
     if item.get("master_audio"):
