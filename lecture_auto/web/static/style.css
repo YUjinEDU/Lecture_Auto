@@ -124,6 +124,17 @@ dialog::backdrop { background: rgb(15 23 42 / .45); }
 #toast.error { background: var(--bad); }
 
 .empty { text-align: center; padding: 2rem; color: var(--muted); }
+.account-page { max-width: 760px; margin-inline: auto; }
+.check-label { display: flex; gap: .75rem; align-items: flex-start; }
+.check-label input { width: 1.25rem; height: 1.25rem; flex: 0 0 auto; }
+.error-text { color: var(--bad); overflow-wrap: anywhere; }
+.wrap { overflow-wrap: anywhere; min-width: 0; }
+fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; }
+select:focus-visible { outline: 3px solid #9db6f5; outline-offset: 1px; }
+.topbar { flex-wrap: wrap; }
+.topbar nav { flex-wrap: wrap; }
+.account-page audio { width: 100%; }
+.login a { display: block; }
 
 @media (max-width: 760px) {
   main { padding: .75rem; }
