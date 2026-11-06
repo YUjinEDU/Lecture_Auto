@@ -13,80 +13,27 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 
-from lecture_auto.core.jobs import JobSpec, write_spec
+from lecture_auto.core.jobs import write_spec
+from lecture_auto.web.job_process import (
+    KINDS,
+    JobError,
+    _pid_alive,
+    _proc_identity,
+    job_env,
+    job_outcome,
+    job_spec,
+)
 from lecture_auto.web.settings import Settings
 
 WORKER = ["-m", "lecture_auto.core.worker"]
-KINDS = {
-    "scripts": "대본 생성",
-    "produce": "음성·영상 제작",
-    "regen": "슬라이드 다시 만들기",
-    "heal": "보류 슬라이드 자동 복구",
-    "assemble": "영상 다시 조립",
-    "check": "발음 점검",
-}
-GPU_KINDS = {"produce", "regen", "heal"}
 ACTIVE = ("queued", "running")
 KILL_GRACE_SECONDS = 15
-
-
-class JobError(ValueError):
-    pass
-
-
-def job_env(settings: Settings, item: dict) -> dict[str, str]:
-    env = dict(os.environ)
-    env.update({
-        "PYTHONPATH": str(settings.code_root),
-        "PYTHONUNBUFFERED": "1",
-        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-        "CUDA_VISIBLE_DEVICES": settings.gpu,
-        "LECTURE_AUTO_PROJECTS": str(settings.projects_dir),
-    })
-    env.update(settings.extra_env)
-    return env
-
-
-def job_spec(settings: Settings, kind: str, lecture_id: str, slides: list[int] | None = None) -> JobSpec:
-    if kind not in KINDS:
-        raise JobError(f"알 수 없는 작업 종류: {kind}")
-    if kind == "regen" and (not slides or any(not isinstance(n, int) or n < 1 for n in slides)):
-        raise JobError("다시 만들 슬라이드 번호를 지정하세요")
-    workers = 1 if kind == "produce" and settings.gpu != "0" else None
-    return JobSpec(kind=kind, project_id=lecture_id, slides=slides or None, workers_per_gpu=workers)
-
-
-def _proc_identity(pid: int | None) -> str | None:
-    """Boot id + the process's start tick: a pid recycled after a crash or reboot differs."""
-    if not pid:
-        return None
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    except OSError:
-        return None
-    # Field 22 (starttime); split after the last ')' because the command name may hold spaces.
-    return f"{boot_id}:{stat.rsplit(')', 1)[1].split()[19]}"
-
-
-def _pid_alive(pid: int | None, identity: str | None = None) -> bool:
-    """Is *our* child still running under this pid?
-
-    Our children belong to this user, so ``PermissionError`` means the pid now belongs to
-    someone else's process; ``identity`` catches a recycled pid of the same user.
-    """
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    return identity is None or _proc_identity(pid) == identity
 
 
 class JobRunner:
@@ -129,28 +76,6 @@ class JobRunner:
         self._save(job)
         self._lock.notify_all()
 
-    def _outcome(self, lecture_id: str) -> dict | None:
-        """What the lecture looks like on disk now the job is over.
-
-        ``produce.py`` exits non-zero both when it crashed and when it merely left
-        slides held back, so the exit code alone cannot tell the professor which of
-        the two happened; this snapshot can.
-        """
-        from lecture_auto.web.store import get_lecture, lecture_summary
-
-        try:
-            summary = lecture_summary(self.settings, get_lecture(self.settings, lecture_id))
-        except Exception as e:  # noqa: BLE001 - a bad snapshot must not leave the job "running" forever
-            return {"error": repr(e)}
-        return {
-            "video_state": summary["video_state"],
-            "held_back": len(summary["held_back"]),
-            "no_audio": len(summary["no_audio"]),
-            "scripts": summary["scripts"],
-            "audio": summary["audio"],
-            "candidates": summary["candidates"],
-        }
-
     def list(self) -> list[dict]:
         with self._lock:
             return sorted((dict(j) for j in self._jobs.values()), key=lambda j: j["created_at"], reverse=True)
@@ -178,6 +103,7 @@ class JobRunner:
 
     def submit(self, kind: str, item: dict, slides: list[int] | None = None) -> dict:
         spec = job_spec(self.settings, kind, item["id"], slides)
+        env = job_env(self.settings, item)
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         spec_path = self.settings.jobs_dir / "specs" / f"{job_id}.json"
         argv = [self.settings.python, *WORKER, str(spec_path)]
@@ -186,9 +112,10 @@ class JobRunner:
             "kind": kind,
             "label": KINDS[kind],
             "lecture_id": item["id"],
+            "owner": item.get("owner"),
             "slides": sorted(set(slides)) if slides else None,
             "argv": argv,
-            "env": {k: v for k, v in job_env(self.settings, item).items() if k.startswith(("LECTURE_AUTO_", "CUDA_"))},
+            "env": {k: env[k] for k in ("LECTURE_AUTO_PROJECTS", "CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES")},
             "status": "queued",
             "created_at": time.time(),
             "started_at": None,
@@ -277,14 +204,20 @@ class JobRunner:
             with self._lock:
                 self._finish(job, "failed", None)
             return
+        env = job_env(self.settings, item)
         log = self.log_path(job["id"]).open("ab")
         log.write(f"$ {' '.join(job['argv'])}\n".encode())
         log.flush()
         try:
-            proc = subprocess.Popen(
-                job["argv"], cwd=self.settings.root, env=job_env(self.settings, item),
-                stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
-            )
+            read_fd, write_fd = os.pipe()
+            with os.fdopen(read_fd, "rb") as ready, os.fdopen(write_fd, "wb") as sender:
+                argv = [sys.executable, "-m", "lecture_auto.web.job_worker", str(write_fd), *job["argv"]]
+                proc = subprocess.Popen(
+                    argv, cwd=self.settings.root, env=env, pass_fds=(write_fd,),
+                    stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                )
+                sender.close()
+                ready.readline()
         except OSError as e:
             log.write(f"실행 실패: {e}\n".encode())
             log.close()
@@ -304,7 +237,7 @@ class JobRunner:
             threading.Timer(KILL_GRACE_SECONDS, self._force_kill, args=(job["id"], proc.pid)).start()
         code = proc.wait()
         log.close()
-        outcome = self._outcome(job["lecture_id"])
+        outcome = job_outcome(self.settings, job["lecture_id"])
         with self._lock:
             self._procs.pop(job["id"], None)
             if job.get("cancel_requested"):

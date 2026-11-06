@@ -5,6 +5,7 @@ import secrets
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEW_LECTURE_REF_VOICE = Path("data/audio_ref/reference_v2.wav")
@@ -25,6 +26,12 @@ class Settings:
     session_hours: int = 12
     max_upload_mb: int = 300
     extra_env: dict[str, str] = field(default_factory=dict)
+    admin_email: str = "admin@local"
+    signup_mode: Literal["closed", "open", "invite"] = "closed"
+    max_lectures: int = 30
+    max_voices: int = 10
+    storage_limit_mb: int = 5120
+    max_voice_upload_mb: int = 50
 
     @property
     def work_dir(self) -> Path:
@@ -67,8 +74,18 @@ def _load_secret(web_dir: Path) -> bytes:
 
 def settings_from_env() -> Settings:
     password = os.environ.get("LECTURE_WEB_PASSWORD", "")
-    if not password:
-        raise SystemExit("LECTURE_WEB_PASSWORD is not set -- refusing to start without a login password")
     root = Path(os.environ.get("LECTURE_WEB_ROOT", str(REPO_ROOT))).resolve()
     gpu = os.environ.get("LECTURE_WEB_GPU", "0")
-    return Settings(root=root, password=password, secret=_load_secret(root / "data" / "web"), gpu=gpu)
+    mode = os.environ.get("LECTURE_WEB_SIGNUP", "closed")
+    if mode not in ("closed", "open", "invite"):
+        raise SystemExit("LECTURE_WEB_SIGNUP must be closed, open or invite")
+    return Settings(
+        root=root, password=password, secret=_load_secret(root / "data" / "web"), gpu=gpu,
+        signup_mode=mode,
+        admin_email=os.environ.get("LECTURE_WEB_ADMIN_EMAIL", "admin@local").strip().lower(),
+        max_upload_mb=int(os.environ.get("LECTURE_WEB_MAX_UPLOAD_MB", "300")),
+        max_voice_upload_mb=int(os.environ.get("LECTURE_WEB_MAX_VOICE_UPLOAD_MB", "50")),
+        max_lectures=int(os.environ.get("LECTURE_WEB_MAX_LECTURES", "30")),
+        max_voices=int(os.environ.get("LECTURE_WEB_MAX_VOICES", "10")),
+        storage_limit_mb=int(os.environ.get("LECTURE_WEB_STORAGE_LIMIT_MB", "5120")),
+    )

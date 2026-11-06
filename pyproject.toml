@@ -20,6 +20,8 @@ dependencies = [
     "pyyaml>=6.0",
     "pyloudnorm>=0.2.0",
     "scipy",
+    "cryptography>=46.0",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
