@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REF_VOICE = Path("data/audio_ref/reference_v1.wav")
 NEW_LECTURE_REF_VOICE = Path("data/audio_ref/reference_v2.wav")
 
 

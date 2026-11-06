@@ -24,7 +24,7 @@ def _no_gpu_query(monkeypatch):
 def work(tmp_path, monkeypatch):
     ref = tmp_path / "ref.wav"
     ref.write_bytes(b"ref")
-    monkeypatch.setattr(bgl, "REF_VOICE", ref)
+    monkeypatch.setitem(_ITEM, "ref_voice", ref)
     base = tmp_path / "work_batch"
     (base / "healtest" / "scripts").mkdir(parents=True)
     (base / "healtest" / "audio").mkdir()

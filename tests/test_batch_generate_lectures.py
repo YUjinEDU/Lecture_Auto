@@ -122,21 +122,19 @@ def test_check_min_minutes_refuses_scripts_too_short_for_the_floor():
     _check_min_minutes({"id": "y"}, short)
 
 
-def test_lecture_voice_match_sets_env_for_flagged_lectures_and_restores(monkeypatch):
-    from scripts.batch_generate_lectures import _lecture_voice_match
+def test_lecture_voice_settings_reach_synthesis(tmp_path):
+    from scripts.batch_generate_lectures import _ref_voice
 
-    monkeypatch.delenv("LECTURE_AUTO_VOICE_MATCH", raising=False)
-    with _lecture_voice_match({"voice_match": True}):
-        assert os.environ["LECTURE_AUTO_VOICE_MATCH"] == "1"
-    assert "LECTURE_AUTO_VOICE_MATCH" not in os.environ
-
-    with _lecture_voice_match({}):
-        assert "LECTURE_AUTO_VOICE_MATCH" not in os.environ
-
-    monkeypatch.setenv("LECTURE_AUTO_VOICE_MATCH", "0")
-    with _lecture_voice_match({"voice_match": True}):
-        assert os.environ["LECTURE_AUTO_VOICE_MATCH"] == "1"
-    assert os.environ["LECTURE_AUTO_VOICE_MATCH"] == "0"
+    assert _ref_voice({}) == Path("data/audio_ref/reference_v1.wav")
+    assert _ref_voice({"ref_voice": Path("data/audio_ref/reference_v2.wav")}) == Path("data/audio_ref/reference_v2.wav")
+    scripts = {1: {"script": "s1", "target_seconds": 5.0}}
+    with patch("scripts.batch_generate_lectures.synthesize_raon_slide", return_value=(tmp_path / "x", True)) as synth:
+        _synthesize_all_slides(
+            object(), 1, scripts, tmp_path, b"ref", (0, 1), None, set(),
+            ref_voice=Path("v2.wav"), voice_match=True,
+        )
+    assert synth.call_args.kwargs["speaker_audio"] == Path("v2.wav")
+    assert synth.call_args.kwargs["voice_match"] is True
 
 
 # ---------------------------------------------------------------------------

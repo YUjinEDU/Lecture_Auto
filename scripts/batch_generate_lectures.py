@@ -21,20 +21,18 @@ import argparse
 import fcntl
 import json
 import logging
-import os
 import re
 import shutil
 import sys
 import time
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from lecture_auto.core.legacy_lectures import BUILTIN_LECTURES
-from lecture_auto.core.project import load_projects
+from lecture_auto.core.project import DEFAULT_REF_VOICE, load_projects
 from lecture_auto.llm.openai_client import OpenAILLMClient
 from lecture_auto.pipeline.approval import (
     approve,
@@ -96,7 +94,6 @@ from lecture_auto.pipeline.script_gen import (
 )
 from lecture_auto.pipeline.series_memory import load_or_create_memory
 from lecture_auto.pipeline.video import assemble_video
-from lecture_auto.pipeline.voice_match import VOICE_MATCH_ENV
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
     LecturePlan,
@@ -133,8 +130,16 @@ PLAN_LENGTH_CALIBRATION = 1.06
 # re-validating.
 # Built by scripts/build_voice_reference.py from 1859-1868s of the 2025
 # lecture recording; reference_v1.wav.json records the exact provenance.
-# Can be overridden via LECTURE_AUTO_REF_VOICE (e.g. data/audio_ref/reference_v2.wav).
-REF_VOICE = Path(os.environ.get("LECTURE_AUTO_REF_VOICE", "data/audio_ref/reference_v1.wav"))
+# It is DEFAULT_REF_VOICE; a lecture picks another one with ``ref_voice`` in its project.json.
+
+
+def _ref_voice(item: dict) -> Path:
+    return Path(item.get("ref_voice") or DEFAULT_REF_VOICE)
+
+
+def _ref_voice_bytes(item: dict) -> bytes:
+    ref = _ref_voice(item)
+    return ref.read_bytes() if ref.exists() else b""
 
 
 def load_lectures(root: Path | None = None) -> list[dict]:
@@ -177,23 +182,6 @@ def _check_min_minutes(item: dict, scripts: dict[int, dict]) -> None:
             f"[{item['id']}] scripts total ~{estimated:.1f} min, below the required "
             f"{required:.0f} min (+{_MIN_MINUTES_MARGIN:.0f} margin) -- raise target_minutes and regenerate"
         )
-
-
-@contextmanager
-def _lecture_voice_match(item: dict) -> Iterator[None]:
-    """Enable per-segment spectral matching for a lecture that opts in via the
-    registry, restoring the caller's setting afterwards (so one process can mix
-    flagged and unflagged lectures)."""
-    previous = os.environ.get(VOICE_MATCH_ENV)
-    if item.get("voice_match"):
-        os.environ[VOICE_MATCH_ENV] = "1"
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop(VOICE_MATCH_ENV, None)
-        else:
-            os.environ[VOICE_MATCH_ENV] = previous
 
 
 def _lecture_output_mp4(lec_id: str, output_dir: Path) -> Path:
@@ -269,6 +257,8 @@ def _run_slide_tts(
     force_regen: bool,
     entries: Sequence[dict] = (),
     verify_stt: bool = True,
+    ref_voice: Path = DEFAULT_REF_VOICE,
+    voice_match: bool = False,
 ) -> bool:
     """Synthesize slide *n* audio if needed. Returns the quality-gate result
     for whatever happened this run (``True`` if the existing cache was reused
@@ -333,9 +323,9 @@ def _run_slide_tts(
             n, cand_wav, out_wav.name,
         )
         _, ok = synthesize_raon_slide(
-            tts_pipe, spoken_text, cand_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
+            tts_pipe, spoken_text, cand_wav, speaker_audio=ref_voice, max_seconds=sc.get("target_seconds"),
             verify_stt=verify_stt, qc_path=qc_path_for(cand_wav), seeds=seeds,
-            pronunciation_entries=list(entries),
+            pronunciation_entries=list(entries), voice_match=voice_match,
         )
         write_text_atomic(
             cand_json, json.dumps({"ok": ok, "cache_key": cache_key}, ensure_ascii=False, indent=2)
@@ -348,9 +338,9 @@ def _run_slide_tts(
 
     logger.info("Synthesizing slide %d audio (%d chars)...", n, len(script_text))
     _, ok = synthesize_raon_slide(
-        tts_pipe, spoken_text, out_wav, speaker_audio=REF_VOICE, max_seconds=sc.get("target_seconds"),
+        tts_pipe, spoken_text, out_wav, speaker_audio=ref_voice, max_seconds=sc.get("target_seconds"),
         verify_stt=verify_stt, qc_path=qc_path_for(out_wav), seeds=seeds,
-        pronunciation_entries=list(entries),
+        pronunciation_entries=list(entries), voice_match=voice_match,
     )
     if ok:
         write_cache_hash(out_wav, cache_key)
@@ -375,6 +365,8 @@ def _synthesize_all_slides(
     entries: Sequence[dict] = (),
     verify_stt: bool = True,
     claim: str | None = None,
+    ref_voice: Path = DEFAULT_REF_VOICE,
+    voice_match: bool = False,
 ) -> tuple[list[Path], list[int]]:
     """Stage 5 of ``process_lecture``, pulled out for direct testing: decide
     per slide whether to synthesize, skip (sharded/kept/approved), and
@@ -412,7 +404,10 @@ def _synthesize_all_slides(
         if claim is not None:
             claim_candidates.append(n)
             continue
-        if not _synth_one(tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt):
+        if not _synth_one(
+            tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt,
+            ref_voice=ref_voice, voice_match=voice_match,
+        ):
             failed_slides.append(n)
 
     # S17-a dynamic claim: longest script first (tail balance); order affects
@@ -432,7 +427,7 @@ def _synthesize_all_slides(
                 continue
             ok = _synth_one(
                 tts_pipe, n, scripts, audio_dir / f"slide_{n:03d}.wav", ref_voice_bytes, target_slides,
-                entries, verify_stt,
+                entries, verify_stt, ref_voice=ref_voice, voice_match=voice_match,
             )
             # Written for success AND gate failure; an exception skips it so a
             # restarted worker can retake the slide (kernel frees the flock).
@@ -443,12 +438,16 @@ def _synthesize_all_slides(
     return wav_paths, sorted(failed_slides)
 
 
-def _synth_one(tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt) -> bool:
+def _synth_one(
+    tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt,
+    ref_voice: Path = DEFAULT_REF_VOICE, voice_match: bool = False,
+) -> bool:
     sc = scripts[n]
     cache_key = _tts_cache_key(sc.get("script", ""), ref_voice_bytes, sc.get("target_seconds"), entries)
     force_regen = target_slides is not None and n in target_slides
     return _run_slide_tts(
-        tts_pipe, n, sc, out_wav, cache_key, force_regen, entries=entries, verify_stt=verify_stt
+        tts_pipe, n, sc, out_wav, cache_key, force_regen, entries=entries, verify_stt=verify_stt,
+        ref_voice=ref_voice, voice_match=voice_match,
     )
 
 
@@ -539,6 +538,7 @@ def _assemble_with_approvals(
     wav_paths: list[Path],
     ref_voice_bytes: bytes,
     entries: Sequence[dict] = (),
+    master_audio: bool = False,
 ) -> Path:
     """Shared assemble+timeline tail (S2) for both the normal pipeline and
     ``--assemble-only``.
@@ -578,7 +578,7 @@ def _assemble_with_approvals(
         _cleanup_stale_draft(out_mp4)
 
     logger.info("Assembling video via ffmpeg -> %s", target_mp4)
-    assemble_video(png_paths, wav_paths, video_dir, target_mp4, lec_id, strict=True)
+    assemble_video(png_paths, wav_paths, video_dir, target_mp4, lec_id, strict=True, master_audio=master_audio)
     logger.info("Video successfully created at: %s", target_mp4)
 
     timeline = build_timeline(
@@ -1036,7 +1036,7 @@ def process_lecture(
     for tok, nums in _scan_unlisted({n: sc.get("script", "") for n, sc in scripts.items()}, entries).items():
         logger.warning("[5/6] pronunciation: %r not in approved dictionary (slides %s)", tok, nums)
     logger.info("[5/6] Synthesizing TTS with Raon-Speech-9B & Professor Voice Cloning...")
-    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+    ref_voice_bytes = _ref_voice_bytes(item)
     approved_numbers = set(load_approvals(work_dir, lec_id).slides.keys())
 
     if fix_failed:
@@ -1044,6 +1044,7 @@ def process_lecture(
     wav_paths, failed_slides = _synthesize_all_slides(
         tts_pipe, slide_count, scripts, audio_dir, ref_voice_bytes, shard, target_slides, approved_numbers,
         entries=entries, verify_stt=verify_stt, claim=claim,
+        ref_voice=_ref_voice(item), voice_match=bool(item.get("voice_match")),
     )
     _shard_index, shard_count = shard
 
@@ -1075,7 +1076,7 @@ def process_lecture(
     logger.info("[6/6] Assembling video + timeline...")
     return _assemble_with_approvals(
         lec_id, work_dir, audio_dir, video_dir, out_mp4, slide_count,
-        scripts, png_paths, wav_paths, ref_voice_bytes, entries,
+        scripts, png_paths, wav_paths, ref_voice_bytes, entries, master_audio=bool(item.get("master_audio")),
     )
 
 
@@ -1113,11 +1114,11 @@ def assemble_only(
         scripts[n] = json.loads(script_path.read_text(encoding="utf-8"))
 
     wav_paths = [audio_dir / f"slide_{n:03d}.wav" for n in range(1, slide_count + 1)]
-    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+    ref_voice_bytes = _ref_voice_bytes(item)
 
     return _assemble_with_approvals(
         lec_id, work_dir, audio_dir, video_dir, out_mp4, slide_count,
-        scripts, png_paths, wav_paths, ref_voice_bytes, entries,
+        scripts, png_paths, wav_paths, ref_voice_bytes, entries, master_audio=bool(item.get("master_audio")),
     )
 
 
@@ -1130,7 +1131,7 @@ def _held_back_slides(item: dict, base_work_dir: Path, entries: Sequence[dict]) 
         for f in sorted((work_dir / "scripts").glob("script_*.json"))
     }
     wav_by_number = {n: work_dir / "audio" / f"slide_{n:03d}.wav" for n in scripts}
-    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+    ref_voice_bytes = _ref_voice_bytes(item)
     approved = set(load_approvals(work_dir, lec_id).slides.keys())
     invalid = _invalid_slides(sorted(scripts), wav_by_number, scripts, ref_voice_bytes, entries)
     return [n for n in invalid if n not in approved]
@@ -1166,11 +1167,10 @@ def _heal_lecture(
         logger.info("[%s] heal: nothing held back", item["id"])
         return []
     logger.info("[%s] heal: retrying slides %s with reseeded draws", item["id"], held)
-    with _lecture_voice_match(item):
-        process_lecture(
-            item, llm_client, tts_pipe, base_work_dir, output_dir, target_slides=set(held),
-            entries=entries, verify_stt=verify_stt, claim=f"heal_{time.strftime('%Y%m%d_%H%M%S')}",
-        )
+    process_lecture(
+        item, llm_client, tts_pipe, base_work_dir, output_dir, target_slides=set(held),
+        entries=entries, verify_stt=verify_stt, claim=f"heal_{time.strftime('%Y%m%d_%H%M%S')}",
+    )
     for n in _held_back_slides(item, base_work_dir, entries):
         if not (audio_dir / f"slide_{n:03d}.cand.wav").exists():
             continue
@@ -1312,7 +1312,7 @@ def _cli_approve(item: dict, base_work_dir: Path, slides_arg: str, entries: Sequ
     work_dir = base_work_dir / lec_id
     scripts_dir = work_dir / "scripts"
     audio_dir = work_dir / "audio"
-    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+    ref_voice_bytes = _ref_voice_bytes(item)
 
     manifest = load_approvals(work_dir, lec_id)
     for n in sorted(_parse_slides_arg(slides_arg) or set()):
@@ -1341,7 +1341,7 @@ def _cli_approve_passing(item: dict, base_work_dir: Path, entries: Sequence[dict
     work_dir = base_work_dir / lec_id
     scripts_dir = work_dir / "scripts"
     audio_dir = work_dir / "audio"
-    ref_voice_bytes = REF_VOICE.read_bytes() if REF_VOICE.exists() else b""
+    ref_voice_bytes = _ref_voice_bytes(item)
 
     manifest = load_approvals(work_dir, lec_id)
     approved_count = 0
@@ -1711,11 +1711,10 @@ def main():
             results.append((lec["id"], f"heal: still held back {still}" if still else "heal: all slides pass", time.time() - t0))
             continue
         try:
-            with _lecture_voice_match(lec):
-                mp4_path = process_lecture(
-                    lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
-                    entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
-                )
+            mp4_path = process_lecture(
+                lec, llm_client, tts_pipe, base_work, output_dir, shard, target_slides=target_slides,
+                entries=pronunciation_entries, verify_stt=verify_stt, claim=args.claim, fix_failed=args.fix_failed,
+            )
         except ScriptTooShortError as e:
             logger.error("%s", e)
             sys.exit(EXIT_NO_RETRY)

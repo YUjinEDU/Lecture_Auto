@@ -18,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
-from lecture_auto.web.settings import DEFAULT_REF_VOICE, Settings
+from lecture_auto.web.settings import Settings
 
 BATCH = ["-m", "scripts.batch_generate_lectures"]
 PRODUCE = ["-m", "scripts.produce"]
@@ -40,17 +40,14 @@ class JobError(ValueError):
 
 
 def job_env(settings: Settings, item: dict) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in ("LECTURE_AUTO_MASTER_AUDIO", "LECTURE_AUTO_REF_VOICE")}
+    env = dict(os.environ)
     env.update({
         "PYTHONPATH": str(settings.code_root),
         "PYTHONUNBUFFERED": "1",
         "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
         "CUDA_VISIBLE_DEVICES": settings.gpu,
         "LECTURE_AUTO_PROJECTS": str(settings.projects_dir),
-        "LECTURE_AUTO_REF_VOICE": str(item.get("ref_voice") or DEFAULT_REF_VOICE),
     })
-    if item.get("master_audio"):
-        env["LECTURE_AUTO_MASTER_AUDIO"] = "1"
     env.update(settings.extra_env)
     return env
 

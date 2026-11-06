@@ -9,7 +9,6 @@ is materially faster for large slide decks.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import tempfile
 import wave
@@ -177,7 +176,7 @@ def assemble_video(
     output_path: Path,
     job_id: str,
     strict: bool = False,
-    master_audio: bool | None = None,
+    master_audio: bool = False,
 ) -> Path:
     """Assemble the final lecture MP4 in a single encode pass.
 
@@ -203,7 +202,7 @@ def assemble_video(
         skipped with a warning. Batch production runs want this; interactive/
         demo drivers keep the permissive default.
     master_audio:
-        When True (or if env LECTURE_AUTO_MASTER_AUDIO is set), applies the S21
+        When True, applies the S21
         studio mastering DSP chain (HPF 80Hz, room anti-boxiness, de-esser,
         -20 LUFS) to the final merged audio before MP4 video multiplexing.
         Non-destructive: original slide WAVs on disk remain completely untouched.
@@ -221,9 +220,6 @@ def assemble_video(
     video_dir = Path(video_dir)
     video_dir.mkdir(parents=True, exist_ok=True)
     output_path = Path(output_path)
-
-    if master_audio is None:
-        master_audio = os.environ.get("LECTURE_AUTO_MASTER_AUDIO", "").lower() in ("1", "true", "yes")
 
     wav_by_number: dict[int, Path] = {}
     for wav in wav_paths:

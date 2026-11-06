@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 import scripts.batch_generate_lectures as bgl
-from lecture_auto.core.project import load_projects
+from lecture_auto.core.project import DEFAULT_REF_VOICE, load_projects
 from lecture_auto.pipeline.approval import load_approvals
 from lecture_auto.pipeline.cache import (
     cache_path_for,
@@ -17,7 +17,7 @@ from lecture_auto.pipeline.cache import (
     write_text_atomic,
 )
 from lecture_auto.pipeline.pronunciation import load_pronunciation_entries
-from lecture_auto.web.settings import DEFAULT_REF_VOICE, Settings
+from lecture_auto.web.settings import Settings
 
 _NUM = re.compile(r"_(\d{3})\.")
 OUTPUT_SUFFIXES = {".mp4", ".md", ".json", ".srt", ".vtt"}

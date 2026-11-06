@@ -1242,8 +1242,13 @@ def synthesize_raon_slide(
     qc_path: Path | None = None,
     seeds: tuple[int, ...] | None = None,
     pronunciation_entries: Sequence[dict] = (),
+    voice_match: bool | None = None,
 ) -> tuple[Path, bool]:
     """Synthesize a slide's script as short, quality-gated segments.
+
+    ``voice_match`` turns per-segment spectral matching on or off; ``None`` falls back to the
+    ``LECTURE_AUTO_VOICE_MATCH`` env var (standalone scripts). The batch always passes the
+    lecture's own setting.
 
     ``seeds`` (S9-d/D-15), if given, overrides the default ``TTS_SEEDS`` draw
     order used by every segment attempt in this slide -- batch's forced
@@ -1417,7 +1422,7 @@ def synthesize_raon_slide(
                 metas[leaf_idx]["stt_reasons"] = redraw_record.get("stt_reasons") or []
         joined = np.concatenate(pieces)
 
-    if voice_match_enabled():
+    if voice_match_enabled() if voice_match is None else voice_match:
         span_indexes = [idx for _, idx in seg_spans]
         matched_pieces = match_segment_spectra([pieces[i] for i in span_indexes], sr, load_voice_target())
         for idx, matched in zip(span_indexes, matched_pieces):

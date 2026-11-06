@@ -214,7 +214,8 @@ def test_job_runs_queues_conflicts_and_cancels(sandbox):
         runner.wait(queued["id"], ("cancelled", "succeeded", "failed"), timeout=10)
         log = c.get(f"/api/jobs/{first['id']}/log").json()["text"]
         assert f"fake-args: -m scripts.batch_generate_lectures --only {LID} --assemble-only" in log
-        assert first["env"]["LECTURE_AUTO_REF_VOICE"] == "data/audio_ref/reference_v2.wav"
+        assert first["env"]["LECTURE_AUTO_PROJECTS"] == str(settings.projects_dir)
+        assert "LECTURE_AUTO_REF_VOICE" not in first["env"] and "LECTURE_AUTO_MASTER_AUDIO" not in first["env"]
         assert first["env"]["CUDA_VISIBLE_DEVICES"] == "0"
 
 

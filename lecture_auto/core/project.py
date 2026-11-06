@@ -15,6 +15,7 @@ from lecture_auto.pipeline.cache import write_text_atomic
 
 PROJECTS_ENV = "LECTURE_AUTO_PROJECTS"
 DEFAULT_PROJECTS_DIR = Path("data/projects")
+DEFAULT_REF_VOICE = Path("data/audio_ref/reference_v1.wav")
 PROJECT_FILE = "project.json"
 _ID = re.compile(r"^[0-9A-Za-z가-힣_-]+$")
 
