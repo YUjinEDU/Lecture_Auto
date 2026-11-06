@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +46,7 @@ GEMINI_VOICES = (
     "Sadachbia", "Sadaltager", "Schedar", "Umbriel", "Zubenelgenubi",
 )
 MAX_INPUT_CHARS = 4000
+MAX_PARALLEL_REQUESTS = 4
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 _ONE_LSB = 1.0 / 32768.0
 
@@ -136,7 +138,9 @@ def synthesize_gemini_slide(
             _write_slide_qc(qc_path, ok=True, gate_reasons=[], stt=None, spoken_text=text, segments=[])
         return output_path, True
 
-    pieces = [_trim_lead_tail_silence(client.speech(seg, voice, instructions), sr) for seg in segments]
+    with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_REQUESTS, len(segments))) as pool:
+        raw = list(pool.map(lambda seg: client.speech(seg, voice, instructions), segments))
+    pieces = [_trim_lead_tail_silence(p, sr) for p in raw]
     gap = np.zeros(int(sr * _PAUSE_MS / 1000), dtype=np.float32)
     joined = np.concatenate([x for p in pieces for x in (p, gap)][:-1])
     gain_ref = _loudness_normalize(joined, sr)

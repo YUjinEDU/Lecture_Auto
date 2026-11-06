@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>강의 보기</title>
+  <link rel="stylesheet" href="../static/watch.css">
+</head>
+<body>
+  <header class="w-top">
+    <div>
+      <h1 id="title">강의를 불러오는 중…</h1>
+      <p id="subject" class="w-muted"></p>
+    </div>
+    <span class="w-badge" title="이 강의의 목소리는 AI로 합성되었습니다">AI 합성 음성</span>
+  </header>
+
+  <p id="error" class="w-error" hidden></p>
+
+  <main id="app" class="w-main" hidden>
+    <section class="w-player">
+      <div id="stage" class="w-stage">
+        <video id="video" controls preload="metadata" playsinline></video>
+        <div id="mark" class="w-mark" hidden></div>
+      </div>
+      <div class="w-controls">
+        <label><input type="checkbox" id="opt-mark" checked> 설명 위치 표시</label>
+        <label><input type="checkbox" id="opt-subs" checked> 자막</label>
+        <label>속도
+          <select id="opt-rate">
+            <option value="0.75">0.75배</option><option value="1" selected>1배</option>
+            <option value="1.25">1.25배</option><option value="1.5">1.5배</option><option value="2">2배</option>
+          </select>
+        </label>
+      </div>
+      <p id="caption" class="w-caption" aria-live="polite"></p>
+    </section>
+
+    <aside class="w-side">
+      <nav class="w-tabs" role="tablist">
+        <button role="tab" data-tab="chapters" aria-selected="true">목차</button>
+        <button role="tab" data-tab="transcript">대본</button>
+        <button role="tab" data-tab="glossary" id="tab-glossary" hidden>용어</button>
+        <button role="tab" data-tab="quiz" id="tab-quiz" hidden>퀴즈</button>
+      </nav>
+      <ol id="chapters" class="w-panel w-list" data-panel="chapters"></ol>
+      <div id="transcript" class="w-panel w-transcript" data-panel="transcript" hidden></div>
+      <dl id="glossary" class="w-panel w-glossary" data-panel="glossary" hidden></dl>
+      <div id="quiz" class="w-panel w-quiz" data-panel="quiz" hidden></div>
+    </aside>
+  </main>
+
+  <footer class="w-foot">
+    <p>목소리와 대본은 교수자가 검토한 뒤 AI로 합성했습니다. 문제가 있으면 <button id="report-open" class="w-link">신고하기</button></p>
+  </footer>
+
+  <dialog id="report">
+    <form method="dialog" id="report-form">
+      <h2>신고하기</h2>
+      <p class="w-muted">무엇이 문제인지 적어 주세요. 운영자가 확인합니다.</p>
+      <select id="report-kind" required>
+        <option value="voice">허락 없이 복제된 목소리 같아요</option>
+        <option value="content">내용이 잘못되었거나 부적절해요</option>
+        <option value="other">기타</option>
+      </select>
+      <textarea id="report-text" rows="4" maxlength="2000" placeholder="자세한 내용 (선택)"></textarea>
+      <p id="report-msg" class="w-muted"></p>
+      <div class="w-row">
+        <button value="cancel" formnovalidate>닫기</button>
+        <button id="report-send" value="send" class="w-primary">보내기</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="../static/watch.js"></script>
+</body>
+</html>
