@@ -98,6 +98,7 @@ from lecture_auto.pipeline.script_gen import (
 )
 from lecture_auto.pipeline.series_memory import load_or_create_memory
 from lecture_auto.pipeline.video import assemble_video
+from lecture_auto.production.study import draft_study, load_study, save_study
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
     LecturePlan,
@@ -1609,6 +1610,11 @@ def main(argv: list[str] | None = None):
              "and print it. Uses the LLM client; loads no TTS model.",
     )
     parser.add_argument(
+        "--study", action="store_true",
+        help="With --only <id>: draft the glossary/quiz (data/work_batch/<id>/study.json) from the "
+             "current scripts with the text LLM. Approved items are kept; nothing is public until approved.",
+    )
+    parser.add_argument(
         "--suggest-pron", action="store_true",
         help="S19: with --only <id>, ask the text LLM for Korean readings of the unlisted Latin "
              "tokens; writes data/work_batch/<id>/pronunciation_suggestions.yaml (approved: false). "
@@ -1693,6 +1699,21 @@ def main(argv: list[str] | None = None):
         if not selected[0].get("previous"):
             parser.error(f"{selected[0]['id']} has no 'previous' key")
         print(_load_previous_memory(selected[0], llm_client, base_work).model_dump_json(indent=2))
+        return
+
+    if args.study:
+        if not args.only or len(selected) != 1:
+            parser.error("--study requires --only matching exactly one lecture")
+        lec = selected[0]
+        scripts = {
+            int(p.stem.rsplit("_", 1)[1]): json.loads(p.read_text(encoding="utf-8"))
+            for p in sorted((base_work / lec["id"] / "scripts").glob("script_*.json"))
+        }
+        if not scripts:
+            parser.error(f"{lec['id']} has no scripts yet -- generate scripts first")
+        study = draft_study(llm_client, lec["id"], scripts, load_study(base_work, lec["id"]))
+        save_study(base_work, study)
+        logger.info("[%s] study draft: %d terms, %d quiz items", lec["id"], len(study.glossary), len(study.quiz))
         return
 
     if args.suggest_pron:

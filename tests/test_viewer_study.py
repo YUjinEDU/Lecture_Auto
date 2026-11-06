@@ -110,3 +110,17 @@ def test_redraft_keeps_approved_items(tmp_path):
 
 def test_missing_study_file_is_empty(tmp_path):
     assert load_study(tmp_path, "none").public() == {"glossary": [], "quiz": []}
+
+
+def test_batch_study_flag_drafts_and_saves(tmp_path, monkeypatch):
+    from lecture_auto.production import batch as bgl
+
+    monkeypatch.chdir(tmp_path)
+    scripts = tmp_path / "data" / "work_batch" / LID / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "script_002.json").write_text(json.dumps({"script": "스크럼 설명"}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(bgl, "LECTURES", [{"id": LID, "name": "n", "subject": "s"}])
+    monkeypatch.setattr(bgl, "OpenAILLMClient", lambda: FakeLLM(PAYLOAD))
+    bgl.main(["--only", LID, "--study"])
+    saved = load_study(tmp_path / "data" / "work_batch", LID)
+    assert [g.term for g in saved.glossary] == ["스크럼"] and not saved.glossary[0].approved

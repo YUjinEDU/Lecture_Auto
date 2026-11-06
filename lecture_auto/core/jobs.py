@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lecture_auto.pipeline.cache import write_text_atomic
 
-JobKind = Literal["scripts", "produce", "regen", "heal", "assemble", "check"]
+JobKind = Literal["scripts", "produce", "regen", "heal", "assemble", "check", "study"]
 
 
 class JobSpec(BaseModel):
@@ -39,6 +39,7 @@ def command(spec: JobSpec) -> tuple[Literal["batch", "produce"], list[str]]:
         "heal": ["--heal", "--gpu", "0"],
         "assemble": ["--assemble-only"],
         "check": ["--check"],
+        "study": ["--study"],
     }[spec.kind]
     return "batch", only + tail
 

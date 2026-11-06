@@ -14,6 +14,7 @@ from lecture_auto.core.jobs import JobSpec, command, read_spec, write_spec
     (JobSpec(kind="heal", project_id="07_x"), ("batch", ["--only", "07_x", "--heal", "--gpu", "0"])),
     (JobSpec(kind="assemble", project_id="07_x"), ("batch", ["--only", "07_x", "--assemble-only"])),
     (JobSpec(kind="check", project_id="07_x"), ("batch", ["--only", "07_x", "--check"])),
+    (JobSpec(kind="study", project_id="07_x"), ("batch", ["--only", "07_x", "--study"])),
     (JobSpec(kind="produce", project_id="07_x"), ("produce", ["--only", "07_x", "--gpus", "0", "--fix-failed", "--heal"])),
     (JobSpec(kind="produce", project_id="07_x", workers_per_gpu=1),
      ("produce", ["--only", "07_x", "--gpus", "0", "--fix-failed", "--heal", "--workers-per-gpu", "1"])),
