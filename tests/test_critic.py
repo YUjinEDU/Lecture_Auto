@@ -13,6 +13,7 @@ from lecture_auto.pipeline.critic import (
     review_section,
     validate_rewrite,
 )
+from lecture_auto.pipeline.script_gen import SPEECH_CHARS_PER_SECOND
 from lecture_auto.pipeline.style_profile import StyleProfile
 from lecture_auto.production.batch import _hand_edited, _write_section_scripts
 from lecture_auto.production.critic import CriticContext, refine_cached, write_report
@@ -77,6 +78,64 @@ def test_gate_allows_grounded_addition_but_preserves_original_tokens():
     assert validate_rewrite(slide, candidate) == []
 
 
+@pytest.mark.parametrize("candidate", [
+    ORIGINAL,
+    ORIGINAL.replace("변경 이유가", "설명합니다."),
+])
+def test_critic_allows_unchanged_or_increased_formal_endings(candidate: str):
+    assert validate_rewrite(source(), candidate) == []
+
+
+@pytest.mark.parametrize("length,expected", [
+    (84, ["목표 대비 길이 ±15% 초과"]),
+    (85, []), (100, []), (115, []),
+    (116, ["목표 대비 길이 ±15% 초과"]),
+])
+def test_critic_length_uses_target_seconds_instead_of_original(length: int, expected: list[str]):
+    slide = source().model_copy(update={
+        "script": "가" * 200, "slide_text": "",
+        "target_seconds": 100 / SPEECH_CHARS_PER_SECOND,
+    })
+    assert validate_rewrite(slide, "나" * length) == expected
+
+
+@pytest.mark.parametrize("grounding,candidate,expected", [
+    (("API CPU GPU RAM ROM", ""), "API CPU GPU RAM", []),
+    (("API CPU GPU RAM ROM", ""), "API CPU GPU", ["슬라이드 라틴 용어 보존율 80% 미만"]),
+    (("API", ""), "API", []),
+    (("", ""), "", []),
+    (("API", "VLMOnly"), "API VLMOnly", []),
+    (("API Grounded", ""), "API Grounded", []),
+    (("API", ""), "API Invented", ["자료에 없는 라틴 용어 추가"]),
+    (("API", "VLMOnly"), "VLMOnly", ["슬라이드 라틴 용어 보존율 80% 미만"]),
+])
+def test_critic_latin_terms_require_grounding_and_slide_coverage(
+    grounding: tuple[str, str], candidate: str, expected: list[str],
+):
+    slide = source().model_copy(update={
+        "script": "API CPU GPU RAM ROM Legacy".ljust(100, "가"),
+        "slide_text": grounding[0], "visual_notes": grounding[1],
+        "target_seconds": 100 / SPEECH_CHARS_PER_SECOND,
+    })
+    assert validate_rewrite(slide, candidate.ljust(100, "나")) == expected
+
+
+@pytest.mark.parametrize("candidate,expected", [
+    ("API 3", []),
+    ("API", ["숫자 추가 또는 원본 누락"]),
+    ("API 3 4", []),
+    ("API 3 5", ["숫자 추가 또는 원본 누락"]),
+])
+def test_critic_numbers_still_preserve_original_and_only_allow_slide_additions(
+    candidate: str, expected: list[str],
+):
+    slide = source().model_copy(update={
+        "slide_text": "API 3 4", "visual_notes": "5",
+        "target_seconds": 100 / SPEECH_CHARS_PER_SECOND,
+    })
+    assert validate_rewrite(slide, candidate.ljust(100, "나")) == expected
+
+
 def test_single_targeted_rewrite_is_adopted_and_reported():
     client = MagicMock()
     client.chat.side_effect = [review_reply(delivers_thesis=False), rewrite_reply()]
@@ -128,7 +187,7 @@ def section():
         SectionSlideScript(slide_number=1, script=ORIGINAL, target_seconds=9)])
 
 
-def test_cache_uses_model_profile_intent_and_input_content(tmp_path):
+def test_cache_uses_model_profile_intent_and_input_content(tmp_path, monkeypatch):
     from datetime import UTC, datetime
 
     from lecture_auto.schemas.intent import IntentSheet, SlideIntent
@@ -152,9 +211,15 @@ def test_cache_uses_model_profile_intent_and_input_content(tmp_path):
                         intent.slides[0].model_copy(update={"thesis": "결제"})]}))]:
         refine_cached(client, result, changed)
     assert client.chat.call_count == 6
-    refine_cached(client, result.model_copy(update={"slides": [
-        result.slides[0].model_copy(update={"script": ORIGINAL + "요"})]}), context)
+    changed_result = result.model_copy(update={"slides": [
+        result.slides[0].model_copy(update={"script": ORIGINAL + "요"})]})
+    refine_cached(client, changed_result, context)
     assert client.chat.call_count == 7
+    from lecture_auto.production import critic
+
+    monkeypatch.setattr(critic, "REWRITE_VERSION", critic.REWRITE_VERSION + "-next")
+    refine_cached(client, changed_result, context)
+    assert client.chat.call_count == 8
 
 
 def test_hand_edit_survives_critic_and_generated_results_keep_ownership(tmp_path):
