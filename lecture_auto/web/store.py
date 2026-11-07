@@ -98,6 +98,7 @@ def lecture_summary(settings: Settings, item: dict) -> dict:
         "subject": item.get("subject", ""),
         "web": bool(item.get("web")),
         "target_minutes": item.get("target_minutes"),
+        "has_intent": (work / "intent.json").exists(),
         "min_minutes": item.get("min_minutes"),
         "slides": st.slides,
         "scripts": st.scripts,

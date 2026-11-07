@@ -214,6 +214,19 @@ details.replace .row input { width: auto; flex: 1 1 120px; min-width: 0; }
 .slide textarea { min-height: 170px; font-size: 1rem; }
 
 .meter { display: grid; gap: .3rem; }
+.intent-editor h2 { margin: 0; }
+.intent-editor > p { margin-block: .75rem; }
+.intent-editor summary { cursor: pointer; padding-block: .5rem; min-height: 44px; }
+.intent-toolbar { display: grid; gap: .75rem; padding-block: 1rem; }
+.intent-total { font-weight: 600; font-variant-numeric: tabular-nums; }
+.intent-row { border: 0; border-top: 1px solid var(--line); padding: 1rem 0; margin: 0; min-width: 0; }
+.intent-row legend { font-weight: 700; padding-right: .75rem; }
+.intent-row textarea { resize: vertical; min-height: 80px; }
+.intent-pacing { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.intent-notes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.intent-editor button, .intent-editor select, .intent-editor input { min-height: 44px; }
+.intent-editor select:focus-visible { outline: 3px solid #9db6f5; outline-offset: 1px; }
+.intent-editor { word-break: keep-all; overflow-wrap: anywhere; }
 .limit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
 .limit-field { font-weight: 600; font-size: .85rem; display: grid; gap: .25rem; margin: 0; }
 .limit-row { align-items: flex-end; }
@@ -226,6 +239,8 @@ details.replace .row input { width: auto; flex: 1 1 120px; min-width: 0; }
   .workspace-bar { position: sticky; top: 56px; z-index: 5; }
 }
 @media (max-width: 760px) {
+  .intent-notes { grid-template-columns: 1fr; gap: 0; }
+  .intent-toolbar .row > button { width: 100%; justify-content: center; }
   .slide { grid-template-columns: 1fr; }
   .stepper li { font-size: .72rem; }
   .action-item { grid-template-columns: 1fr; gap: .25rem; }

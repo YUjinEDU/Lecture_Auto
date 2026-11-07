@@ -100,7 +100,9 @@ from lecture_auto.pipeline.script_gen import (
 )
 from lecture_auto.pipeline.series_memory import load_or_create_memory
 from lecture_auto.pipeline.video import assemble_video
+from lecture_auto.production.intent import load_intent, prepare_intent_job
 from lecture_auto.production.study import draft_study, load_study, save_study
+from lecture_auto.schemas.intent import IntentSheet
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
     LecturePlan,
@@ -640,17 +642,23 @@ def _generate_lecture_plan_cached(
     reference_outline: str | None = None,
     previous_memory=None,
     target_minutes: float = TARGET_MINUTES,
+    intent_sheet: IntentSheet | None = None,
 ) -> LecturePlan:
     # S10-c/D-16: the plan gets a calibrated (inflated) minutes figure, not
     # raw TARGET_MINUTES -- see PLAN_LENGTH_CALIBRATION's own comment. Same
     # value at both call sites below so the cache key matches what was
     # actually generated.
     plan_minutes = target_minutes * PLAN_LENGTH_CALIBRATION
+    intent_kwargs = {"intent_sheet": intent_sheet} if intent_sheet is not None else {}
+    if intent_sheet is not None:
+        plan_minutes = sum(s.seconds for s in intent_sheet.slides) / 60
     # S16: previous_memory (opt-in) is embedded in prompt_text, hence in the key.
     prompt_text = build_lecture_plan_prompt(
-        slides, subject, name, plan_minutes, reference_outline, previous_memory=previous_memory
+        slides, subject, name, plan_minutes, reference_outline, previous_memory=previous_memory,
+        **intent_kwargs,
     )
-    cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text, _llm_config_repr(llm_client))
+    cache_key = content_hash(_PLAN_SYSTEM_PROMPT, prompt_text, _llm_config_repr(llm_client),
+                             *([intent_sheet.content_hash] if intent_sheet is not None else []))
 
     if is_cache_valid(plan_path, cache_key):
         logger.info("Lecture plan cached, reusing %s", plan_path)
@@ -658,7 +666,8 @@ def _generate_lecture_plan_cached(
 
     logger.info("Generating lecture plan (whole-slide-set analysis)...")
     plan = generate_lecture_plan(
-        llm_client, slides, subject, name, plan_minutes, reference_outline, previous_memory=previous_memory
+        llm_client, slides, subject, name, plan_minutes, reference_outline, previous_memory=previous_memory,
+        **intent_kwargs,
     )
     write_text_atomic(plan_path, json.dumps(plan.model_dump(), ensure_ascii=False, indent=2))
     write_cache_hash(plan_path, cache_key)
@@ -677,6 +686,7 @@ def _generate_section_scripts_cached(
     section_result_path: Path,
     reference_notes: dict[int, str] | None = None,
     previous_memory=None,
+    intent_sheet: IntentSheet | None = None,
 ):
     # S16: previous_memory is passed for the FIRST section only; it is embedded
     # in prompt_text, hence in the cache key (no separate key input needed).
@@ -684,9 +694,11 @@ def _generate_section_scripts_cached(
     # key hashes below -- a changed/added/removed reference script therefore
     # invalidates the section cache automatically, no separate hash input
     # needed (SPEC S3-b "캐시 키... 확인하고, 아니면 포함").
+    intent_kwargs = {"intent_sheet": intent_sheet} if intent_sheet is not None else {}
     prompt_text = build_section_prompt(
         plan, section, slides_in_section, carry_forward, is_last_section, reference_notes=reference_notes,
         previous_memory=previous_memory,
+        **intent_kwargs,
     )
     image_bytes = b"".join(p.read_bytes() for p in png_paths_in_section)
     carry_forward_repr = carry_forward.model_dump_json() if carry_forward else ""
@@ -696,6 +708,7 @@ def _generate_section_scripts_cached(
         image_bytes,
         carry_forward_repr,
         _llm_config_repr(llm_client),
+        *([intent_sheet.content_hash] if intent_sheet is not None else []),
     )
 
     if is_cache_valid(section_result_path, cache_key):
@@ -708,6 +721,7 @@ def _generate_section_scripts_cached(
     result = generate_section_scripts(
         llm_client, plan, section, slides_in_section, png_paths_in_section, carry_forward, is_last_section,
         reference_notes=reference_notes, previous_memory=previous_memory,
+        **intent_kwargs,
     )
     validate_section_result(result, section)
     write_text_atomic(
@@ -934,6 +948,11 @@ def process_lecture(
     png_paths, _ = render_slides(pdf_path, rendered_dir, lec_id)
     png_by_number = {i + 1: p for i, p in enumerate(png_paths)}
     logger.info("Rendered %d PNG images", len(png_paths))
+    intent_sheet = load_intent(work_dir)
+    if intent_sheet is not None:
+        if intent_sheet.lecture_id != lec_id or {s.slide for s in intent_sheet.slides} != set(slide_by_number):
+            raise ValueError("의도 시트가 현재 강의의 슬라이드와 일치하지 않습니다")
+        clone_source_id = None
 
     # S3-b (D-11): optional reference lecture script -- fed into the prompt
     # builders as material to draw from, never used as the script itself.
@@ -1013,6 +1032,8 @@ def process_lecture(
         plan_kwargs = {"previous_memory": previous_memory} if previous_memory else {}
         if item.get("target_minutes"):
             plan_kwargs["target_minutes"] = item["target_minutes"]
+        if intent_sheet is not None:
+            plan_kwargs["intent_sheet"] = intent_sheet
         plan = _generate_lecture_plan_cached(
             llm_client, slides, item["subject"], item["name"], plan_path, reference_outline, **plan_kwargs
         )
@@ -1043,6 +1064,7 @@ def process_lecture(
                     section_result_path,
                     reference_notes,
                     **({"previous_memory": previous_memory} if previous_memory and idx == 0 else {}),
+                    **({"intent_sheet": intent_sheet} if intent_sheet is not None else {}),
                 )
                 if item.get("restyle"):  # S19-a: opt-in; absent key = unchanged behaviour
                     result, section_restyle = _restyle_section_cached(llm_client, result, section_result_path)
@@ -1635,6 +1657,8 @@ def main(argv: list[str] | None = None):
              "tokens; writes data/work_batch/<id>/pronunciation_suggestions.yaml (approved: false). "
              "Never edits config/pronunciation.yaml. Loads no TTS model.",
     )
+    parser.add_argument("--intent", action="store_true", help="슬라이드 의도와 시간 배분 초안 생성 (GPU 불필요)")
+    parser.add_argument("--force-intent", action="store_true", help="수정한 의도 시트 덮어쓰기 확인")
     args = parser.parse_args(argv)
 
     base_work = Path("data/work_batch")
@@ -1660,6 +1684,10 @@ def main(argv: list[str] | None = None):
         parser.error("--claim and --shard are mutually exclusive")
 
     selected = _select_lectures(args.only, parser.error) if args.only else LECTURES
+    if args.force_intent and not args.intent:
+        parser.error("--force-intent requires --intent")
+    if args.intent and (not args.only or len(selected) != 1):
+        parser.error("--intent requires --only matching exactly one lecture")
 
     if args.status:
         # S8-c: disk-only status table -- no TTS/LLM load, no --only-must-be-
@@ -1707,6 +1735,10 @@ def main(argv: list[str] | None = None):
 
     logger.info("Initializing LLM client (FactChat gpt-5.6-luna)...")
     llm_client = OpenAILLMClient()
+    if args.intent:
+        sheet = prepare_intent_job(selected[0], llm_client, base_work, force=args.force_intent)
+        logger.info("Intent sheet: %d slides, %d seconds", len(sheet.slides), sum(s.seconds for s in sheet.slides))
+        return
 
     if args.memory_preview:
         if not args.only or len(selected) != 1:

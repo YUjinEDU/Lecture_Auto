@@ -23,6 +23,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from lecture_auto.llm import LLMClient
+from lecture_auto.pipeline.intent import intent_lines
 from lecture_auto.pipeline.script_gen import (
     SPEECH_CHARS_PER_SECOND,
     _extract_all_text,
@@ -30,10 +31,11 @@ from lecture_auto.pipeline.script_gen import (
     get_professor_system_prompt,
     strip_markdown_json_fence,
 )
+from lecture_auto.schemas.intent import IntentSheet
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
-    LecturePlan,
     LectureMemory,
+    LecturePlan,
     LectureSection,
     SectionScriptResult,
 )
@@ -162,6 +164,7 @@ def build_lecture_plan_prompt(
     total_minutes: float,
     reference_outline: str | None = None,
     previous_memory: LectureMemory | None = None,
+    intent_sheet: IntentSheet | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"[과목명] {subject}")
@@ -183,6 +186,7 @@ def build_lecture_plan_prompt(
         lines.append(reference_outline)
         lines.append("")
     lines.extend(previous_memory_block(previous_memory))
+    lines.extend(intent_lines(intent_sheet))
     lines.append("[출력 형식] 아래 JSON 형식으로만 출력하세요. 다른 텍스트는 포함하지 마세요.")
     lines.append(
         json.dumps(
@@ -213,9 +217,11 @@ def generate_lecture_plan(
     total_minutes: float,
     reference_outline: str | None = None,
     previous_memory: LectureMemory | None = None,
+    intent_sheet: IntentSheet | None = None,
 ) -> LecturePlan:
     prompt = build_lecture_plan_prompt(
-        slides, subject, lecture_name, total_minutes, reference_outline, previous_memory
+        slides, subject, lecture_name, total_minutes, reference_outline, previous_memory,
+        **({"intent_sheet": intent_sheet} if intent_sheet is not None else {}),
     )
     messages = [
         {"role": "system", "content": _PLAN_SYSTEM_PROMPT},
@@ -225,6 +231,13 @@ def generate_lecture_plan(
     data = json.loads(strip_markdown_json_fence(raw))
     plan = LecturePlan(**data)
     validate_plan_covers_slides(plan, len(slides))
+    if intent_sheet is not None:
+        seconds = {s.slide: s.seconds for s in intent_sheet.slides}
+        plan = plan.model_copy(update={
+            "total_minutes": sum(seconds.values()) / 60,
+            "sections": [s.model_copy(update={"minutes": sum(seconds[n] for n in s.slides) / 60})
+                         for s in plan.sections],
+        })
     return plan
 
 
@@ -262,6 +275,7 @@ def build_section_prompt(
     correction: str | None = None,
     reference_notes: dict[int, str] | None = None,
     previous_memory: LectureMemory | None = None,
+    intent_sheet: IntentSheet | None = None,
 ) -> str:
     lines: list[str] = []
     if correction:
@@ -348,6 +362,7 @@ def build_section_prompt(
             lines.append("")
 
     lines.extend(previous_memory_block(previous_memory))
+    lines.extend(intent_lines(intent_sheet, section.slides))
     lines.append("[출력 형식] 아래 JSON 형식으로만 출력하세요. 다른 텍스트는 포함하지 마세요.")
     lines.append(
         json.dumps(
@@ -408,6 +423,7 @@ def generate_section_scripts(
     is_last_section: bool,
     reference_notes: dict[int, str] | None = None,
     previous_memory: LectureMemory | None = None,
+    intent_sheet: IntentSheet | None = None,
 ) -> SectionScriptResult:
     """Generate one section's slides as a single continuous script.
 
@@ -419,6 +435,9 @@ def generate_section_scripts(
     corrective retry is made showing the model its own overshoot. See
     ``_MAX_BUDGET_OVERSHOOT``.
     """
+    intent_seconds = {s.slide: s.seconds for s in intent_sheet.slides} if intent_sheet is not None else {}
+    if intent_sheet is not None:
+        section = section.model_copy(update={"minutes": sum(intent_seconds[n] for n in section.slides) / 60})
     images: list[dict] = []
     for slide, png_path in zip(slides, png_paths):
         image_b64 = base64.b64encode(Path(png_path).read_bytes()).decode("utf-8")
@@ -432,6 +451,7 @@ def generate_section_scripts(
             plan, section, slides, carry_forward, is_last_section,
             correction=correction, reference_notes=reference_notes,
             previous_memory=previous_memory,
+            **({"intent_sheet": intent_sheet} if intent_sheet is not None else {}),
         )
         messages = [
             {"role": "system", "content": get_professor_system_prompt()},
@@ -441,7 +461,13 @@ def generate_section_scripts(
         for attempt in range(2):
             raw = client.chat(messages)
             try:
-                return SectionScriptResult(**json.loads(strip_markdown_json_fence(raw)))
+                result = SectionScriptResult(**json.loads(strip_markdown_json_fence(raw)))
+                if intent_sheet is not None:
+                    result = result.model_copy(update={"slides": [
+                        s.model_copy(update={"target_seconds": intent_seconds[s.slide_number]})
+                        for s in result.slides
+                    ]})
+                return result
             except (json.JSONDecodeError, ValidationError):
                 if attempt:
                     raise

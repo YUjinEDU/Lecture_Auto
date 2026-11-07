@@ -52,15 +52,16 @@ document.getElementById("logout").addEventListener("click", () => guard(async ()
 // state.dirty -- ask before an unsaved script edit is thrown away.
 let currentHash = location.hash;
 window.addEventListener("hashchange", () => {
-  if (Object.keys(state.dirty).length && !confirm("저장하지 않은 대본 수정이 있습니다. 이동하면 사라집니다. 이동할까요?")) {
+  if ((Object.keys(state.dirty).length || hasUnsavedIntent()) && !confirm("저장하지 않은 대본 또는 의도 시트 수정이 있습니다. 이동하면 사라집니다. 이동할까요?")) {
     history.replaceState(null, "", currentHash || "#/");
     return;
   }
   state.dirty = {};
+  state.intentDraft = null;
   currentHash = location.hash;
   route();
 });
 window.addEventListener("beforeunload", (ev) => {
-  if (Object.keys(state.dirty).length) ev.preventDefault();
+  if (Object.keys(state.dirty).length || hasUnsavedIntent()) ev.preventDefault();
 });
 route();

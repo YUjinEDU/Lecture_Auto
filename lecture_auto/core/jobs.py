@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lecture_auto.pipeline.cache import write_text_atomic
 
-JobKind = Literal["scripts", "produce", "regen", "heal", "assemble", "check", "study"]
+JobKind = Literal["scripts", "produce", "regen", "heal", "assemble", "check", "study", "intent"]
 
 
 class JobSpec(BaseModel):
@@ -20,14 +20,19 @@ class JobSpec(BaseModel):
     project_id: str
     slides: list[int] | None = None
     workers_per_gpu: int | None = Field(default=None, ge=1)
+    force: bool = False
 
     def model_post_init(self, _context) -> None:
         if self.kind == "regen" and (not self.slides or any(n < 1 for n in self.slides)):
             raise ValueError("regen needs one or more slide numbers >= 1")
+        if self.force and self.kind != "intent":
+            raise ValueError("force is only supported for intent")
 
 
 def command(spec: JobSpec) -> tuple[Literal["batch", "produce"], list[str]]:
     only = ["--only", spec.project_id]
+    if spec.kind == "intent":
+        return "batch", only + ["--intent"] + (["--force-intent"] if spec.force else [])
     if spec.kind == "produce":
         workers = ["--workers-per-gpu", str(spec.workers_per_gpu)] if spec.workers_per_gpu else []
         return "produce", only + ["--gpus", "0", "--fix-failed", "--heal"] + workers

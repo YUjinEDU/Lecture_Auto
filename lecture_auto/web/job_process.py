@@ -10,6 +10,7 @@ from lecture_auto.web.accounts import Accounts
 from lecture_auto.web.settings import Settings
 
 KINDS = {
+    "intent": "슬라이드 의도 정리",
     "scripts": "대본 생성", "produce": "음성·영상 제작", "regen": "슬라이드 다시 만들기",
     "heal": "보류 슬라이드 자동 복구", "assemble": "영상 다시 조립", "check": "발음 점검",
     "study": "용어·퀴즈 초안",

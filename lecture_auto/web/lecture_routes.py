@@ -31,6 +31,7 @@ UPLOAD_MAGIC = {".pptx": b"PK\x03\x04", ".pdf": b"%PDF"}
 class JobBody(BaseModel):
     kind: str
     slides: list[int] | None = None
+    force: bool = False
 
 
 def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) -> APIRouter:
@@ -148,11 +149,14 @@ def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) ->
     def submit(lid: str, body: JobBody, request: Request):
         if body.kind not in KINDS:
             raise HTTPException(400, "알 수 없는 작업 종류")
+        if body.force and body.kind != "intent":
+            raise HTTPException(400, "의도 초안을 다시 만들 때만 force를 지정할 수 있습니다")
         try:
             with request.app.state.edit_lock:
-                return runner.submit(body.kind, store.get_lecture(settings, lid), body.slides)
+                return runner.submit(body.kind, store.get_lecture(settings, lid), body.slides,
+                                     **({"force": True} if body.force else {}))
         except JobError as error:
-            raise HTTPException(409 if "이미" in str(error) else 400, str(error)) from None
+            raise HTTPException(409 if "이미" in str(error) or "force=true" in str(error) else 400, str(error)) from None
 
     @router.get("/api/jobs/{jid}")
     def job(jid: str):

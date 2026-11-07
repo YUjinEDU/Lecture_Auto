@@ -106,7 +106,7 @@ async function guard(fn) {
   }
 }
 
-const STEPS = ["대본 생성", "대본 검토", "음성 제작", "확인·승인", "영상 완성"];
+const STEPS = ["슬라이드 의도 정리", "대본 생성", "대본 검토", "음성·확인", "영상 완성"];
 const fmtDur = (sec) => {
   const t = Math.round(sec), m = Math.floor(t / 60), s = t % 60;
   return m ? `${m}분 ${s}초` : `${s}초`;
@@ -114,9 +114,10 @@ const fmtDur = (sec) => {
 
 // Index of the step the lecture is on (5 = finished).
 function progressOf(lec) {
-  if (!lec.scripts) return 0;
-  if (lec.audio < lec.scripts) return lec.audio ? 2 : 1;
-  if (lec.held_back.length || lec.video_state !== "final") return 3;
+  if (!lec.scripts) return lec.has_intent || state.intentSkipped?.has(lec.id) ? 1 : 0;
+  if (lec.audio < lec.scripts) return lec.audio ? 3 : 2;
+  if (lec.held_back.length) return 3;
+  if (lec.video_state !== "final") return 4;
   return 5;
 }
 
@@ -224,6 +225,7 @@ async function renderDashboard() {
 
 function runJob(lec, kind, slides) {
   return guard(async () => {
+    if (hasUnsavedIntent()) return toast("의도 시트 수정을 먼저 저장해 주세요.", true);
     const label = ACTIONS.find((a) => a[0] === kind)?.[1] ?? "선택 슬라이드 다시 만들기";
     if (!confirm(`'${label}' 작업을 시작할까요?`)) return;
     await api(`lectures/${enc(lec.id)}/jobs`, { json: { kind, slides } });
@@ -238,6 +240,16 @@ function nextAction(lec, busy) {
   if (lec.tts_engine !== "gemini" && state.me?.raon_enabled === false && (lec.audio < lec.scripts || lec.held_back.length)) {
     return [h("button", { class: "primary", onclick: () => guard(() => lectureSettingsDialog(lec)) }, "음성 설정 바꾸기"),
       "이 강의는 GPU 음성(Raon)으로 설정돼 있는데, 이 서버에는 GPU가 없습니다. 음성 설정에서 Gemini 음성을 고르면 제작할 수 있습니다."];
+  }
+  if (!lec.scripts && !lec.has_intent && !state.intentSkipped?.has(lec.id)) {
+    return [h("div", { class: "row" },
+      h("button", { class: "primary", onclick: () => document.getElementById("intent-editor")?.scrollIntoView({ behavior: "smooth" }) }, "슬라이드 의도 정리하기"),
+      h("button", { onclick: () => {
+        state.intentSkipped = state.intentSkipped || new Set();
+        state.intentSkipped.add(lec.id);
+        runJob(lec, "scripts");
+      } }, "건너뛰고 대본 생성")),
+    "먼저 각 슬라이드의 핵심과 시간을 정해 검토하세요. 건너뛰면 기존 방식으로 대본을 만듭니다."];
   }
   if (!lec.scripts) return [h("button", { class: "primary", onclick: () => runJob(lec, "scripts") }, "대본 생성 시작"),
     "슬라이드를 읽고 강의 대본을 만듭니다. 몇 분 걸립니다."];
@@ -407,6 +419,7 @@ async function renderLecture(id) {
   const scrollY = same ? window.scrollY : 0;
   if (!same) {
     state.lectureId = id; state.dirty = {}; state.selected = new Set(); state.filter = "all"; state.query = "";
+    state.intentDraft = null; state.intentOpen = false;
   }
   state.lec = lec;
   const busy = Boolean(lec.job);
@@ -436,9 +449,9 @@ async function renderLecture(id) {
     updateDirtyUI();
   };
   app.replaceChildren(h("div", { class: "stack" },
-    hero(lec, busy), jobPanel(lec), downloadsSection(lec), lectureActions(lec, busy),
+    hero(lec, busy), jobPanel(lec), await intentEditor(lec, busy), downloadsSection(lec), lectureActions(lec, busy),
     lec.slide_list.length ? slideWorkspace(lec, busy, list, tabs) : h("section", { class: "card empty" },
-      "아직 슬라이드가 없습니다. '대본 생성 시작'을 누르면 슬라이드를 읽어 옵니다."),
+      "아직 슬라이드가 없습니다. 의도 초안 또는 대본을 만들면 슬라이드를 읽어 옵니다."),
     h("div", { class: "row spread small" },
       h("button", { class: "link", onclick: () => reportDialog("lecture", lec.id) }, "문제 신고"),
       lec.web && !busy ? h("button", { class: "link danger", onclick: () => guard(async () => {
