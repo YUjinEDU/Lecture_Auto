@@ -19,6 +19,7 @@ from lecture_auto.web.account_routes import account_router
 from lecture_auto.web.accounts import Accounts, ReportBody
 from lecture_auto.web.auth import COOKIE_NAME, issue_token
 from lecture_auto.web.export_routes import export_router
+from lecture_auto.web.intent_routes import intent_router
 from lecture_auto.web.lecture_routes import lecture_router
 from lecture_auto.web.owner_routes import make_owner_router
 from lecture_auto.web.public import ReportBody as PublicReportBody
@@ -147,6 +148,7 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
     app.include_router(voices_router(settings, accounts))
     app.include_router(lecture_router(settings, runner, accounts))
     app.include_router(review_router(settings, runner))
+    app.include_router(intent_router(settings, runner))
     app.include_router(export_router(settings))
 
     def public_item(lecture_id: str) -> dict | None:

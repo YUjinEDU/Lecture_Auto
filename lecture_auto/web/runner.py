@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 
 from lecture_auto.core.jobs import write_spec
+from lecture_auto.production.intent import EditedIntentError, load_intent
 from lecture_auto.web.job_process import (
     GPU_KINDS,
     KINDS,
@@ -103,10 +104,16 @@ class JobRunner:
                     return dict(job)
         return None
 
-    def submit(self, kind: str, item: dict, slides: list[int] | None = None) -> dict:
+    def submit(self, kind: str, item: dict, slides: list[int] | None = None, *, force: bool = False) -> dict:
         if kind in GPU_KINDS and not self.settings.raon_enabled and item.get("tts_engine", "raon") == "raon":
             raise JobError(NO_RAON)
         spec = job_spec(self.settings, kind, item["id"], slides)
+        if force:
+            spec = type(spec).model_validate({**spec.model_dump(), "force": force})
+        if kind == "intent":
+            sheet = load_intent(self.settings.work_dir / item["id"])
+            if sheet is not None and sheet.edited and not force:
+                raise JobError(str(EditedIntentError()))
         env = job_env(self.settings, item)
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         spec_path = self.settings.jobs_dir / "specs" / f"{job_id}.json"
