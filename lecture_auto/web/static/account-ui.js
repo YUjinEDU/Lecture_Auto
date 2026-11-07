@@ -71,7 +71,24 @@ async function renderSettings(me) {
     status.textContent = "등록된 키가 없습니다.";
   }) }, "키 삭제")));
   app.replaceChildren(h("section", { class: "stack account-page" }, h("h1", {}, "계정 설정"),
-    h("p", {}, `${me.display_name} · ${me.email}`), form, h("a", { href: "terms" }, "이용약관")));
+    h("p", {}, `${me.display_name} · ${me.email}`), usageCard(me), form, h("a", { href: "terms" }, "이용약관")));
+}
+
+function usageCard(me) {
+  if (!me.limits || !me.usage) return null;
+  const meter = (label, used, limit, fmt) => h("div", { class: "meter" },
+    h("div", { class: "row spread small" }, h("span", {}, label),
+      h("span", {}, limit === null ? `${fmt(used)} 사용 · 무제한` : `${fmt(used)} / ${fmt(limit)}`)),
+    limit === null ? null : h("div", { class: "progress" + (used >= limit ? " full" : "") },
+      h("span", { style: `width:${limit ? Math.min(100, (used / limit) * 100) : 100}%` })));
+  const n = (x) => `${x}개`;
+  const mb = me.limits.storage_limit_mb;
+  return h("section", { class: "card stack" }, h("h2", {}, "사용량"),
+    meter("강의", me.usage.lectures, me.limits.max_lectures, n),
+    meter("내 음성", me.usage.voices, me.limits.max_voices, n),
+    meter("저장 공간", me.usage.storage_bytes, mb === null ? null : mb * 1024 * 1024, fmtSize),
+    me.limits.unlimited ? h("p", { class: "muted small" }, "이 계정은 한도 없이 사용할 수 있습니다.")
+      : h("p", { class: "muted small" }, "한도를 늘리려면 관리자에게 문의하세요."));
 }
 
 function reportDialog(type, id) {
