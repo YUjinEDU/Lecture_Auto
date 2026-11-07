@@ -71,7 +71,8 @@ async function renderSettings(me) {
     status.textContent = "등록된 키가 없습니다.";
   }) }, "키 삭제")));
   app.replaceChildren(h("section", { class: "stack account-page" }, h("h1", {}, "계정 설정"),
-    h("p", {}, `${me.display_name} · ${me.email}`), usageCard(me), form, h("a", { href: "terms" }, "이용약관")));
+    h("p", {}, `${me.display_name} · ${me.email}`), usageCard(me), form,
+    await styleProfileCard(), h("a", { href: "terms" }, "이용약관")));
 }
 
 function usageCard(me) {

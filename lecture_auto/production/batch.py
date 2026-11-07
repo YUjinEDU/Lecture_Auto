@@ -99,9 +99,13 @@ from lecture_auto.pipeline.script_gen import (
     get_professor_system_prompt,
 )
 from lecture_auto.pipeline.series_memory import load_or_create_memory
+from lecture_auto.pipeline.style_profile import StyleProfile
 from lecture_auto.pipeline.video import assemble_video
+from lecture_auto.production.critic import CriticContext, refine_cached
+from lecture_auto.production.critic import write_report as write_critic_report
 from lecture_auto.production.intent import load_intent, prepare_intent_job
 from lecture_auto.production.study import draft_study, load_study, save_study
+from lecture_auto.production.style_profiles import StyleProfiles
 from lecture_auto.schemas.intent import IntentSheet
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
@@ -687,6 +691,7 @@ def _generate_section_scripts_cached(
     reference_notes: dict[int, str] | None = None,
     previous_memory=None,
     intent_sheet: IntentSheet | None = None,
+    style_profile: StyleProfile | None = None,
 ):
     # S16: previous_memory is passed for the FIRST section only; it is embedded
     # in prompt_text, hence in the cache key (no separate key input needed).
@@ -695,6 +700,8 @@ def _generate_section_scripts_cached(
     # invalidates the section cache automatically, no separate hash input
     # needed (SPEC S3-b "캐시 키... 확인하고, 아니면 포함").
     intent_kwargs = {"intent_sheet": intent_sheet} if intent_sheet is not None else {}
+    if style_profile is not None:
+        intent_kwargs["style_profile"] = style_profile
     prompt_text = build_section_prompt(
         plan, section, slides_in_section, carry_forward, is_last_section, reference_notes=reference_notes,
         previous_memory=previous_memory,
@@ -709,6 +716,7 @@ def _generate_section_scripts_cached(
         carry_forward_repr,
         _llm_config_repr(llm_client),
         *([intent_sheet.content_hash] if intent_sheet is not None else []),
+        *([style_profile.content_hash] if style_profile is not None else []),
     )
 
     if is_cache_valid(section_result_path, cache_key):
@@ -949,6 +957,10 @@ def process_lecture(
     png_by_number = {i + 1: p for i, p in enumerate(png_paths)}
     logger.info("Rendered %d PNG images", len(png_paths))
     intent_sheet = load_intent(work_dir)
+    style_profile = StyleProfiles(base_work_dir.resolve().parent.parent, item.get("owner")).load(
+        item["style_profile"]) if item.get("style_profile") else None
+    if style_profile is not None or item.get("critic"):
+        clone_source_id = None
     if intent_sheet is not None:
         if intent_sheet.lecture_id != lec_id or {s.slide for s in intent_sheet.slides} != set(slide_by_number):
             raise ValueError("의도 시트가 현재 강의의 슬라이드와 일치하지 않습니다")
@@ -1042,6 +1054,7 @@ def process_lecture(
         logger.info("[4/6] Generating scripts section by section...")
         carry_forward: CarryForward | None = None
         restyle_results: dict[int, RestyleResult] = {}
+        critic_results = []
         for idx, section in enumerate(plan.sections):
             is_last_section = idx == len(plan.sections) - 1
             slides_in_section = [slide_by_number[n] for n in section.slides]
@@ -1065,14 +1078,21 @@ def process_lecture(
                     reference_notes,
                     **({"previous_memory": previous_memory} if previous_memory and idx == 0 else {}),
                     **({"intent_sheet": intent_sheet} if intent_sheet is not None else {}),
+                    **({"style_profile": style_profile} if style_profile is not None else {}),
                 )
                 if item.get("restyle"):  # S19-a: opt-in; absent key = unchanged behaviour
                     result, section_restyle = _restyle_section_cached(llm_client, result, section_result_path)
                     restyle_results.update(section_restyle)
+            if item.get("critic"):
+                result, reviewed = refine_cached(llm_client, result, CriticContext(
+                    work_dir, slides, _llm_config_repr(llm_client), intent_sheet, style_profile))
+                critic_results.extend(reviewed)
             _write_section_scripts(result, scripts_dir, scripts)
             carry_forward = result.carry_forward
         if restyle_results:
             _write_restyle_report(work_dir, restyle_results)
+        if item.get("critic"):
+            write_critic_report(work_dir, critic_results)
 
     fcntl.flock(prep_lock, fcntl.LOCK_UN)
     prep_lock.close()

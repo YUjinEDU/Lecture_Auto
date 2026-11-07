@@ -27,6 +27,7 @@ from lecture_auto.web.public import make_public_router
 from lecture_auto.web.review_routes import review_router
 from lecture_auto.web.runner import JobRunner
 from lecture_auto.web.settings import Settings
+from lecture_auto.web.style_profiles import style_profiles_router
 from lecture_auto.web.voices import voices_router
 
 STATIC = Path(__file__).parent / "static"
@@ -94,6 +95,8 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
                                                           accounts.resource_disabled("lecture", lid)):
                     return JSONResponse({"detail": "강의를 찾을 수 없습니다"}, status_code=404)
         limit = SMALL_BODY_BYTES
+        if request.method == "POST" and path == "/api/style-profiles":
+            limit += 2 * 1024 * 1024
         if request.method == "POST" and path in ("/api/lectures", "/api/voices"):
             limit += (settings.max_upload_mb if path == "/api/lectures"
                       else settings.max_voice_upload_mb) * 1024 * 1024
@@ -146,6 +149,7 @@ def create_app(settings: Settings, runner: JobRunner | None = None) -> FastAPI:
 
     app.include_router(account_router(settings, accounts))
     app.include_router(voices_router(settings, accounts))
+    app.include_router(style_profiles_router(settings, accounts))
     app.include_router(lecture_router(settings, runner, accounts))
     app.include_router(review_router(settings, runner))
     app.include_router(intent_router(settings, runner))

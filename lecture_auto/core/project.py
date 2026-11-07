@@ -39,6 +39,8 @@ class ProjectConfig(BaseModel):
     master_audio: bool = False
     voice_match: bool = False
     restyle: bool = False
+    critic: bool = False
+    style_profile: str | None = None
     web: bool = False
     created_at: str | None = None
     owner: str | None = None
