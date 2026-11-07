@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from lecture_auto.production.style_profiles import ProfileNotFound, StyleProfiles
 from lecture_auto.web.accounts import Accounts
 from lecture_auto.web.settings import NEW_LECTURE_REF_VOICE, Settings
 from lecture_auto.web.voices import validate_ref, voice_path
@@ -27,6 +28,8 @@ class LectureSettings(BaseModel):
     tts_voice: str | None = None
     tts_instructions: str | None = Field(default=None, max_length=2000)
     ref_voice: Path | None = None
+    critic: bool = False
+    style_profile: str | None = None
 
     @model_validator(mode="after")
     def valid_voice(self):
@@ -37,6 +40,11 @@ class LectureSettings(BaseModel):
 
 def resolved_settings(settings: Settings, accounts: Accounts, owner: str | None,
                       selection: LectureSettings) -> LectureSettings:
+    if selection.style_profile:
+        try:
+            StyleProfiles(settings.root, owner).load(selection.style_profile)
+        except ProfileNotFound:
+            raise HTTPException(400, "본인의 말투 프로필만 선택할 수 있습니다") from None
     match selection.tts_engine:
         case "gemini":
             return selection.model_copy(update={"ref_voice": None})

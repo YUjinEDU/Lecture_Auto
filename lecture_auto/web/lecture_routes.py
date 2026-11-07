@@ -46,6 +46,7 @@ def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) ->
         return {**store.lecture_summary(settings, item),
                 "owner": item.get("owner"), "tts_engine": item.get("tts_engine", "raon"),
                 "tts_voice": item.get("tts_voice"), "tts_instructions": item.get("tts_instructions"),
+                "critic": item.get("critic", False), "style_profile": item.get("style_profile"),
                 "ref_voice": str(item.get("ref_voice") or "")}
 
     @router.get("/api/lectures")
@@ -66,14 +67,17 @@ def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) ->
                      tts_engine: Annotated[str | None, Form()] = None,
                      tts_voice: Annotated[str | None, Form()] = None,
                      tts_instructions: Annotated[str | None, Form()] = None,
-                     ref_voice: Annotated[str | None, Form()] = None):
+                     ref_voice: Annotated[str | None, Form()] = None,
+                     critic: Annotated[bool, Form()] = False,
+                     style_profile: Annotated[str | None, Form()] = None):
         user = current_user(request)
         tts_engine = tts_engine or ("raon" if settings.raon_enabled else "gemini")
         if tts_engine == "gemini" and not tts_voice:
             tts_voice = "Charon"
         try:
             selection = LectureSettings(tts_engine=tts_engine, tts_voice=tts_voice,
-                                        tts_instructions=tts_instructions, ref_voice=ref_voice)
+                                        tts_instructions=tts_instructions, ref_voice=ref_voice,
+                                        critic=critic, style_profile=style_profile or None)
         except ValidationError:
             raise HTTPException(400, "음성 엔진과 음성 설정을 확인해 주세요") from None
         selection = resolved_settings(settings, accounts, user.id, selection)

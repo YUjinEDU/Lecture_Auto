@@ -31,6 +31,7 @@ from lecture_auto.pipeline.script_gen import (
     get_professor_system_prompt,
     strip_markdown_json_fence,
 )
+from lecture_auto.pipeline.style_profile import StyleProfile
 from lecture_auto.schemas.intent import IntentSheet
 from lecture_auto.schemas.lecture_plan import (
     CarryForward,
@@ -276,6 +277,7 @@ def build_section_prompt(
     reference_notes: dict[int, str] | None = None,
     previous_memory: LectureMemory | None = None,
     intent_sheet: IntentSheet | None = None,
+    style_profile: StyleProfile | None = None,
 ) -> str:
     lines: list[str] = []
     if correction:
@@ -363,6 +365,8 @@ def build_section_prompt(
 
     lines.extend(previous_memory_block(previous_memory))
     lines.extend(intent_lines(intent_sheet, section.slides))
+    if style_profile is not None:
+        lines.extend([style_profile.compact(), ""])
     lines.append("[출력 형식] 아래 JSON 형식으로만 출력하세요. 다른 텍스트는 포함하지 마세요.")
     lines.append(
         json.dumps(
@@ -424,6 +428,7 @@ def generate_section_scripts(
     reference_notes: dict[int, str] | None = None,
     previous_memory: LectureMemory | None = None,
     intent_sheet: IntentSheet | None = None,
+    style_profile: StyleProfile | None = None,
 ) -> SectionScriptResult:
     """Generate one section's slides as a single continuous script.
 
@@ -452,6 +457,7 @@ def generate_section_scripts(
             correction=correction, reference_notes=reference_notes,
             previous_memory=previous_memory,
             **({"intent_sheet": intent_sheet} if intent_sheet is not None else {}),
+            **({"style_profile": style_profile} if style_profile is not None else {}),
         )
         messages = [
             {"role": "system", "content": get_professor_system_prompt()},

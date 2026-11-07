@@ -1,6 +1,12 @@
 async function ttsFields(lecture = {}) {
   const options = await api("tts-options");
   const voices = options.raon_enabled ? await api("voices") : [];
+  const profiles = await api("style-profiles");
+  const profile = h("select", { id: "style-profile", name: "style_profile" },
+    h("option", { value: "" }, "기본 말투"),
+    profiles.map((p) => h("option", { value: p.id }, p.name)));
+  profile.value = lecture.style_profile || "";
+  const critic = h("input", { type: "checkbox", name: "critic", value: "true", checked: Boolean(lecture.critic) });
   const engine = h("select", { id: "tts-engine", name: "tts_engine" },
     options.raon_enabled ? h("option", { value: "raon" }, "Raon · 내 음성 복제 (GPU 서버)") : null,
     h("option", { value: "gemini" }, "Gemini · API 음성"));
@@ -29,7 +35,9 @@ async function ttsFields(lecture = {}) {
   const note = options.raon_enabled ? null : h("p", { class: "muted small" },
     "이 서버는 API 음성(Gemini)만 씁니다. 대본 생성과 음성 비용은 설정에 등록한 본인 API 키로 청구됩니다.");
   return h("fieldset", { class: "stack" }, h("legend", {}, "음성 설정"), note,
-    h("div", { class: "field" }, h("label", { for: "tts-engine" }, "음성 엔진"), engine), raonFields, geminiFields);
+    h("div", { class: "field" }, h("label", { for: "tts-engine" }, "음성 엔진"), engine), raonFields, geminiFields,
+    h("div", { class: "field" }, h("label", { for: "style-profile" }, "교수님 말투"), profile),
+    h("label", { class: "check-label" }, critic, "대본 다듬기(검토 후 약한 슬라이드만 다시 쓰기)"));
 }
 
 async function lectureSettingsDialog(lecture) {
@@ -41,6 +49,7 @@ async function lectureSettingsDialog(lecture) {
       const data = new FormData(form);
       await api(`lectures/${enc(lecture.id)}/settings`, { method: "PUT", json: {
         tts_engine: data.get("tts_engine"), tts_voice: data.get("tts_voice"),
+        critic: data.get("critic") === "true", style_profile: data.get("style_profile") || null,
         tts_instructions: data.get("tts_instructions") || null, ref_voice: data.get("ref_voice") || null } });
       dialog.close();
       await renderLecture(lecture.id);
