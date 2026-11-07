@@ -32,6 +32,7 @@ class Settings:
     max_voices: int = 10
     storage_limit_mb: int = 5120
     max_voice_upload_mb: int = 50
+    raon_enabled: bool = True  # False on servers without a GPU: Gemini (API) voices only
 
     @property
     def work_dir(self) -> Path:
@@ -88,4 +89,5 @@ def settings_from_env() -> Settings:
         max_lectures=int(os.environ.get("LECTURE_WEB_MAX_LECTURES", "30")),
         max_voices=int(os.environ.get("LECTURE_WEB_MAX_VOICES", "10")),
         storage_limit_mb=int(os.environ.get("LECTURE_WEB_STORAGE_LIMIT_MB", "5120")),
+        raon_enabled=os.environ.get("LECTURE_WEB_RAON", "on").strip().lower() not in ("off", "0", "false", "no"),
     )

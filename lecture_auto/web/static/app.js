@@ -235,6 +235,10 @@ function runJob(lec, kind, slides) {
 
 function nextAction(lec, busy) {
   if (busy) return null;
+  if (lec.tts_engine !== "gemini" && state.me?.raon_enabled === false && (lec.audio < lec.scripts || lec.held_back.length)) {
+    return [h("button", { class: "primary", onclick: () => guard(() => lectureSettingsDialog(lec)) }, "음성 설정 바꾸기"),
+      "이 강의는 GPU 음성(Raon)으로 설정돼 있는데, 이 서버에는 GPU가 없습니다. 음성 설정에서 Gemini 음성을 고르면 제작할 수 있습니다."];
+  }
   if (!lec.scripts) return [h("button", { class: "primary", onclick: () => runJob(lec, "scripts") }, "대본 생성 시작"),
     "슬라이드를 읽고 강의 대본을 만듭니다. 몇 분 걸립니다."];
   if (lec.audio < lec.scripts) return [h("button", { class: "primary", onclick: () => runJob(lec, "produce") }, "음성·영상 제작"),

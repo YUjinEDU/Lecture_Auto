@@ -54,7 +54,7 @@ def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) ->
 
     @router.get("/api/tts-options")
     def options():
-        return {"gemini_voices": sorted(GEMINI_VOICES)}
+        return {"gemini_voices": sorted(GEMINI_VOICES), "raon_enabled": settings.raon_enabled}
 
     @router.post("/api/lectures")
     async def create(request: Request, file: Annotated[UploadFile, File()],
@@ -62,11 +62,14 @@ def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) ->
                      subject: Annotated[str, Form(max_length=100)] = "",
                      target_minutes: Annotated[float, Form(gt=0, le=120)] = 30,
                      min_minutes: Annotated[float | None, Form(gt=0, le=120)] = None,
-                     tts_engine: Annotated[str, Form()] = "raon",
+                     tts_engine: Annotated[str | None, Form()] = None,
                      tts_voice: Annotated[str | None, Form()] = None,
                      tts_instructions: Annotated[str | None, Form()] = None,
                      ref_voice: Annotated[str | None, Form()] = None):
         user = current_user(request)
+        tts_engine = tts_engine or ("raon" if settings.raon_enabled else "gemini")
+        if tts_engine == "gemini" and not tts_voice:
+            tts_voice = "Charon"
         try:
             selection = LectureSettings(tts_engine=tts_engine, tts_voice=tts_voice,
                                         tts_instructions=tts_instructions, ref_voice=ref_voice)

@@ -1,9 +1,10 @@
 async function ttsFields(lecture = {}) {
-  const [options, voices] = await Promise.all([api("tts-options"), api("voices")]);
+  const options = await api("tts-options");
+  const voices = options.raon_enabled ? await api("voices") : [];
   const engine = h("select", { id: "tts-engine", name: "tts_engine" },
-    h("option", { value: "raon" }, "Raon · 내 음성 복제 (학교 내부용)"),
+    options.raon_enabled ? h("option", { value: "raon" }, "Raon · 내 음성 복제 (GPU 서버)") : null,
     h("option", { value: "gemini" }, "Gemini · API 음성"));
-  engine.value = lecture.tts_engine || "raon";
+  engine.value = options.raon_enabled ? lecture.tts_engine || "raon" : "gemini";
   const ref = h("select", { id: "ref-voice", name: "ref_voice" },
     h("option", { value: "" }, "내 기본 음성 (없으면 서버 기본 음성)"),
     h("option", { value: "data/audio_ref/reference_v1.wav" }, "서버 기본 음성 1"),
@@ -25,7 +26,9 @@ async function ttsFields(lecture = {}) {
   };
   engine.addEventListener("change", update);
   update();
-  return h("fieldset", { class: "stack" }, h("legend", {}, "음성 설정"),
+  const note = options.raon_enabled ? null : h("p", { class: "muted small" },
+    "이 서버는 API 음성(Gemini)만 씁니다. 대본 생성과 음성 비용은 설정에 등록한 본인 API 키로 청구됩니다.");
+  return h("fieldset", { class: "stack" }, h("legend", {}, "음성 설정"), note,
     h("div", { class: "field" }, h("label", { for: "tts-engine" }, "음성 엔진"), engine), raonFields, geminiFields);
 }
 

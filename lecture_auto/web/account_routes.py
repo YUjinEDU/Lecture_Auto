@@ -102,7 +102,7 @@ def account_router(settings: Settings, accounts: Accounts) -> APIRouter:
     @router.get("/api/me")
     def me(request: Request):
         user = current_user(request)
-        return {**user.model_dump(), "gpu": settings.gpu,
+        return {**user.model_dump(), "gpu": settings.gpu, "raon_enabled": settings.raon_enabled,
                 "limits": accounts.effective_limits(user.id), "usage": usage(settings, user.id)}
 
     @router.get("/api/settings/key")

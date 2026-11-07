@@ -1,0 +1,15 @@
+# Synology NAS (x86, Container Manager): web + script generation + Gemini voices, no GPU.
+services:
+  lecture-auto:
+    image: lecture-auto:latest
+    container_name: lecture-auto
+    ports:
+      - "127.0.0.1:8800:8800"   # only DSM's reverse proxy talks to it; never forward this port on the router
+    environment:
+      LECTURE_WEB_PASSWORD: "${LECTURE_WEB_PASSWORD}"   # first admin (admin@local) on an empty volume
+      LECTURE_WEB_SIGNUP: "${LECTURE_WEB_SIGNUP:-closed}"
+      LECTURE_WEB_RAON: "off"
+      TZ: Asia/Seoul
+    volumes:
+      - /volume1/docker/lecture-auto:/data
+    restart: unless-stopped

@@ -99,6 +99,8 @@ def voices_router(settings: Settings, accounts: Accounts) -> APIRouter:
                consent: Annotated[bool, Form()] = False,
                name: Annotated[str, Form(min_length=1, max_length=100)] = "내 음성"):
         uid = current_user(request).id
+        if not settings.raon_enabled:
+            raise HTTPException(400, "이 서버는 GPU가 없어 목소리 복제를 쓸 수 없습니다 (Gemini 기본 음성만 사용)")
         if not consent:
             raise HTTPException(400, "음성 복제 사용 동의가 필요합니다")
         data = file.file.read(settings.max_voice_upload_mb * 1024 * 1024 + 1)

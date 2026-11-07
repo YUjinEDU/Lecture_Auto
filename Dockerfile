@@ -20,8 +20,10 @@ COPY config ./config
 COPY data/audio_ref ./data/audio_ref
 COPY docker/entrypoint.sh /entrypoint.sh
 
-ENV PYTHONPATH=/app PYTHONUNBUFFERED=1 LECTURE_WEB_ROOT=/data
+ENV PYTHONPATH=/app PYTHONUNBUFFERED=1 LECTURE_WEB_ROOT=/data LECTURE_WEB_RAON=off
 VOLUME ["/data"]
 EXPOSE 8800
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8800/', timeout=5)"
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "lecture_auto.web", "--host", "0.0.0.0", "--port", "8800"]

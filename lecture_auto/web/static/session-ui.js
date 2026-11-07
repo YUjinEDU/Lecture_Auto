@@ -31,7 +31,9 @@ function route() {
     stopPolling();
     if (hash === "/signup") return renderSignup();
     const me = await api("me");
+    state.me = me;
     document.getElementById("admin-link").hidden = me.role !== "admin";
+    document.querySelector('#nav a[href="#/voices"]').hidden = me.raon_enabled === false;
     nav.hidden = false;
     if (hash.startsWith("/lecture/")) return renderLecture(hash.slice("/lecture/".length));
     if (hash === "/jobs") return renderJobs();

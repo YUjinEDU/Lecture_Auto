@@ -75,3 +75,13 @@ docker compose up -d --build
 - 관리자는 항상 무제한. 사용자는 설정 화면에서 자기 사용량/한도를 본다.
 - 파일 하나의 업로드 크기 한도(`LECTURE_WEB_MAX_UPLOAD_MB`, 음성 `LECTURE_WEB_MAX_VOICE_UPLOAD_MB`)는 서버 보호용이라 계정과 상관없이 같다.
 - API: `POST /api/admin/users`, `PUT /api/admin/users/<id>/limits`, `GET|PUT /api/admin/limits`, `/api/me`의 `limits`·`usage`.
+
+## 8. 속도 (2026-11-07 실측, GPU 서버 CPU 기준)
+
+| 단계 | 전 | 후 | 바꾼 것 |
+|---|---|---|---|
+| 영상 조립 (39분 강의) | 10분 30초 | 35초 | 정지화면이라 30fps → 2fps + `-tune stillimage`, AAC 인코더를 fast 코더로(진짜 병목). `-shortest` 제거로 끝 0.2초 잘림도 해결 |
+| Gemini 음성 (슬라이드 4장, 9.4분 분량) | 약 3분 40초 | 33.5초 | 슬라이드 3장 동시 + 슬라이드 안 문장 4개 동시, 전체 동시 요청은 8개로 제한(`BAZE_TTS_MAX_IN_FLIGHT`) |
+| 대본 생성 | 약 2분 30초 | 그대로 | 섹션마다 앞 섹션 흐름을 이어받아서 병렬화하지 않음 |
+
+39분 강의 전체 추정: 대본 약 2분 30초 + 음성 약 2분 30초(4장 실측에서 비례 추정) + 조립 약 35초 ≈ **6분 안팎** (NAS CPU는 조립이 더 느릴 수 있음).

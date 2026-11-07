@@ -18,6 +18,9 @@ GEMINI_VOICES = frozenset(
 )
 
 
+NO_RAON = "이 서버는 GPU가 없어 Gemini 음성만 쓸 수 있습니다. 음성 설정에서 Gemini 음성을 골라 주세요"
+
+
 class LectureSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
     tts_engine: Literal["raon", "gemini"] = "raon"
@@ -38,6 +41,8 @@ def resolved_settings(settings: Settings, accounts: Accounts, owner: str | None,
         case "gemini":
             return selection.model_copy(update={"ref_voice": None})
         case "raon":
+            if not settings.raon_enabled:
+                raise HTTPException(400, NO_RAON)
             ref = selection.ref_voice
             if ref is None:
                 with accounts.connect() as db:
