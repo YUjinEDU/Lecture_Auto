@@ -1,7 +1,9 @@
+import io
 import json
 import os
 import shutil
 import stat
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from lecture_auto.production import batch as bgl
 from lecture_auto.web.app import create_app
 from lecture_auto.web.runner import JobRunner
 from lecture_auto.web.settings import Settings
+from lecture_auto.web.store import original_script_path
 
 ROOT = Path(__file__).resolve().parent.parent
 LID = "90_웹테스트"
@@ -438,3 +441,44 @@ def test_a_recycled_pid_is_not_adopted_and_cancel_never_signals_it(sandbox):
     # on this test process's own group would take the test run down with it).
     runner._jobs["ours"]["pid_id"] = "boot:0"
     assert runner.cancel("ours")["status"] == "interrupted"
+
+
+def _slide(client, n):
+    return next(s for s in client.get(f"/api/lectures/{LID}").json()["slide_list"] if s["number"] == n)
+
+
+def test_edited_script_can_be_reverted_to_the_generated_one(client, sandbox):
+    settings, _ = sandbox
+    path = settings.work_dir / LID / "scripts" / "script_001.json"
+    generated = path.read_bytes()
+    assert _slide(client, 1)["original"] is False
+    client.put(f"/api/lectures/{LID}/slides/1/script", json={"script": "첫 수정"})
+    client.put(f"/api/lectures/{LID}/slides/1/script", json={"script": "두 번째 수정"})
+    view = _slide(client, 1)
+    assert view["hand_edited"] and view["original"] and view["script"] == "두 번째 수정"
+    assert original_script_path(settings, LID, 1).read_bytes() == generated
+    reverted = client.post(f"/api/lectures/{LID}/slides/1/script/revert").json()
+    assert reverted["script"] == "첫 번째 슬라이드입니다." and not reverted["hand_edited"] and not reverted["original"]
+    assert path.read_bytes() == generated
+    assert client.post(f"/api/lectures/{LID}/slides/1/script/revert").status_code == 404
+
+
+def test_bulk_save_is_all_or_nothing(client):
+    assert client.put(f"/api/lectures/{LID}/scripts", json={"scripts": {"1": "가", "9": "나"}}).status_code == 404
+    assert client.put(f"/api/lectures/{LID}/scripts", json={"scripts": {"1": "  "}}).status_code == 422
+    assert _slide(client, 1)["script"] == "첫 번째 슬라이드입니다."
+    assert client.put(f"/api/lectures/{LID}/scripts", json={"scripts": {"1": "가", "2": "나"}}).json() == {"saved": [1, 2]}
+    assert [_slide(client, n)["script"] for n in (1, 2)] == ["가", "나"]
+
+
+def test_professor_downloads(client):
+    txt = client.get(f"/api/lectures/{LID}/export/scripts.txt")
+    assert txt.status_code == 200 and "attachment" in txt.headers["content-disposition"]
+    assert "[슬라이드 1]\n첫 번째 슬라이드입니다." in txt.text and "[슬라이드 3]" in txt.text
+    zipped = zipfile.ZipFile(io.BytesIO(client.get(f"/api/lectures/{LID}/export/audio.zip").content))
+    assert sorted(zipped.namelist()) == [f"{LID}_slide_001.wav", f"{LID}_slide_002.wav"]
+    one = client.get(f"/api/lectures/{LID}/slides/1/audio/main?download=1")
+    assert one.status_code == 200 and "slide_001.wav" in one.headers["content-disposition"]
+    assert "content-disposition" not in client.get(f"/api/lectures/{LID}/slides/1/audio/main").headers
+    assert client.get(f"/api/lectures/{LID}/export/subtitles.srt").status_code == 404
+    assert client.get(f"/api/lectures/{LID}/export/subtitles.doc").status_code == 404

@@ -19,6 +19,10 @@ from lecture_auto.web.settings import Settings
 logger = logging.getLogger(__name__)
 
 
+LIMIT_FIELDS = ("max_lectures", "max_voices", "storage_limit_mb")
+DEFAULT_LIMITS_ID = "*"
+
+
 def timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -79,6 +83,9 @@ class Accounts:
                     disabled INTEGER NOT NULL DEFAULT 0, is_default INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS upload_owners (
                     lecture_id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS user_limits (
+                    user_id TEXT PRIMARY KEY, unlimited INTEGER NOT NULL DEFAULT 0,
+                    max_lectures INTEGER, max_voices INTEGER, storage_limit_mb INTEGER);
             """)
         self.path.chmod(0o600)
         self.bootstrap()
@@ -135,6 +142,37 @@ class Accounts:
         if row and hmac.compare_digest(digest, row["password_hash"]) and not row["disabled"]:
             return User.model_validate(dict(row))
         return None
+
+    def create_user(self, email: str, password: str, display_name: str, role: str) -> User:
+        with self.connect() as db:
+            return self._insert(db, User(email=email.strip().lower(), display_name=display_name.strip(),
+                                         role=role, terms_accepted_at=timestamp()), password)
+
+    def limit_row(self, uid: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM user_limits WHERE user_id=?", (uid,)).fetchone()
+        return dict(row) if row else None
+
+    def set_limits(self, uid: str, unlimited: bool, max_lectures: int | None, max_voices: int | None,
+                   storage_limit_mb: int | None) -> None:
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO user_limits VALUES (?,?,?,?,?)",
+                       (uid, int(unlimited), max_lectures, max_voices, storage_limit_mb))
+
+    def default_limits(self) -> dict[str, int]:
+        """Server defaults (env/Settings), overridden by whatever the admin saved for everyone."""
+        base = {f: getattr(self.settings, f) for f in LIMIT_FIELDS}
+        row = self.limit_row(DEFAULT_LIMITS_ID) or {}
+        return {f: row[f] if row.get(f) is not None else base[f] for f in LIMIT_FIELDS}
+
+    def effective_limits(self, uid: str) -> dict:
+        """Limits that apply to ``uid``; a value of None means no limit."""
+        user = self.get(uid)
+        row = self.limit_row(uid) or {}
+        if (user is not None and user.role == "admin") or row.get("unlimited"):
+            return {"unlimited": True, **dict.fromkeys(LIMIT_FIELDS)}
+        defaults = self.default_limits()
+        return {"unlimited": False, **{f: row[f] if row.get(f) is not None else defaults[f] for f in LIMIT_FIELDS}}
 
     def list_users(self) -> list[User]:
         with self.connect() as db:

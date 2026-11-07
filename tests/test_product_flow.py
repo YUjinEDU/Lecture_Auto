@@ -98,3 +98,14 @@ def test_key_encrypted_under_an_old_secret_reads_as_unregistered(app_env):
     app.state.accounts.save_key(uid, "baze_test_key_1234")
     rotated = Accounts(Settings(root=settings.root, password=settings.password, secret=b"t" * 32))
     assert rotated.api_key(uid) is None and rotated.key_last4(uid) is None
+
+
+def test_subtitles_download_and_viewer_cache_is_not_listed(app_env):
+    settings, _app, admin, _student, _other = app_env
+    srt = admin.get(f"/api/lectures/{LID}/export/subtitles.srt")
+    assert srt.status_code == 200 and "-->" in srt.text and SENTS[0][:8] in srt.text
+    vtt = admin.get(f"/api/lectures/{LID}/export/subtitles.vtt")
+    assert vtt.text.startswith("WEBVTT")
+    assert (settings.output_dir / LID / f"{LID}.viewer.json").exists()
+    names = [f["name"] for f in admin.get(f"/api/lectures/{LID}").json()["files"]]
+    assert f"{LID}.mp4" in names and not any(n.endswith(".viewer.json") for n in names)

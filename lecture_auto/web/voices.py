@@ -107,7 +107,8 @@ def voices_router(settings: Settings, accounts: Accounts) -> APIRouter:
         normalized = normalize_audio(data, Path(file.filename or "").suffix.lower())
         with request.app.state.storage_lock, accounts.connect() as db:
             count = db.execute("SELECT count(*) FROM voices WHERE user_id=?", (uid,)).fetchone()[0]
-            if count >= settings.max_voices:
+            limit = accounts.effective_limits(uid)["max_voices"]
+            if limit is not None and count >= limit:
                 raise HTTPException(409, "등록할 수 있는 음성 개수를 초과했습니다")
             vid, accepted = secrets.token_hex(16), timestamp()
             metadata = {"id": vid, "user_id": uid, "consent_at": accepted, "consent_text": CONSENT_TEXT,

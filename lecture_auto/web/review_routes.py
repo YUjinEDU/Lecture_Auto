@@ -20,6 +20,10 @@ class ScriptBody(BaseModel):
     script: str = Field(min_length=1, max_length=20000)
 
 
+class ScriptsBody(BaseModel):
+    scripts: dict[int, str] = Field(min_length=1, max_length=1000)
+
+
 class PromoteBody(BaseModel):
     allow_failed: bool = False
     note: str = Field(default="", max_length=500)
@@ -52,6 +56,30 @@ def review_router(settings: Settings, runner: JobRunner) -> APIRouter:
                 store.save_script(settings, item, number, body.script.strip())
             except FileNotFoundError:
                 raise HTTPException(404, "대본이 아직 없습니다") from None
+            return view(item, number)
+
+    @router.put("/api/lectures/{lid}/scripts")
+    def put_scripts(lid: str, body: ScriptsBody, request: Request):
+        item = store.get_lecture(settings, lid)
+        texts = {n: t.strip() for n, t in body.scripts.items()}
+        if any(not t or len(t) > 20000 for t in texts.values()):
+            raise HTTPException(422, "대본은 1~20000자여야 합니다")
+        with idle(request, lid):
+            missing = [n for n in texts if not (settings.work_dir / lid / "scripts" / f"script_{n:03d}.json").exists()]
+            if missing:
+                raise HTTPException(404, f"대본이 없는 슬라이드: {missing}")
+            for n, text in sorted(texts.items()):
+                store.save_script(settings, item, n, text)
+        return {"saved": sorted(texts)}
+
+    @router.post("/api/lectures/{lid}/slides/{number}/script/revert")
+    def revert_script(lid: str, number: int, request: Request):
+        item = store.get_lecture(settings, lid)
+        with idle(request, lid):
+            try:
+                store.revert_script(settings, item, number)
+            except FileNotFoundError:
+                raise HTTPException(404, "되돌릴 원래 대본이 없습니다") from None
             return view(item, number)
 
     @router.post("/api/lectures/{lid}/slides/{number}/approve")
@@ -103,13 +131,14 @@ def review_router(settings: Settings, runner: JobRunner) -> APIRouter:
         return FileResponse(path, media_type="image/png")
 
     @router.get("/api/lectures/{lid}/slides/{number}/audio/{kind}")
-    def audio(lid: str, number: int, kind: str):
+    def audio(lid: str, number: int, kind: str, download: bool = False):
         if kind not in AUDIO_KINDS:
             raise HTTPException(400, "잘못된 음성 종류")
         path = settings.work_dir / lid / "audio" / AUDIO_KINDS[kind].format(number)
         if not path.exists():
             raise HTTPException(404, "음성이 없습니다")
-        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+        name = f"{lid}_slide_{number:03d}{'' if kind == 'main' else '_' + kind}.wav" if download else None
+        return FileResponse(path, media_type="audio/wav", filename=name, headers={"Cache-Control": "no-store"})
 
     @router.get("/api/lectures/{lid}/files/{name}")
     def output(lid: str, name: str):

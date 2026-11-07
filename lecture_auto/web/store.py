@@ -21,6 +21,7 @@ from lecture_auto.web.settings import Settings
 
 _NUM = re.compile(r"_(\d{3})\.")
 OUTPUT_SUFFIXES = {".mp4", ".md", ".json", ".srt", ".vtt"}
+INTERNAL_OUTPUTS = (".viewer.json",)
 
 
 class LectureNotFound(KeyError):
@@ -76,7 +77,7 @@ def output_files(settings: Settings, lecture_id: str) -> list[dict]:
     return [
         {"name": p.name, "bytes": p.stat().st_size, "mtime": p.stat().st_mtime}
         for p in sorted(out.iterdir())
-        if p.is_file() and p.suffix in OUTPUT_SUFFIXES
+        if p.is_file() and p.suffix in OUTPUT_SUFFIXES and not p.name.endswith(INTERNAL_OUTPUTS)
     ]
 
 
@@ -163,6 +164,7 @@ def slide_views(settings: Settings, item: dict) -> list[dict]:
             "script": sc.get("script"),
             "target_seconds": sc.get("target_seconds"),
             "hand_edited": bgl._hand_edited(script_path) is not None,
+            "original": original_script_path(settings, item["id"], n).exists(),
             "audio": has_audio,
             "candidate": cand_info is not None,
             "candidate_ok": bool(cand_info and cand_info.get("ok")),
@@ -175,6 +177,23 @@ def slide_views(settings: Settings, item: dict) -> list[dict]:
     return views
 
 
+def original_script_path(settings: Settings, lecture_id: str, number: int) -> Path:
+    """The generated script as it was before the professor's first edit (outside ``scripts/`` so no
+    pipeline glob picks it up)."""
+    return settings.work_dir / lecture_id / "scripts_original" / f"script_{number:03d}.json"
+
+
+def revert_script(settings: Settings, item: dict, number: int) -> None:
+    """Put the generated script back byte for byte, so its ``.hash`` sidecar matches and the
+    pipeline treats it as generated again."""
+    original = original_script_path(settings, item["id"], number)
+    if not original.exists():
+        raise FileNotFoundError(original)
+    path = settings.work_dir / item["id"] / "scripts" / f"script_{number:03d}.json"
+    write_text_atomic(path, original.read_text(encoding="utf-8"))
+    original.unlink()
+
+
 def save_script(settings: Settings, item: dict, number: int, text: str) -> dict:
     """Write the professor's edit so the pipeline treats it as a hand edit: the
     ``.hash`` sidecar must keep the hash of the *previous* (generated) text, or the
@@ -183,8 +202,12 @@ def save_script(settings: Settings, item: dict, number: int, text: str) -> dict:
     if not path.exists():
         raise FileNotFoundError(path)
     previous = path.read_text(encoding="utf-8")
+    generated = bgl._hand_edited(path) is None
     if not cache_path_for(path).exists():
         write_cache_hash(path, content_hash(previous))
+    original = original_script_path(settings, item["id"], number)
+    if generated and not original.exists():
+        write_text_atomic(original, previous)
     data = json.loads(previous)
     data["script"] = text
     write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))

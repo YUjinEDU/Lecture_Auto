@@ -29,7 +29,7 @@ class ReportBody(BaseModel):
     at_seconds: float | None = None
 
 
-def _viewer(settings: Settings, lecture_id: str) -> dict:
+def cached_viewer(settings: Settings, lecture_id: str) -> dict:
     """Cached ``viewer.json``, rebuilt whenever the lecture was re-assembled after it was written."""
     out = settings.output_dir / lecture_id
     path = viewer_path(settings.output_dir, lecture_id)
@@ -73,7 +73,7 @@ def make_public_router(
         return {
             "title": item.get("name", item["id"]),
             "subject": item.get("subject", ""),
-            "viewer": _viewer(settings, item["id"]),
+            "viewer": cached_viewer(settings, item["id"]),
             "study": load_study(settings.work_dir, item["id"]).public(),
         }
 

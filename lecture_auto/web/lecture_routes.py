@@ -83,7 +83,8 @@ def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) ->
             raise HTTPException(400, "파일 내용이 PPTX/PDF 형식이 아닙니다")
         with request.app.state.storage_lock:
             items = store.all_lectures(settings)
-            if sum(item.get("owner") == user.id for item in items) >= settings.max_lectures:
+            limit = accounts.effective_limits(user.id)["max_lectures"]
+            if limit is not None and sum(item.get("owner") == user.id for item in items) >= limit:
                 raise HTTPException(409, "등록할 수 있는 강의 개수를 초과했습니다")
             check_storage(settings, user.id, len(data))
             existing = [i["id"] for i in items]

@@ -5,13 +5,20 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from lecture_auto.web.access import admin_user, current_user
-from lecture_auto.web.accounts import Accounts, Registration, ReportBody
+from lecture_auto.web.accounts import (
+    DEFAULT_LIMITS_ID,
+    Accounts,
+    Registration,
+    ReportBody,
+)
+from lecture_auto.web.quotas import usage
 from lecture_auto.web.settings import Settings
 
 GATEWAY = "https://factchat-cloud.mindlogic.ai/v1/gateway"
@@ -42,6 +49,25 @@ class KeyBody(BaseModel):
 
 class DisabledBody(BaseModel):
     disabled: bool = True
+
+
+class LimitsBody(BaseModel):
+    unlimited: bool = False
+    max_lectures: int | None = Field(default=None, ge=0, le=1_000_000)
+    max_voices: int | None = Field(default=None, ge=0, le=1_000_000)
+    storage_limit_mb: int | None = Field(default=None, ge=0, le=100_000_000)
+
+
+class DefaultLimitsBody(BaseModel):
+    max_lectures: int = Field(ge=0, le=1_000_000)
+    max_voices: int = Field(ge=0, le=1_000_000)
+    storage_limit_mb: int = Field(ge=0, le=100_000_000)
+
+
+class NewUserBody(SignupBody):
+    role: Literal["user", "admin"] = "user"
+    unlimited: bool = True
+    terms_accepted: bool = True
 
 
 def account_router(settings: Settings, accounts: Accounts) -> APIRouter:
@@ -75,7 +101,9 @@ def account_router(settings: Settings, accounts: Accounts) -> APIRouter:
 
     @router.get("/api/me")
     def me(request: Request):
-        return {**current_user(request).model_dump(), "gpu": settings.gpu}
+        user = current_user(request)
+        return {**user.model_dump(), "gpu": settings.gpu,
+                "limits": accounts.effective_limits(user.id), "usage": usage(settings, user.id)}
 
     @router.get("/api/settings/key")
     def key_info(request: Request):
@@ -111,7 +139,35 @@ def account_router(settings: Settings, accounts: Accounts) -> APIRouter:
 
     @router.get("/api/admin/users", dependencies=[Depends(admin_user)])
     def users():
-        return accounts.list_users()
+        return [{**u.model_dump(), "limits": accounts.effective_limits(u.id),
+                 "overrides": accounts.limit_row(u.id), "usage": usage(settings, u.id)}
+                for u in accounts.list_users()]
+
+    @router.post("/api/admin/users", dependencies=[Depends(admin_user)])
+    def create_user(body: NewUserBody):
+        try:
+            user = accounts.create_user(body.email, body.password, body.display_name, body.role)
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "이미 가입된 이메일입니다") from None
+        if body.unlimited:
+            accounts.set_limits(user.id, True, None, None, None)
+        return user
+
+    @router.put("/api/admin/users/{uid}/limits", dependencies=[Depends(admin_user)])
+    def set_limits(uid: str, body: LimitsBody):
+        if accounts.get(uid) is None:
+            raise HTTPException(404, "사용자를 찾을 수 없습니다")
+        accounts.set_limits(uid, body.unlimited, body.max_lectures, body.max_voices, body.storage_limit_mb)
+        return accounts.effective_limits(uid)
+
+    @router.get("/api/admin/limits", dependencies=[Depends(admin_user)])
+    def default_limits():
+        return accounts.default_limits()
+
+    @router.put("/api/admin/limits", dependencies=[Depends(admin_user)])
+    def set_default_limits(body: DefaultLimitsBody):
+        accounts.set_limits(DEFAULT_LIMITS_ID, False, body.max_lectures, body.max_voices, body.storage_limit_mb)
+        return accounts.default_limits()
 
     @router.post("/api/admin/invites")
     def invite(request: Request):

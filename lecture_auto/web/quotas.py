@@ -18,6 +18,15 @@ def storage_bytes(settings: Settings, uid: str) -> int:
     return sum(p.stat().st_size for folder in folders for p in folder.rglob("*") if p.is_file())
 
 
+def usage(settings: Settings, uid: str) -> dict:
+    accounts = Accounts(settings)
+    with accounts.connect() as db:
+        voices = db.execute("SELECT count(*) FROM voices WHERE user_id=?", (uid,)).fetchone()[0]
+    lectures = sum(p.owner == uid for p in load_projects(settings.projects_dir))
+    return {"lectures": lectures, "voices": voices, "storage_bytes": storage_bytes(settings, uid)}
+
+
 def check_storage(settings: Settings, uid: str, incoming: int) -> None:
-    if storage_bytes(settings, uid) + incoming > settings.storage_limit_mb * 1024 * 1024:
+    limit = Accounts(settings).effective_limits(uid)["storage_limit_mb"]
+    if limit is not None and storage_bytes(settings, uid) + incoming > limit * 1024 * 1024:
         raise HTTPException(413, "계정 저장 공간 한도를 초과했습니다. 파일을 정리해 주세요")
