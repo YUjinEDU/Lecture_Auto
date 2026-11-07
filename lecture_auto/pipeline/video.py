@@ -21,6 +21,8 @@ from lecture_auto.pipeline.tts import merge_audio
 
 logger = logging.getLogger(__name__)
 
+SLIDESHOW_FPS = 2
+
 
 def create_slide_clip(
     png_path: Path,
@@ -299,14 +301,19 @@ def assemble_video(
             "-i", str(slideshow_manifest_path),
             "-i", str(merged_audio_path),
             "-t", f"{total_duration:.6f}",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30",
+            # Slides are still images: 2 fps with a keyframe every 10 s keeps seeking usable and is
+            # ~5x faster than 30 fps; the AAC "fast" coder was the real bottleneck (twoloop: 2.5x
+            # slower at the same bitrate). No -shortest: at 2 fps it cuts up to 0.5 s of speech.
+            "-vf", f"scale=trunc(iw/2)*2:trunc(ih/2)*2,fps={SLIDESHOW_FPS}",
             "-c:v", "libx264",
             "-preset", "veryfast",
+            "-tune", "stillimage",
+            "-g", str(SLIDESHOW_FPS * 10),
             "-c:a", "aac",
+            "-aac_coder", "fast",
             "-b:a", "192k",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            "-shortest",
             str(output_path),
         ]
 

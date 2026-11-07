@@ -1,5 +1,6 @@
 import io
 import json
+import threading
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
@@ -158,3 +159,63 @@ def test_gemini_lecture_synthesizes_through_gemini_not_raon(tmp_path):
     assert args[0] == "client" and args[2] == tmp_path / "slide_001.wav"
     assert kwargs["voice"] == "Puck" and kwargs["instructions"] == "빠르게"
     assert Path(kwargs["qc_path"]).name == "slide_001.wav.qc.json"
+
+
+def _concurrency_probe(expect_overlap: bool):
+    """A fake that reports the most calls that were ever running at once. With expect_overlap the
+    first call waits (bounded) for a second one to start, so overlap never depends on timing luck."""
+    lock, state, second = threading.Lock(), {"now": 0, "max": 0}, threading.Event()
+
+    def call(*_a, **_k):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+            if state["now"] >= 2:
+                second.set()
+        if expect_overlap:
+            second.wait(timeout=5)
+        with lock:
+            state["now"] -= 1
+        return True
+
+    return call, state
+
+
+def test_gemini_slides_are_synthesized_concurrently_and_raon_ones_are_not(tmp_path):
+    scripts = {n: {"script": f"{n}번 슬라이드", "target_seconds": 5.0} for n in range(1, 7)}
+    call, state = _concurrency_probe(expect_overlap=True)
+    with patch.object(bgl, "_synth_one", side_effect=call) as one:
+        _wavs, failed = bgl._synthesize_all_slides(
+            object(), 6, scripts, tmp_path, b"id", (0, 1), None, set(), gemini=("Kore", None))
+    assert one.call_count == 6 and failed == [] and state["max"] >= 2
+    call, state = _concurrency_probe(expect_overlap=False)
+    with patch.object(bgl, "_synth_one", side_effect=call):
+        bgl._synthesize_all_slides(object(), 6, scripts, tmp_path, b"id", (0, 1), None, set())
+    assert state["max"] == 1
+
+
+def test_client_caps_requests_in_flight():
+    lock, state, release = threading.Lock(), {"now": 0, "max": 0}, threading.Event()
+    started = threading.Semaphore(0)
+
+    def fake_urlopen(req, timeout):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        started.release()
+        release.wait(timeout=5)
+        with lock:
+            state["now"] -= 1
+        return _pcm_response(np.full(10, 0.1, dtype=np.float32))
+
+    client = BazeTTSClient(api_key="k", max_in_flight=2)
+    with patch("urllib.request.urlopen", fake_urlopen):
+        threads = [threading.Thread(target=client.speech, args=("a", "Kore", None)) for _ in range(5)]
+        for th in threads:
+            th.start()
+        assert started.acquire(timeout=5) and started.acquire(timeout=5)
+        assert not started.acquire(timeout=0.2)
+        release.set()
+        for th in threads:
+            th.join(timeout=5)
+    assert state["max"] == 2

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +48,8 @@ GEMINI_VOICES = (
 )
 MAX_INPUT_CHARS = 4000
 MAX_PARALLEL_REQUESTS = 4
+MAX_IN_FLIGHT = int(os.environ.get("BAZE_TTS_MAX_IN_FLIGHT", "8"))
+PARALLEL_SLIDES = 3
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 _ONE_LSB = 1.0 / 32768.0
 
@@ -63,6 +66,12 @@ class BazeTTSClient:
     timeout: float = 120.0
     retry_delays: Sequence[float] = (2.0, 5.0, 15.0)
     sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
+    max_in_flight: int = MAX_IN_FLIGHT
+
+    def __post_init__(self) -> None:
+        # Shared by every slide and segment thread using this client: the gateway allows 120
+        # calls per member per minute, and a call takes ~4 s, so 8 in flight stays under it.
+        self._slots = threading.BoundedSemaphore(self.max_in_flight)
 
     @classmethod
     def from_env(cls) -> BazeTTSClient:
@@ -85,7 +94,7 @@ class BazeTTSClient:
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             )
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with self._slots, urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     pcm = resp.read()
                 break
             except urllib.error.HTTPError as e:

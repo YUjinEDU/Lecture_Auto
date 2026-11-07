@@ -26,6 +26,7 @@ import shutil
 import sys
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +54,7 @@ from lecture_auto.pipeline.cache import (
     write_text_atomic,
 )
 from lecture_auto.pipeline.gemini_tts import (
+    PARALLEL_SLIDES,
     BazeTTSClient,
     synthesize_gemini_slide,
     voice_identity,
@@ -400,6 +402,7 @@ def _synthesize_all_slides(
     failed_slides: list[int] = []
     shard_index, shard_count = shard
     claim_candidates: list[int] = []
+    direct: list[int] = []
     for n in range(1, slide_count + 1):
         out_wav = audio_dir / f"slide_{n:03d}.wav"
         if claim is None and (n - 1) % shard_count != shard_index:
@@ -421,11 +424,18 @@ def _synthesize_all_slides(
         if claim is not None:
             claim_candidates.append(n)
             continue
-        if not _synth_one(
-            tts_pipe, n, scripts, out_wav, ref_voice_bytes, target_slides, entries, verify_stt,
-            ref_voice=ref_voice, voice_match=voice_match, gemini=gemini,
-        ):
-            failed_slides.append(n)
+        direct.append(n)
+
+    def synth(n: int) -> bool:
+        return _synth_one(
+            tts_pipe, n, scripts, audio_dir / f"slide_{n:03d}.wav", ref_voice_bytes, target_slides,
+            entries, verify_stt, ref_voice=ref_voice, voice_match=voice_match, gemini=gemini,
+        )
+
+    # Raon holds one GPU model, so its slides stay sequential; Gemini slides are independent API
+    # calls and run a few at once (the client caps the total number of requests in flight).
+    workers = PARALLEL_SLIDES if gemini is not None else 1
+    failed_slides += [n for n, ok in zip(direct, _map_slides(synth, direct, workers)) if not ok]
 
     # S17-a dynamic claim: longest script first (tail balance); order affects
     # neither results nor cache keys. One pass; slides another worker holds are
@@ -433,26 +443,31 @@ def _synthesize_all_slides(
     claim_dir = audio_dir / ".claim"
     if claim is not None:
         claim_dir.mkdir(parents=True, exist_ok=True)
-    for n in sorted(claim_candidates, key=lambda i: -len(scripts[i].get("script", ""))):
+    def claimed(n: int) -> bool:
         with (claim_dir / f"slide_{n:03d}.lock").open("w") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                continue
+                return True
             done = claim_dir / f"slide_{n:03d}.done"
             if done.exists() and done.read_text(encoding="utf-8") == claim:
-                continue
-            ok = _synth_one(
-                tts_pipe, n, scripts, audio_dir / f"slide_{n:03d}.wav", ref_voice_bytes, target_slides,
-                entries, verify_stt, ref_voice=ref_voice, voice_match=voice_match, gemini=gemini,
-            )
+                return True
+            ok = synth(n)
             # Written for success AND gate failure; an exception skips it so a
             # restarted worker can retake the slide (kernel frees the flock).
             write_text_atomic(done, claim)
-            if not ok:
-                failed_slides.append(n)
+            return ok
 
+    order = sorted(claim_candidates, key=lambda i: -len(scripts[i].get("script", "")))
+    failed_slides += [n for n, ok in zip(order, _map_slides(claimed, order, workers)) if not ok]
     return wav_paths, sorted(failed_slides)
+
+
+def _map_slides(fn, numbers: list[int], workers: int) -> list[bool]:
+    if workers <= 1 or len(numbers) <= 1:
+        return [fn(n) for n in numbers]
+    with ThreadPoolExecutor(max_workers=min(workers, len(numbers))) as pool:
+        return list(pool.map(fn, numbers))
 
 
 def _synth_one(

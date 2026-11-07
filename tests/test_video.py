@@ -402,3 +402,15 @@ def test_assemble_video_with_master_audio(tmp_path):
         assert result == out
         assert mock_master.call_count == 1
         assert mock_run.call_count == 1
+
+
+def test_slideshow_encode_uses_still_image_settings_and_keeps_the_full_audio(tmp_path):
+    pngs = [_make_dummy_file(tmp_path / "slide_001.png")]
+    wavs = [_make_silence_wav(tmp_path / "audio_001.wav")]
+    with patch("lecture_auto.pipeline.video.subprocess.run") as mock_run:
+        mock_run.return_value = _success_result()
+        assemble_video(pngs, wavs, tmp_path / "video", tmp_path / "out.mp4", job_id="still")
+    cmd = mock_run.call_args.args[0]
+    assert "-shortest" not in cmd
+    assert cmd[cmd.index("-vf") + 1].endswith(f"fps={video_module.SLIDESHOW_FPS}")
+    assert cmd[cmd.index("-aac_coder") + 1] == "fast"
