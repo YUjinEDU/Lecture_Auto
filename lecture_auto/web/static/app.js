@@ -213,7 +213,7 @@ async function renderDashboard() {
       h("div", {}, h("h1", {}, "내 강의"),
         h("p", { class: "muted" }, `강의 ${lectures.length}개 · 완성 ${finished}개${working ? ` · 작업 중 ${working}개` : ""}`)),
       h("button", { class: "primary", onclick: () => guard(uploadDialog) }, "+ 새 강의 등록")),
-    lectures.length > 3 ? h("div", { class: "toolbar" }, search) : null,
+    ...(lectures.length > 3 ? [h("div", { class: "toolbar" }, search)] : []),
     grid);
   paint();
   const refresh = () => {
