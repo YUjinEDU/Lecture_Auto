@@ -29,5 +29,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: System tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils
-      - run: uv sync --extra dev --frozen
-      - run: uv run --frozen pytest -q
+      - run: uv sync --extra dev --locked
+      # Raon TTS tests exercise real tensor ops; CPU torch is enough (the gpu extra pins CUDA wheels).
+      - run: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: uv run --no-sync pytest -q
