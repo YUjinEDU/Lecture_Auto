@@ -1356,7 +1356,7 @@ def _cli_suggest_pron(item: dict, base_work_dir: Path, entries: Sequence[dict], 
             break
         except (json.JSONDecodeError, KeyError, TypeError):
             if attempt:
-                raise SystemExit("--suggest-pron: LLM returned malformed JSON twice")
+                raise SystemExit("--suggest-pron: LLM returned malformed JSON twice") from None
             logger.warning("suggest-pron: malformed JSON from LLM -- re-asking once")
 
     accepted: list[dict] = []

@@ -1,9 +1,14 @@
+from .job_status import JobStatus, ProgressEvent
 from .manifest import (
-    FontInfo, TextRun, TextParagraph, ShapeRecord,
-    SlideRecord, LectureStyle, SlideManifest,
+    FontInfo,
+    LectureStyle,
+    ShapeRecord,
+    SlideManifest,
+    SlideRecord,
+    TextParagraph,
+    TextRun,
 )
 from .request import UploadResponse
-from .job_status import JobStatus, ProgressEvent
 
 __all__ = [
     "FontInfo", "TextRun", "TextParagraph", "ShapeRecord",

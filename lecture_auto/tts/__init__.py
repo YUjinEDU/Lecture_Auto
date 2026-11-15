@@ -15,7 +15,7 @@ consumer code changes::
 from __future__ import annotations
 
 import os
-from typing import Callable
+from collections.abc import Callable
 
 from lecture_auto.tts.base import TTSEngine
 from lecture_auto.tts.qwen import QwenTTSEngine
@@ -45,10 +45,10 @@ def get_tts_engine(name: str | None = None) -> TTSEngine:
     name = (name or os.environ.get("TTS_ENGINE", "qwen")).lower()
     try:
         factory = _REGISTRY[name]
-    except KeyError:
+    except KeyError as err:
         raise ValueError(
             f"Unknown TTS engine {name!r}. Available: {available_engines()}"
-        )
+        ) from err
     return factory()
 
 

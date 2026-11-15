@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import soundfile as sf
@@ -67,7 +67,7 @@ def approve(
     slide = ApprovedSlide(
         wav=wav_path.name,
         sha256=_sha256_file(wav_path),
-        approved_at=datetime.now(timezone.utc),
+        approved_at=datetime.now(UTC),
         source=source,
         gate_ok=gate_ok,
         note=note,

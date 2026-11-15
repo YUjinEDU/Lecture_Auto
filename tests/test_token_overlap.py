@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from lecture_auto.pipeline.vlm import (
     VlmNote,
+    _extract_slide_text,
     compute_token_overlap,
     generate_single_note,
-    _extract_slide_text,
 )
+from lecture_auto.schemas.job_status import JobStatus, ProgressEvent  # noqa: E402
 from lecture_auto.schemas.manifest import (  # noqa: E402
     FontInfo,
     ShapeRecord,
@@ -25,8 +26,6 @@ from lecture_auto.schemas.manifest import (  # noqa: E402
     TextParagraph,
     TextRun,
 )
-from lecture_auto.schemas.job_status import JobStatus, ProgressEvent  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -221,7 +220,7 @@ class TestGenerateSingleNote:
         mock_client = MagicMock()
         mock_client.analyze_image.return_value = json.dumps(response_data)
 
-        note = generate_single_note(mock_client, slide, rendered_dir, vlm_dir)
+        generate_single_note(mock_client, slide, rendered_dir, vlm_dir)
 
         # Check file was written
         out_path = vlm_dir / "vlm_note_001.json"

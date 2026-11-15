@@ -1,14 +1,12 @@
 """Tests for PDF parser with title detection and table fallback."""
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pymupdf
 import pytest
 
-from lecture_auto.schemas.manifest import SlideRecord, ShapeRecord
-
+from lecture_auto.schemas.manifest import SlideRecord
 
 # ---------------------------------------------------------------------------
 # Helpers: create synthetic PDFs in memory

@@ -7,23 +7,18 @@ All 15 behaviors from the plan are covered.
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
-from pptx.enum.text import PP_ALIGN
-from pptx.dml.color import RGBColor
+from pptx.util import Inches, Pt
 
 from lecture_auto.pipeline.parser_pptx import (
-    parse_pptx,
     classify_shape,
-    extract_text_content,
-    extract_font_info,
+    parse_pptx,
 )
-from lecture_auto.schemas.manifest import ShapeRecord, SlideRecord, TextParagraph, TextRun, FontInfo
-
+from lecture_auto.schemas.manifest import SlideRecord
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -38,7 +33,6 @@ def make_test_pptx() -> bytes:
     Slide 2: Blank layout — body text box, a picture shape (tiny PNG),
              a plain text box with custom font
     """
-    from pptx.util import Inches, Pt
     from PIL import Image as PILImage
 
     prs = Presentation()

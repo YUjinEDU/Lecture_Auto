@@ -4,7 +4,7 @@ or output/ writes -- everything happens under pytest's tmp_path.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -54,7 +54,7 @@ def test_approved_slide_is_skipped_and_untouched(tmp_path):
     lecture_dir = _make_lecture_dir(tmp_path)
     manifest = ApprovalManifest(lecture_id=lecture_dir.name)
     manifest = manifest.model_copy(update={"slides": {2: ApprovedSlide(
-        wav="slide_002.wav", sha256="deadbeef", approved_at=datetime.now(timezone.utc), source="existing",
+        wav="slide_002.wav", sha256="deadbeef", approved_at=datetime.now(UTC), source="existing",
     )}})
     save_approvals(lecture_dir, manifest)
 

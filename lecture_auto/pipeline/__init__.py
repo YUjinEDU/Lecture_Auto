@@ -10,18 +10,18 @@ GPU-dependent modules (vlm, tts, video) use lazy imports so the package
 can be loaded in environments without optional heavy dependencies installed.
 """
 
+from .parser_pdf import extract_tables_fallback, parse_input, parse_pdf
 from .parser_pptx import parse_pptx
-from .parser_pdf import parse_pdf, parse_input, extract_tables_fallback
 from .renderer import render_slides
 
 # GPU-dependent modules: import lazily to avoid hard-fail on CPU-only envs
 try:
-    from .vlm import generate_visual_notes, VlmNote
+    from .vlm import VlmNote, generate_visual_notes
 except ImportError:  # pragma: no cover
     generate_visual_notes = VlmNote = None  # type: ignore[assignment,misc]
 
 try:
-    from .script_gen import generate_scripts, SlideScript
+    from .script_gen import SlideScript, generate_scripts
 except ImportError:  # pragma: no cover
     generate_scripts = SlideScript = None  # type: ignore[assignment,misc]
 
@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover
     load_tts = synthesize_audio = None  # type: ignore[assignment,misc]
 
 try:
-    from .video import assemble_video, create_slide_clip, concat_clips
+    from .video import assemble_video, concat_clips, create_slide_clip
 except ImportError:  # pragma: no cover
     assemble_video = create_slide_clip = concat_clips = None  # type: ignore[assignment,misc]
 

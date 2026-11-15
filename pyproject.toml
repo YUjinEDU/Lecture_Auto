@@ -53,6 +53,19 @@ name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
 explicit = true
 
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["data", "output", "results", "review", "logs", "docs"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+ignore = ["E731", "E741", "E701", "E702", "B008", "B905", "UP042"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "B017", "E402"]
+"scripts/**" = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

@@ -15,7 +15,7 @@ from lecture_auto.pipeline.lecture_plan import (
     parse_reference_script,
     validate_plan_covers_slides,
 )
-from lecture_auto.schemas.lecture_plan import CarryForward, LecturePlan, LectureSection
+from lecture_auto.schemas.lecture_plan import CarryForward, LecturePlan
 from lecture_auto.schemas.manifest import FontInfo, ShapeRecord, SlideRecord, TextParagraph, TextRun
 
 _MAIN_REPO_ROOT = Path("/home/dbsdosdb/workspace/Lecture_Auto")

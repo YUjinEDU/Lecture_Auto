@@ -18,7 +18,6 @@ and editing of intermediate files before proceeding.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
 import shutil
@@ -26,7 +25,6 @@ import sys
 import time
 import uuid
 from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -221,12 +219,13 @@ def main() -> int:
     """
     # Lazy imports — heavy GPU dependencies are only loaded when each stage runs.
     from lecture_auto.pipeline.parser import parse_pptx
-    from lecture_auto.pipeline.renderer import render_slides
-    from lecture_auto.pipeline.vlm import generate_visual_notes
-    from lecture_auto.pipeline.script_gen import generate_scripts
+
     from lecture_auto.llm import get_llm_client
+    from lecture_auto.pipeline.renderer import render_slides
+    from lecture_auto.pipeline.script_gen import generate_scripts
     from lecture_auto.pipeline.tts import load_tts, synthesize_audio
     from lecture_auto.pipeline.video import assemble_video
+    from lecture_auto.pipeline.vlm import generate_visual_notes
     from lecture_auto.schemas.manifest import LectureStyle, SlideManifest
     from lecture_auto.storage.jobs import JobPaths
 

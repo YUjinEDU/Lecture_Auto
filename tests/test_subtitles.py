@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -116,7 +116,7 @@ def _setup(tmp_path, entries_text):
         qc = SlideQC(
             ok=True, spoken_text_sha256=hashlib.sha256(spoken_full.encode()).hexdigest(),
             segments=[SegmentQC(index=i, text=t, seed=1, call="tts") for i, t in enumerate(spoken_segs)],
-            synth_version="x", created_at=datetime.now(timezone.utc),
+            synth_version="x", created_at=datetime.now(UTC),
         )
         (audio / f"slide_{n:03d}.wav.qc.json").write_text(qc.model_dump_json())
         dur = len(wav) / SR

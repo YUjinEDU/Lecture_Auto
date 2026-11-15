@@ -30,7 +30,7 @@ _SAMPLE_RATE = 24000
 _DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 
-def load_tts(model_path: str = _DEFAULT_MODEL) -> "Qwen3TTSModel":
+def load_tts(model_path: str = _DEFAULT_MODEL) -> Qwen3TTSModel:
     """Load Qwen3-TTS Base model via qwen-tts package.
 
     Parameters
@@ -84,7 +84,7 @@ def generate_silence(duration_seconds: float, sample_rate: int = _SAMPLE_RATE) -
 
 
 def synthesize_slide(
-    model: "Qwen3TTSModel",
+    model: Qwen3TTSModel,
     text: str,
     output_path: Path,
     voice_ref_path: Path | None = None,
@@ -149,7 +149,7 @@ def synthesize_slide(
 
 
 def synthesize_audio(
-    model: "Qwen3TTSModel",
+    model: Qwen3TTSModel,
     scripts: list[dict],
     audio_dir: Path,
     voice_ref_path: Path | None = None,

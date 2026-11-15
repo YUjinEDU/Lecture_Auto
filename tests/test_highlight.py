@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,7 +14,12 @@ import soundfile as sf
 from PIL import Image
 
 from lecture_auto.pipeline.highlight import (
-    Block, concat_manifest, draw_highlight, emu_box_to_px, load_blocks, map_segment_to_block, slide_pieces,
+    Block,
+    draw_highlight,
+    emu_box_to_px,
+    load_blocks,
+    map_segment_to_block,
+    slide_pieces,
 )
 from lecture_auto.schemas.production import SegmentQC, SlideQC
 from scripts import annotate_lecture as al
@@ -115,7 +120,7 @@ def _setup(tmp_path):
         (base / "scripts" / f"script_{n:03d}.json").write_text(json.dumps({"slide_number": n, "script": text}, ensure_ascii=False))
         qc = SlideQC(ok=True, spoken_text_sha256=hashlib.sha256(text.encode()).hexdigest(),
                      segments=[SegmentQC(index=i, text=t, seed=1, call="tts") for i, t in enumerate(segs)],
-                     synth_version="x", created_at=datetime.now(timezone.utc))
+                     synth_version="x", created_at=datetime.now(UTC))
         (base / "audio" / f"slide_{n:03d}.wav.qc.json").write_text(qc.model_dump_json())
         dur = len(wav) / SR
         tl.append({"slide_number": n, "start_seconds": start, "duration_seconds": dur, "wav": p.name,

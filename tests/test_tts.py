@@ -4,14 +4,13 @@ Tests use mocked transformers model and tokenizer to avoid GPU dependency.
 """
 from __future__ import annotations
 
-import io
 import inspect
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
 import soundfile as sf
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,13 +30,12 @@ def _make_silence_wav(path: Path, duration_seconds: float = 0.1, sample_rate: in
 
 import lecture_auto.pipeline.tts as tts_module
 from lecture_auto.pipeline.tts import (
+    generate_silence,
     load_tts,
+    merge_audio,
     synthesize_audio,
     synthesize_slide,
-    generate_silence,
-    merge_audio,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test 1: synthesize_audio returns list[Path]
@@ -217,7 +215,6 @@ def test_each_slide_script_passed_individually(tmp_path):
 
 def test_generate_silence(tmp_path):
     """generate_silence must create a WAV of the requested duration."""
-    output_path = tmp_path / "silence.wav"
     result = generate_silence(1.0, sample_rate=24000)
     assert isinstance(result, np.ndarray)
     assert len(result) == 24000

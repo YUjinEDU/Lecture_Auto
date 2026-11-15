@@ -5,11 +5,8 @@ Tests cover:
 2. has_tofu_regions: normal image, mostly-white image
 3. detect_font_issues: combined detection
 """
-import tempfile
-from pathlib import Path
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from lecture_auto.pipeline.tofu_detector import (
@@ -17,7 +14,6 @@ from lecture_auto.pipeline.tofu_detector import (
     detect_font_issues,
     has_tofu_regions,
 )
-
 
 # ---------------------------------------------------------------------------
 # check_font_substitution

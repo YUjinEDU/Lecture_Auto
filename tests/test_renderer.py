@@ -2,18 +2,13 @@
 
 Tests use mocks to avoid requiring real LibreOffice or GPU.
 """
-import io
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PIL import Image
 
 from lecture_auto.pipeline.renderer import pdf_to_pngs, pptx_to_pdf, render_slides
-
 
 # ---------------------------------------------------------------------------
 # pptx_to_pdf

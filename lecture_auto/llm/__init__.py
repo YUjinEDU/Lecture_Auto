@@ -15,7 +15,7 @@ Add a provider by implementing :class:`LLMClient` and registering it::
 from __future__ import annotations
 
 import os
-from typing import Callable
+from collections.abc import Callable
 
 from lecture_auto.llm.base import LLMClient
 from lecture_auto.llm.openai_client import OpenAILLMClient
@@ -45,10 +45,10 @@ def get_llm_client(name: str | None = None) -> LLMClient:
     name = (name or os.environ.get("LLM_PROVIDER", "openai")).lower()
     try:
         factory = _REGISTRY[name]
-    except KeyError:
+    except KeyError as err:
         raise ValueError(
             f"Unknown LLM provider {name!r}. Available: {available_providers()}"
-        )
+        ) from err
     return factory()
 
 
