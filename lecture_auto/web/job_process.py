@@ -42,7 +42,7 @@ def job_env(settings: Settings, item: dict) -> dict[str, str]:
         key = accounts.api_key(uid)
         if key:
             env.update(BAZE_API_KEY=key, FACTCHAT_API_KEY=key,
-                       FACTCHAT_BASE_URL="https://factchat-cloud.mindlogic.ai/v1/gateway")
+                       FACTCHAT_BASE_URL=settings.user_key_base_url, BAZE_BASE_URL=settings.user_key_base_url)
         elif user.role != "admin":
             raise JobError("설정에서 본인의 BAZE API 키를 등록한 뒤 제작해 주세요")
     if item.get("tts_engine", "raon") == "raon" and item.get("ref_voice"):

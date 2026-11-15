@@ -31,6 +31,7 @@ LECTURE_WEB_PASSWORD='<교수님께 드릴 비밀번호>' .venv/bin/python -m le
 | `LECTURE_WEB_MAX_VOICES` | `10` | 계정당 음성 수 |
 | `LECTURE_WEB_MAX_VOICE_UPLOAD_MB` | `50` | 음성 업로드 파일 크기 한도 |
 | `LECTURE_WEB_STORAGE_LIMIT_MB` | `5120` | 계정당 업로드 원본·음성·동의 파일 합계 한도 |
+| `LECTURE_WEB_KEY_BASE_URL` | BAZE 게이트웨이 | 사용자가 등록한 API 키를 보낼 OpenAI 호환 주소 |
 
 설정 화면에서 자신의 BAZE API 키 하나를 등록한다. 저장 전 게이트웨이의 `GET /models/`로 검증하며,
 DB에는 서버 서명 키에서 유도한 Fernet 키로 암호화한 값과 끝 4자리만 저장한다. 화면과 API는 끝 4자리만 돌려준다.
@@ -89,7 +90,7 @@ DB에는 서버 서명 키에서 유도한 Fernet 키로 암호화한 값과 끝
 
 작업 프로세스에는 `CUDA_VISIBLE_DEVICES=<LECTURE_WEB_GPU>`와 `LECTURE_AUTO_PROJECTS=<root>/data/projects`를 넣는다.
 소유자의 키를 실행 직전에 복호화하여 `BAZE_API_KEY`와 `FACTCHAT_API_KEY`로 넣고,
-`FACTCHAT_BASE_URL=https://factchat-cloud.mindlogic.ai/v1/gateway`를 지정한다.
+`FACTCHAT_BASE_URL`·`BAZE_BASE_URL`을 `LECTURE_WEB_KEY_BASE_URL`(기본 `https://factchat-cloud.mindlogic.ai/v1/gateway`)로 지정한다.
 평문 키는 작업 기록의 `env`나 명세에 넣지 않는다. 작업 프로세스 앞의 `web.job_worker`가 출력의 API 키를
 디스크에 쓰기 전에 가린다. 이 프로세스도 작업 그룹에 속하므로 웹 재시작 후 살아 있고 취소 시 함께 종료된다.
 참조 음성(`ref_voice`), 음색 보정(`voice_match`), 마스터링(`master_audio`)은 강의의 `project.json`에 있고,

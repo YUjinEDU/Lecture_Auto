@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 
+import pytest
 from conftest import PASSWORD, deck, signup
 from fastapi.testclient import TestClient
 
@@ -62,15 +63,19 @@ def test_queue_refuses_non_admin_without_key(client):
     assert "API" in result.json()["detail"]
 
 
-def test_owner_key_reaches_process_but_never_artifacts(settings, tmp_path):
+@pytest.mark.parametrize("base_url", [None, "https://llm.example/v1"])
+def test_owner_key_reaches_process_but_never_artifacts(settings, tmp_path, base_url):
     fake = tmp_path / "fake-worker"
     receipt = tmp_path / "receipt.json"
-    fake.write_text("#!/bin/sh\nprintf '%s\\n%s' \"$BAZE_API_KEY\" \"$FACTCHAT_BASE_URL\" > \"$RECEIPT\"\n"
+    fake.write_text("#!/bin/sh\nprintf '%s\\n%s\\n%s' \"$BAZE_API_KEY\" \"$FACTCHAT_BASE_URL\" \"$BAZE_BASE_URL\" > \"$RECEIPT\"\n"
                     "printf '%s\\n' \"$FACTCHAT_API_KEY\"\n")
     fake.chmod(0o700)
     settings = replace(settings, python=str(fake), extra_env={
         "RECEIPT": str(receipt), "FACTCHAT_BASE_URL": "https://wrong.invalid",
         "FACTCHAT_API_KEY": "wrong-fake-server-key"})
+    if base_url:
+        settings = replace(settings, user_key_base_url=base_url)
+    expected_url = base_url or "https://factchat-cloud.mindlogic.ai/v1/gateway"
     accounts = Accounts(settings)
     user = accounts.signup(Registration(email="user@example.com", password=PASSWORD,
                                         display_name="name", terms_accepted=True))
@@ -84,7 +89,7 @@ def test_owner_key_reaches_process_but_never_artifacts(settings, tmp_path):
         assert runner.wait(job["id"], ("succeeded", "failed"), 10)["status"] == "succeeded"
     finally:
         runner.stop()
-    assert receipt.read_text() == key + "\nhttps://factchat-cloud.mindlogic.ai/v1/gateway"
+    assert receipt.read_text() == f"{key}\n{expected_url}\n{expected_url}"
     for path in settings.jobs_dir.rglob("*"):
         if path.is_file():
             assert key.encode() not in path.read_bytes(), path

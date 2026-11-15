@@ -33,6 +33,8 @@ class Settings:
     storage_limit_mb: int = 5120
     max_voice_upload_mb: int = 50
     raon_enabled: bool = True  # False on servers without a GPU: Gemini (API) voices only
+    # OpenAI-compatible endpoint that per-user API keys (Settings -> API key) are sent to.
+    user_key_base_url: str = "https://factchat-cloud.mindlogic.ai/v1/gateway"
 
     @property
     def work_dir(self) -> Path:
@@ -90,4 +92,5 @@ def settings_from_env() -> Settings:
         max_voices=int(os.environ.get("LECTURE_WEB_MAX_VOICES", "10")),
         storage_limit_mb=int(os.environ.get("LECTURE_WEB_STORAGE_LIMIT_MB", "5120")),
         raon_enabled=os.environ.get("LECTURE_WEB_RAON", "on").strip().lower() not in ("off", "0", "false", "no"),
+        user_key_base_url=os.environ.get("LECTURE_WEB_KEY_BASE_URL", "").strip() or Settings.user_key_base_url,
     )
