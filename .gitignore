@@ -5,6 +5,7 @@ __pycache__/
 .superpowers/
 .serena/
 *.png
+!docs/assets/*.png
 *.wav
 *.mp4
 *.m4a

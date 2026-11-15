@@ -1,0 +1,14 @@
+name: Feature request
+description: Suggest an idea for Lecture Auto
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 해결하고 싶은 문제
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / 제안

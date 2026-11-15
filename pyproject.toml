@@ -1,8 +1,19 @@
 [project]
 name = "lecture-auto"
 version = "0.1.0"
-description = "Lecture automation pipeline - PPTX to script and audio"
+description = "Turn lecture slides (PPTX/PDF) into reviewable scripts, natural voice-over and a finished lecture video"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+keywords = ["lecture", "education", "tts", "llm", "pptx", "video", "e-learning"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Framework :: FastAPI",
+    "Topic :: Education",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
 dependencies = [
     "pillow>=11.0",
     "numpy>=1.26",
@@ -23,6 +34,10 @@ dependencies = [
     "cryptography>=46.0",
     "httpx>=0.28",
 ]
+
+[project.urls]
+Homepage = "https://github.com/YUjinEDU/Lecture_Auto"
+Issues = "https://github.com/YUjinEDU/Lecture_Auto/issues"
 
 [project.optional-dependencies]
 dev = [

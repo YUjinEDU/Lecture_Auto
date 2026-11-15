@@ -1,0 +1,27 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / 무슨 문제가 있었나요?
+      description: Steps to reproduce, expected vs actual behavior.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: v0.1.0 or git SHA
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options: [Web UI, Docker, Batch CLI, run.py, Other]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Remove API keys and personal data before pasting.
+      render: text
