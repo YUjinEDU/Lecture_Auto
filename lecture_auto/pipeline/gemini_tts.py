@@ -63,7 +63,9 @@ class BazeTTSClient:
     api_key: str
     base_url: str = DEFAULT_BASE_URL
     model: str = GEMINI_TTS_MODEL
-    timeout: float = 120.0
+    # A segment normally answers in 3-5 s (measured 2026-11-16, 8 in flight); a stalled request used to hold its
+    # slide for the full timeout before the retry, which then answered in seconds.
+    timeout: float = float(os.environ.get("BAZE_TTS_TIMEOUT", "30"))
     retry_delays: Sequence[float] = (2.0, 5.0, 15.0)
     sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
     max_in_flight: int = MAX_IN_FLIGHT
