@@ -88,6 +88,8 @@ DB에는 서버 서명 키에서 유도한 Fernet 키로 암호화한 값과 끝
 | 현재 음성 승인 / 후보 채택 | CLI의 `--approve N` / `--promote N [--allow-failed]`와 같은 동작 (즉시) |
 | 승인 취소 / 이전 음성으로 되돌리기 | CLI의 `--unapprove N` / `--restore-prev N`와 같은 동작 (즉시) |
 
+실행 중인 음성 작업(produce·regen)은 `GET /api/jobs/<id>`의 `progress`(`done`/`total`/`eta_seconds`)로 슬라이드 단위 진행률을 알려 주고, 강의 화면의 작업 패널이 이를 진행 막대와 남은 시간으로 보여 준다. produce는 `audio/.claim/slide_NNN.done`, regen은 요청한 슬라이드의 QC 기록이 작업 시작 뒤에 쓰였는지로 센다.
+
 작업 프로세스에는 `CUDA_VISIBLE_DEVICES=<LECTURE_WEB_GPU>`와 `LECTURE_AUTO_PROJECTS=<root>/data/projects`를 넣는다.
 소유자의 키를 실행 직전에 복호화하여 `BAZE_API_KEY`와 `FACTCHAT_API_KEY`로 넣고,
 `FACTCHAT_BASE_URL`·`BAZE_BASE_URL`을 `LECTURE_WEB_KEY_BASE_URL`(기본 `https://factchat-cloud.mindlogic.ai/v1/gateway`)로 지정한다.

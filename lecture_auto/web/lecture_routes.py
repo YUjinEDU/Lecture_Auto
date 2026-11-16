@@ -21,6 +21,7 @@ from lecture_auto.web.lecture_settings import (
     LectureSettings,
     resolved_settings,
 )
+from lecture_auto.web.progress import job_progress
 from lecture_auto.web.quotas import check_storage
 from lecture_auto.web.runner import KINDS, JobError, JobRunner
 from lecture_auto.web.settings import Settings
@@ -164,7 +165,8 @@ def lecture_router(settings: Settings, runner: JobRunner, accounts: Accounts) ->
 
     @router.get("/api/jobs/{jid}")
     def job(jid: str):
-        return runner.get(jid)
+        job = runner.get(jid)
+        return {**job, "progress": job_progress(settings, job)} if job else job
 
     @router.get("/api/jobs/{jid}/log")
     def log(jid: str, offset: int = 0):

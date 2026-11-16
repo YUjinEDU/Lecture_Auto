@@ -1,3 +1,20 @@
+const fmtDuration = (s) => (s >= 60 ? `${Math.floor(s / 60)}분 ${Math.round(s % 60)}초` : `${Math.round(s)}초`);
+
+function progressView(job) {
+  const started = job.started_at;
+  if (job.status !== "running" || !started) return [h("p", { class: "muted small" }, "차례를 기다리는 중입니다.")];
+  const parts = [`경과 ${fmtDuration(Date.now() / 1000 - started)}`];
+  const p = job.progress;
+  if (!p) return [h("p", { class: "muted small" }, parts[0])];
+  parts.unshift(p.done >= p.total ? "음성 완료 · 영상 조립·마무리 중" : `음성 ${p.done}/${p.total}장`);
+  if (p.eta_seconds != null && p.done < p.total) parts.splice(1, 0, `약 ${fmtDuration(p.eta_seconds)} 남음`);
+  return [
+    h("div", { class: "progress", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": p.total, "aria-valuenow": p.done },
+      h("span", { style: `width:${Math.round((100 * p.done) / p.total)}%` })),
+    h("p", { class: "muted small" }, parts.join(" · ")),
+  ];
+}
+
 function jobPanel(lec) {
   const job = lec.job;
   if (!job) return null;
@@ -12,6 +29,7 @@ function jobPanel(lec) {
         await api(`jobs/${job.id}/cancel`, { method: "POST" });
         toast("중단을 요청했습니다.");
       }) }, "작업 중단")),
+    h("div", { id: "job-progress" }, progressView(job)),
     pre);
 }
 
@@ -27,6 +45,7 @@ async function pollLog(lectureId) {
     if (atBottom) pre.scrollTop = pre.scrollHeight;
   }
   const job = await api(`jobs/${jobId}`);
+  document.getElementById("job-progress")?.replaceChildren(...progressView(job));
   if (job.status === "queued" || job.status === "running") {
     state.pollTimer = setTimeout(() => guard(() => pollLog(lectureId)), 2000);
   } else {
