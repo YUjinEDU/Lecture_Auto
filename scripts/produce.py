@@ -12,6 +12,7 @@ any lecture is not a final video.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -29,7 +30,6 @@ from lecture_auto.production.batch import (  # noqa: E402
     compute_lecture_status,
 )
 
-LOG_ROOT = ROOT / "logs"
 # Measured: a Raon worker peaks at 18.5 GB; two on one A6000 ran 1.63x faster end to end.
 _VRAM_PER_WORKER_MIB = 20 * 1024
 _BATCH = [sys.executable, "-m", "scripts.batch_generate_lectures"]
@@ -109,18 +109,23 @@ def main(argv: list[str] | None = None) -> int:
             print(" ".join(cmd))
         return 0
 
-    log_dir = LOG_ROOT / f"produce_{run_id}"
+    # The data root (data/, output/) is where we were started -- the web runner starts us in
+    # LECTURE_WEB_ROOT, which in Docker is not the code directory; the code stays importable via PYTHONPATH.
+    data_root = Path.cwd()
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))}
+    log_dir = data_root / "logs" / f"produce_{run_id}"
     log_dir.mkdir(parents=True, exist_ok=True)
     failed = False
+    loads_raon = any(lec.get("tts_engine", "raon") == "raon" for lec in selected)
 
     def launch(g, k, cmd):
         with (log_dir / f"worker_{g}_{k}.log").open("ab") as log:
-            return subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+            return subprocess.Popen(cmd, cwd=data_root, env=env, stdout=log, stderr=subprocess.STDOUT)
 
     live = []  # [proc, g, k, cmd, restarts]
     for i, (g, k, cmd) in enumerate(workers):
-        if i:
-            time.sleep(20)  # stagger model loads
+        if i and loads_raon:
+            time.sleep(20)  # stagger Raon model loads; Gemini workers load no model
         live.append([launch(g, k, cmd), g, k, cmd, 0])
     while live:
         for w in list(live):
@@ -145,19 +150,19 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(5)
 
     for cmd in assembles:
-        if subprocess.run(cmd, cwd=ROOT).returncode != 0:
+        if subprocess.run(cmd, cwd=data_root, env=env).returncode != 0:
             print("WARNING: assemble failed:", " ".join(cmd))
             failed = True
 
     for lec, cmd in zip(selected, heals):
-        if compute_lecture_status(lec, ROOT / "data" / "work_batch", ROOT / "output").video_state == "final":
+        if compute_lecture_status(lec, data_root / "data" / "work_batch", data_root / "output").video_state == "final":
             continue
-        if subprocess.run(cmd, cwd=ROOT, check=False).returncode != 0:
+        if subprocess.run(cmd, cwd=data_root, env=env, check=False).returncode != 0:
             print("WARNING: heal failed:", " ".join(cmd))
             failed = True
 
     for lec in selected:
-        st = compute_lecture_status(lec, ROOT / "data" / "work_batch", ROOT / "output")
+        st = compute_lecture_status(lec, data_root / "data" / "work_batch", data_root / "output")
         print(_format_status_line(LECTURES.index(lec) + 1, lec["id"], st))
         failed |= st.video_state != "final"
     return 1 if failed else 0

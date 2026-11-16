@@ -153,12 +153,11 @@ class FakeProc:
         return self.codes.pop(0) if len(self.codes) > 1 else self.codes[0]
 
 
-def _produce(monkeypatch, tmp_path, argv, popen, state="final"):
-    monkeypatch.setattr(produce, "LOG_ROOT", tmp_path)
-    monkeypatch.setattr(produce, "ROOT", tmp_path)
-    monkeypatch.setattr(produce.time, "sleep", lambda s: None)
-    monkeypatch.setattr(bgl, "LECTURES", LECS)
-    monkeypatch.setattr(produce, "LECTURES", LECS)
+def _produce(monkeypatch, tmp_path, argv, popen, state="final", lectures=LECS, sleeps=None):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(produce.time, "sleep", (sleeps if sleeps is not None else []).append)
+    monkeypatch.setattr(bgl, "LECTURES", lectures)
+    monkeypatch.setattr(produce, "LECTURES", lectures)
     monkeypatch.setattr(produce, "compute_lecture_status", lambda *a: MagicMock(video_state=state))
     monkeypatch.setattr(produce, "_format_status_line", lambda *a: "line")
     monkeypatch.setattr(produce, "_free_vram_mib", dict)
@@ -177,6 +176,25 @@ def test_produce_worker_count_and_assemble(monkeypatch, tmp_path):
     assert {c[c.index("--gpu") + 1] for c in cmds} == {"0", "1"}
     assert len([c for c in run.call_args_list if "--assemble-only" in c.args[0]]) == 2
     assert rc == 0
+
+
+def test_produce_runs_in_the_data_root_not_the_code_root(monkeypatch, tmp_path):
+    popen = MagicMock(side_effect=lambda *a, **k: FakeProc([0]))
+    _, run = _produce(monkeypatch, tmp_path, ["--only", "7", "--gpus", "0", "--workers-per-gpu", "1"], popen)
+    for call in popen.call_args_list + run.call_args_list:
+        assert call.kwargs["cwd"] == tmp_path
+        assert str(produce.ROOT) in call.kwargs["env"]["PYTHONPATH"].split(produce.os.pathsep)
+    assert list((tmp_path / "logs").glob("produce_*/worker_0_0.log"))
+
+
+@pytest.mark.parametrize(("engine", "staggered"), [("raon", True), ("gemini", False)])
+def test_produce_staggers_only_raon_model_loads(monkeypatch, tmp_path, engine, staggered):
+    lectures = [{**lec, "tts_engine": engine} for lec in LECS]
+    popen = MagicMock(side_effect=lambda *a, **k: FakeProc([0]))
+    sleeps = []
+    _produce(monkeypatch, tmp_path, ["--only", "7", "--gpus", "0", "--workers-per-gpu", "2"], popen,
+             lectures=lectures, sleeps=sleeps)
+    assert (20 in sleeps) is staggered
 
 
 def test_produce_restart_limited(monkeypatch, tmp_path):
