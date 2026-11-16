@@ -46,6 +46,10 @@ const ACTIONS = [
   ["assemble", "영상 다시 조립", "현재 음성으로 영상을 다시 만듭니다 (승인·채택 후 사용, 수 분)."],
   ["check", "발음 점검", "사전에 없는 영어 단어를 찾아 작업 로그에 보여줍니다."],
 ];
+const GEMINI_HELP = {
+  produce: "모든 슬라이드 음성을 Gemini로 만들고 영상을 조립합니다 (GPU 사용 안 함, 보통 수 분).",
+  heal: "검사에 실패한 슬라이드만 다시 만들어 통과하면 채택합니다.",
+};
 
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
@@ -292,7 +296,7 @@ function hero(lec, busy) {
 function lectureActions(lec, busy) {
   const item = ([kind, label, help]) => h("div", { class: "action-item" },
     h("button", { disabled: busy, class: kind === "produce" ? "primary" : null, onclick: () => runJob(lec, kind) }, label),
-    h("span", { class: "muted small" }, help));
+    h("span", { class: "muted small" }, (lec.tts_engine === "gemini" && GEMINI_HELP[kind]) || help));
   const main = ACTIONS.filter((a) => a[0] === "scripts" || a[0] === "produce");
   const extra = ACTIONS.filter((a) => a[0] !== "scripts" && a[0] !== "produce");
   return h("section", { class: "card" },
