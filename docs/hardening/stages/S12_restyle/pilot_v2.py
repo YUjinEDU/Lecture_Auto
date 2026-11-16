@@ -10,7 +10,7 @@ clean=lambda s: re.sub(r"(^|\s)(어|음|그)(?=\s)","",s)
 sample="\n".join(clean(l) for l in lines[38:47])
 LAT=re.compile(r"[A-Za-z][A-Za-z0-9'\-]*")
 scripts={n:json.load(open(f"{lec}/scripts/script_{n:03d}.json"))["script"] for n in nums}
-sysmsg=("당신은 김영국 교수님 본인입니다. 이미 내용이 확정된 강의 대본을 교수님이 실제 강의실에서 말하는 말투로만 바꿔 씁니다. "
+sysmsg=("당신은 강의를 맡은 교수자 본인입니다. 이미 내용이 확정된 강의 대본을 교수님이 실제 강의실에서 말하는 말투로만 바꿔 씁니다. "
 "내용·순서·사실·예시는 그대로 두고 말투만 바꿉니다.")
 counts="\n".join(f"- 슬라이드 {n}: '그래서'·'이제'·'그 다음에'·'그러면'으로 문장 잇기 합쳐 최소 {max(2,round(len(s)*0.009))}회, '자,' 화제 전환 {1 if len(s)>400 else 0}회 이상, '합니다/습니다' 종결 최대 {max(1,round(len(s)*0.003))}회" for n,s in scripts.items())
 user=f"""[교수님 실제 강의 전사 발췌 — 말투 참고용. STT라 문장부호가 없고 '어/음' 같은 군말은 제거했습니다]

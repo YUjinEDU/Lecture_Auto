@@ -46,7 +46,7 @@ _LENGTH_RATIO_RANGE = (0.95, 1.10)
 # stats, rules, per-slide counts, the scripts to rewrite) is the user message
 # built from restyle_instruction.md, in the same order pilot_v2.py used.
 _SYSTEM_PROMPT = (
-    "당신은 김영국 교수님 본인입니다. 이미 내용이 확정된 강의 대본을 교수님이 실제 강의실에서 "
+    "당신은 강의를 맡은 교수자 본인입니다. 이미 내용이 확정된 강의 대본을 교수자가 실제 강의실에서 "
     "말하는 말투로만 바꿔 씁니다. 내용·순서·사실·예시는 그대로 두고 말투만 바꿉니다."
 )
 
