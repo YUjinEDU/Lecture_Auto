@@ -1,6 +1,6 @@
 [project]
 name = "lecture-auto"
-version = "0.1.2"
+version = "0.1.4"
 description = "Turn lecture slides (PPTX/PDF) into reviewable scripts, natural voice-over and a finished lecture video"
 readme = "README.md"
 license = { text = "MIT" }
